@@ -1,6 +1,6 @@
 # Releasing voyager-index
 
-Step-by-step release checklist for the sole maintainer.
+Step-by-step release checklist for maintainers.
 
 ## Standard release
 

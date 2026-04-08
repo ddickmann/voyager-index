@@ -3,15 +3,12 @@
 `voyager-index` ships one OSS product surface, but several different reading
 paths.
 
-Current release posture:
+Install:
 
-- users should `git clone` this repo and install locally from source
-- the fastest path is `bash scripts/install_from_source.sh --cpu` which handles
-  system dependencies, Rust toolchain, Python package, and all native Rust/PyO3
-  crates in a single command
-- alternatively, use `make install-cpu` or follow the step-by-step instructions in `README.md`
-- the install commands in `README.md`, `docs/reference_api_tutorial.md`, and `docs/full_feature_cookbook.md` assume the repo root
-- no PyPI package is required for the current OSS release
+- `pip install voyager-index` is the recommended install path
+- optional extras: `[native]`, `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`
+- contributors and developers can install from source: `bash scripts/install_from_source.sh --cpu` or `make install-cpu`
+- the install commands in `docs/reference_api_tutorial.md` and `docs/full_feature_cookbook.md` cover both paths
 - `README.md` is the product homepage; the docs below expand the same public OSS story rather than replacing it
 
 ## Start Here

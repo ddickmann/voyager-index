@@ -32,15 +32,12 @@ For the full step-by-step feature walkthrough, pair these examples with
 These require the reference server to be running:
 
 ```bash
-git clone https://github.com/latenceai/voyager-index.git
-cd voyager-index
-python -m pip install ".[server]"
+pip install voyager-index[server]
 voyager-index-server
 python examples/reference_api_happy_path.py
 python examples/reference_api_feature_tour.py --output-json feature-tour-report.json
 ```
 
-No PyPI package is required for this release; the examples are meant to run from a local source checkout.
 Use `README.md` for the full install matrix and `http://127.0.0.1:8080/docs` for the live OpenAPI surface once the server is running.
 
 - `examples/vllm_pooling_provider.py`

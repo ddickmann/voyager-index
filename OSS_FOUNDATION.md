@@ -36,7 +36,8 @@ treated as internal compatibility paths, not the long-term OSS contract.
 - `voyager_index._internal.*` is packaged implementation detail and may change
 - `src.*` is still shipped as a deprecated compatibility namespace for older imports
 - the reference service CLI is `voyager-index-server`, exposed through `voyager_index.server`
-- the current OSS release path is source checkout plus local install; PyPI publication is deferred for now
+- the package is published to PyPI as `voyager-index`; `pip install voyager-index` is the recommended install path
+- source checkout plus local install is the contributor and development alternative
 
 ## Supported Foundation Capabilities
 

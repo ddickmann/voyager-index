@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.2
+
+- unified GitHub URLs across docs and crate configs to `ddickmann/voyager-index`
+- fixed license field in `latence-solver` pyproject.toml from MIT to Apache-2.0 (matching Cargo.toml and LICENSING.md)
+- aligned PyPI install guidance across OSS_FOUNDATION.md, docs/README.md, tutorial, cookbook, and examples
+- removed stale "PyPI publication is deferred" language from OSS_FOUNDATION.md and docs
+- moved internal test and benchmark files out of the published `voyager_index` package tree
+- added doc-consistency and package-hygiene assertions to the test suite
+
+## 0.1.1
+
+- CI release pipeline fix: added verbose logging to the PyPI publish step
+- packaging metadata alignment for trusted publisher workflow
+
 ## 0.1.0 — Production
 
 Initial OSS foundation cut for `voyager-index`.

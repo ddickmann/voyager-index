@@ -44,54 +44,37 @@ with the results, skips, and boundary checks.
 
 ## Step 0. Install The Profile You Need
 
-Current release path:
-
-- clone this repo and install locally from source
-- run the commands below from the repo root
-- no PyPI package is required for this release
-- for the full install matrix and product overview, start with `README.md`
-
-Start from source:
+Install from PyPI (recommended):
 
 ```bash
-git clone https://github.com/latenceai/voyager-index.git
-cd voyager-index
-python -m pip install --upgrade pip
-```
-
-Base reference API:
-
-```bash
-python -m pip install ".[server]"
+pip install voyager-index[server]
 ```
 
 That install includes the supported PDF, DOCX, XLSX, and image rendering stack
 used by `/reference/preprocess/documents`.
 
-CPU-first local install:
+For the full install matrix and product overview, start with `README.md`.
+
+Optional extras:
 
 ```bash
-python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-python -m pip install ".[server]"
+pip install voyager-index[server,multimodal]     # + multimodal helpers
+pip install voyager-index[native,server]          # + prebuilt Rust kernels
 ```
 
-Optional multimodal helpers:
-
-```bash
-python -m pip install ".[server,multimodal]"
-```
-
-Optional local native packages:
-
-```bash
-python -m pip install ".[native-build]"
-python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver
-```
-
-What these extras change:
+What the native extras add:
 
 - `latence_hnsw`: optional native dense/HNSW acceleration
 - `latence_solver`: canonical OSS solver package for dense refinement and `/reference/optimize`
+- `latence_gem_router`: GEM-inspired set-native multi-vector routing core
+
+### Install from source (contributors)
+
+```bash
+git clone https://github.com/ddickmann/voyager-index.git
+cd voyager-index
+bash scripts/install_from_source.sh --cpu
+```
 - multimodal extras: optional provider-side helpers and example flows
 
 If you are preparing a release build today, this source-checkout install flow is the supported story.

@@ -13,51 +13,38 @@ use `examples/reference_api_feature_tour.py`.
 
 ## 1. Install
 
-Current release path:
-
-- clone this repo and install locally from the checkout
-- run the commands below from the repo root
-- no PyPI package is required for this release
-- for the full install matrix and product overview, start with `README.md`
-
-Start from source:
+Install from PyPI (recommended):
 
 ```bash
-git clone https://github.com/latenceai/voyager-index.git
-cd voyager-index
-python -m pip install --upgrade pip
-```
-
-Base server install:
-
-```bash
-python -m pip install ".[server]"
+pip install voyager-index[server]
 ```
 
 That install includes the supported document-rendering stack for
 `POST /reference/preprocess/documents` and `voyager_index.render_documents(...)`.
 
-CPU-first local install:
+For the full install matrix and product overview, start with `README.md`.
+
+Optional native packages add prebuilt Rust kernels:
 
 ```bash
-python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-python -m pip install ".[server]"
+pip install voyager-index[native,server]
 ```
 
-Optional native packages:
-
-```bash
-python -m pip install ".[native-build]"
-python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver
-```
-
-What they change:
+What they add:
 
 - `latence_hnsw`: optional native dense/HNSW acceleration
 - `latence_solver`: canonical OSS solver package for optimized dense refinement and `/reference/optimize`
+- `latence_gem_router`: GEM-inspired set-native multi-vector routing core
 
 Neither native package is required for the default OSS tutorial path.
-You can release and use the repo today with a plain source checkout plus local install.
+
+### Install from source (contributors)
+
+```bash
+git clone https://github.com/ddickmann/voyager-index.git
+cd voyager-index
+bash scripts/install_from_source.sh --cpu
+```
 
 ## 2. Start The Server
 
