@@ -482,6 +482,7 @@ pub fn emd_sinkhorn(
     if m == 0 || n == 0 {
         return 0.0;
     }
+    debug_assert_eq!(cost.len(), m * n, "cost matrix size must be m * n");
 
     let total_s: f64 = supply.iter().sum();
     let total_d: f64 = demand.iter().sum();
@@ -568,6 +569,131 @@ pub fn emd_sinkhorn(
     }
 
     if total.is_nan() || total.is_infinite() {
+        log::warn!("emd_sinkhorn produced non-finite result ({total}), returning 0.0");
+        return 0.0;
+    }
+    total
+}
+
+/// f32-only Sinkhorn for graph construction where f64 precision is unnecessary.
+///
+/// Halves memory bandwidth and enables wider SIMD vectorization (8 f32 vs 4 f64
+/// per 256-bit register). The result is used for ranking only (cast to f32 anyway),
+/// so the reduced precision is acceptable.
+///
+/// `check_every`: how often to check convergence (5 for fast mode, 10 for precise)
+/// `tol`: convergence tolerance (1e-4 for fast, 1e-6 for precise)
+#[allow(clippy::needless_range_loop)]
+pub fn emd_sinkhorn_f32(
+    supply: &[f32],
+    demand: &[f32],
+    cost: &[f32],
+    lambda: f32,
+    n_iter: usize,
+    check_every: usize,
+    tol: f32,
+) -> f32 {
+    let m = supply.len();
+    let n = demand.len();
+    if m == 0 || n == 0 {
+        return 0.0;
+    }
+    debug_assert_eq!(cost.len(), m * n, "cost matrix size must be m * n");
+
+    let total_s: f32 = supply.iter().sum();
+    let total_d: f32 = demand.iter().sum();
+    if total_s < 1e-10 || total_d < 1e-10 {
+        return 0.0;
+    }
+
+    let log_k: Vec<f32> = cost.iter().map(|&c| (-lambda * c).max(-80.0)).collect();
+
+    let mut log_u = vec![0.0f32; m];
+    let mut log_v = vec![0.0f32; n];
+
+    let log_supply: Vec<f32> = supply.iter().map(|&s| if s > 1e-30 { s.ln() } else { -70.0 }).collect();
+    let log_demand: Vec<f32> = demand.iter().map(|&d| if d > 1e-30 { d.ln() } else { -70.0 }).collect();
+
+    let check_interval = check_every.max(1);
+
+    for iter in 0..n_iter {
+        for i in 0..m {
+            let row_base = i * n;
+            let mut max_val = f32::NEG_INFINITY;
+            for j in 0..n {
+                let v = log_k[row_base + j] + log_v[j];
+                if v > max_val { max_val = v; }
+            }
+            if max_val == f32::NEG_INFINITY {
+                log_u[i] = 0.0;
+                continue;
+            }
+            let mut acc = 0.0f32;
+            for j in 0..n {
+                acc += (log_k[row_base + j] + log_v[j] - max_val).exp();
+            }
+            log_u[i] = log_supply[i] - acc.ln() - max_val;
+        }
+
+        for j in 0..n {
+            let mut max_val = f32::NEG_INFINITY;
+            for i in 0..m {
+                let v = log_k[i * n + j] + log_u[i];
+                if v > max_val { max_val = v; }
+            }
+            if max_val == f32::NEG_INFINITY {
+                log_v[j] = 0.0;
+                continue;
+            }
+            let mut acc = 0.0f32;
+            for i in 0..m {
+                acc += (log_k[i * n + j] + log_u[i] - max_val).exp();
+            }
+            log_v[j] = log_demand[j] - acc.ln() - max_val;
+        }
+
+        if (iter + 1) % check_interval == 0 {
+            let mut max_residual = 0.0f32;
+            for i in 0..m {
+                let row_base = i * n;
+                let mut max_val = f32::NEG_INFINITY;
+                for j in 0..n {
+                    let v = log_u[i] + log_k[row_base + j] + log_v[j];
+                    if v > max_val { max_val = v; }
+                }
+                let row_sum = if max_val == f32::NEG_INFINITY {
+                    0.0
+                } else {
+                    let mut s = 0.0f32;
+                    for j in 0..n {
+                        s += (log_u[i] + log_k[row_base + j] + log_v[j] - max_val).exp();
+                    }
+                    s * max_val.exp()
+                };
+                let residual = (row_sum - supply[i]).abs();
+                if residual > max_residual {
+                    max_residual = residual;
+                }
+            }
+            if max_residual < tol {
+                break;
+            }
+        }
+    }
+
+    let mut total = 0.0f32;
+    for i in 0..m {
+        let row_base = i * n;
+        for j in 0..n {
+            let log_t = log_u[i] + log_k[row_base + j] + log_v[j];
+            if log_t > -50.0 {
+                total += log_t.exp() * cost[row_base + j];
+            }
+        }
+    }
+
+    if total.is_nan() || total.is_infinite() {
+        log::warn!("emd_sinkhorn_f32 produced non-finite result ({total}), returning 0.0");
         return 0.0;
     }
     total
@@ -858,5 +984,66 @@ mod tests {
         let result = emd_sinkhorn(&supply, &demand, &cost, 30.0, 200);
         assert!(result >= 0.0, "expected non-negative, got {result}");
         assert!(result.is_finite(), "expected finite, got {result}");
+    }
+
+    #[test]
+    fn test_sinkhorn_f32_approx() {
+        let supply = vec![0.6f32, 0.4];
+        let demand = vec![0.4f32, 0.6];
+        let cost = vec![0.0f32, 1.0, 1.0, 0.0];
+        let result = emd_sinkhorn_f32(&supply, &demand, &cost, 50.0, 100, 10, 1e-6);
+        assert!(
+            (result - 0.2).abs() < 0.02,
+            "f32 Sinkhorn expected ~0.2, got {result}"
+        );
+    }
+
+    #[test]
+    fn test_sinkhorn_f32_fast_mode() {
+        let supply = vec![0.6f32, 0.4];
+        let demand = vec![0.4f32, 0.6];
+        let cost = vec![0.0f32, 1.0, 1.0, 0.0];
+        let result = emd_sinkhorn_f32(&supply, &demand, &cost, 20.0, 30, 5, 1e-4);
+        assert!(
+            (result - 0.2).abs() < 0.05,
+            "f32 fast Sinkhorn expected ~0.2, got {result}"
+        );
+    }
+
+    #[test]
+    fn test_sinkhorn_f32_agrees_with_f64() {
+        let supply_f64 = vec![0.5, 0.3, 0.2];
+        let demand_f64 = vec![0.2, 0.5, 0.3];
+        let cost_f64 = vec![
+            0.0, 1.0, 1.0,
+            1.0, 0.0, 1.0,
+            1.0, 1.0, 0.0,
+        ];
+        let supply_f32: Vec<f32> = supply_f64.iter().map(|&v| v as f32).collect();
+        let demand_f32: Vec<f32> = demand_f64.iter().map(|&v| v as f32).collect();
+        let cost_f32: Vec<f32> = cost_f64.iter().map(|&v| v as f32).collect();
+
+        let f64_result = emd_sinkhorn(&supply_f64, &demand_f64, &cost_f64, 50.0, 500);
+        let f32_result = emd_sinkhorn_f32(&supply_f32, &demand_f32, &cost_f32, 50.0, 500, 10, 1e-6);
+        let diff = (f64_result as f32 - f32_result).abs();
+        assert!(
+            diff < 0.05,
+            "f32 and f64 Sinkhorn should agree within 0.05: f64={f64_result}, f32={f32_result}, diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_sinkhorn_f32_numerical_stability() {
+        let supply = vec![0.25f32; 4];
+        let demand = vec![0.25f32; 4];
+        let cost: Vec<f32> = vec![
+            0.0, 2.5, 5.0, 10.0,
+            3.0, 0.0, 7.5, 4.0,
+            10.0, 1.0, 0.0, 6.0,
+            8.0, 9.0, 2.0, 0.0,
+        ];
+        let result = emd_sinkhorn_f32(&supply, &demand, &cost, 200.0, 500, 10, 1e-6);
+        assert!(!result.is_nan(), "unexpected NaN for f32");
+        assert!(!result.is_infinite(), "unexpected Inf for f32");
     }
 }

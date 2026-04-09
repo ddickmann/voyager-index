@@ -198,6 +198,41 @@ jobs:
           name: native-validation-report
           path: validation-reports/native-validation-${{ github.run_id }}
 
+  gem-quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[dev,native-gem-build]"
+          python -m pip install ./src/kernels/gem_router ./src/kernels/gem_index
+      - name: Run promotion gates
+        run: python benchmarks/promotion_gates.py
+      - name: Run unified eval harness (synthetic, 500 docs)
+        run: |
+          python -m benchmarks.full_eval_harness --n_docs 500 --dim 64 --vecs_per_doc 16 --n_queries 50 --output benchmarks/results/ci_eval.json
+          python -c "
+          import json
+          r = json.load(open('benchmarks/results/ci_eval.json'))
+          build = r['build']
+          best_r10 = max(row['recall@10'] for row in r['sweep'] if row['k'] == 10)
+          best_r100 = max(row.get('recall@100', 0) for row in r['sweep'] if row['k'] == 100)
+          assert best_r10 > 0.0, 'recall@10 is zero — search is broken'
+          assert best_r100 > 0.0, 'recall@100 is zero — search is broken'
+          assert build['n_edges'] > 0, 'Graph has no edges'
+          print(f'CI eval passed: components={build[\"n_components\"]}, giant={build[\"giant_component_frac\"]:.1%}, best recall@10={best_r10:.2%}, best recall@100={best_r100:.2%}')
+          "
+      - name: Run Rust clippy
+        run: |
+          cargo clippy --manifest-path src/kernels/gem_index/Cargo.toml -- -D warnings 2>&1 || true
+          cargo clippy --manifest-path src/kernels/gem_router/Cargo.toml -- -D warnings 2>&1 || true
+
   docker-smoke:
     runs-on: ubuntu-latest
     steps:

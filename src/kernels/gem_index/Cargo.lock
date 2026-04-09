@@ -219,6 +219,7 @@ dependencies = [
  "crc32fast",
  "latence-gem-router",
  "log",
+ "matrixmultiply",
  "memmap2",
  "numpy",
  "parking_lot",

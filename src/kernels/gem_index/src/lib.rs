@@ -35,6 +35,71 @@ struct SealedInner {
     dim: usize,
     cutoff_tree: Option<CutoffTree>,
     filter_index: Option<FilterIndex>,
+    raw_vectors: Option<Vec<f32>>,
+    doc_offsets: Vec<(usize, usize)>,
+}
+
+/// Compute MaxSim(Q, D) = Σ_i max_j dot(q_i, d_j) using BLAS sgemm.
+/// Returns NEGATIVE MaxSim so that lower = better (consistent with qCH proxy).
+///
+/// Computes the full Q × D^T matrix via sgemm, then takes max per query row.
+fn maxsim_score(query: &[f32], doc: &[f32], dim: usize) -> f32 {
+    let n_q = query.len() / dim;
+    let n_d = doc.len() / dim;
+    if n_q == 0 || n_d == 0 || dim == 0 {
+        return 0.0;
+    }
+
+    // scores = Q (n_q × dim) × D^T (dim × n_d) → (n_q × n_d)
+    let mut scores = vec![0.0f32; n_q * n_d];
+    unsafe {
+        matrixmultiply::sgemm(
+            n_q, dim, n_d,
+            1.0,
+            query.as_ptr(), dim as isize, 1,
+            doc.as_ptr(), 1, dim as isize,
+            0.0,
+            scores.as_mut_ptr(), n_d as isize, 1,
+        );
+    }
+
+    let mut total = 0.0f32;
+    for qi in 0..n_q {
+        let row = &scores[qi * n_d..(qi + 1) * n_d];
+        let max_val = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if max_val > f32::NEG_INFINITY {
+            total += max_val;
+        }
+    }
+    -total
+}
+
+/// Rerank beam search candidates using exact MaxSim on raw vectors.
+fn rerank_by_maxsim(
+    candidates: Vec<(u32, f32)>,
+    query_flat: &[f32],
+    raw_vectors: &[f32],
+    doc_offsets: &[(usize, usize)],
+    dim: usize,
+    k: usize,
+) -> Vec<(u32, f32)> {
+    let mut scored: Vec<(u32, f32)> = candidates
+        .into_iter()
+        .map(|(int_idx, _proxy_score)| {
+            let idx = int_idx as usize;
+            if idx < doc_offsets.len() {
+                let (start, end) = doc_offsets[idx];
+                let doc_vecs = &raw_vectors[start * dim..end * dim];
+                let ms = maxsim_score(query_flat, doc_vecs, dim);
+                (int_idx, ms)
+            } else {
+                (int_idx, f32::MAX)
+            }
+        })
+        .collect();
+    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    scored.truncate(k);
+    scored
 }
 
 /// Sealed GEM segment for multi-vector retrieval.
@@ -65,7 +130,7 @@ impl GemSegment {
     ///   payload_clusters: optional per-doc cluster IDs for payload-aware construction
     ///   use_emd: use qEMD (Earth Mover's Distance) for graph construction instead of qCH
     ///   dual_graph: use per-cluster dual-graph construction (GEM paper Algorithm 1)
-    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, payload_clusters = None, use_emd = false, dual_graph = true))]
+    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 0, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 15, ctop_r = 3, payload_clusters = None, use_emd = true, dual_graph = true, store_raw_vectors = true))]
     fn build(
         &mut self,
         py: Python<'_>,
@@ -81,6 +146,7 @@ impl GemSegment {
         payload_clusters: Option<Vec<u32>>,
         use_emd: bool,
         dual_graph: bool,
+        store_raw_vectors: bool,
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
         let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
@@ -119,6 +185,19 @@ impl GemSegment {
         }
 
         let sealed = py.allow_threads(move || {
+            // Auto-tune n_fine: sqrt(n_vectors) clamped to [64, 512]
+            let n_fine = if n_fine == 0 {
+                ((n_vectors as f64).sqrt() as usize).clamp(64, 512)
+            } else {
+                n_fine
+            };
+            if n_fine < 128 && n_docs > 500 {
+                log::warn!(
+                    "n_fine={} may cause poor ranking for {} docs; consider n_fine >= 128",
+                    n_fine, n_docs
+                );
+            }
+
             let mut codebook = TwoStageCodebook::build(
                 &flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
             );
@@ -130,10 +209,7 @@ impl GemSegment {
             }
             codebook.update_idf(&doc_centroid_sets);
 
-            // Phase 5.4: IDF-weighted codebook refinement — refine centroids
-            // by weighting rare centroids higher, improving tail-token discrimination.
-            let idf_refine_iters = 3;
-            codebook.refine_centroids_idf(&flat, n_vectors, idf_refine_iters);
+            codebook.refine_centroids_idf(&flat, n_vectors, 1);
             // Re-assign after refinement
             let all_assignments = codebook.assign_vectors(&flat, n_vectors);
             let mut doc_centroid_sets = Vec::with_capacity(n_docs);
@@ -182,6 +258,8 @@ impl GemSegment {
                 dim,
                 cutoff_tree: None,
                 filter_index: None,
+                raw_vectors: if store_raw_vectors { Some(flat) } else { None },
+                doc_offsets,
             }
         });
 
@@ -191,8 +269,10 @@ impl GemSegment {
 
     /// Search the sealed segment for nearest neighbors to a multi-vector query.
     ///
-    /// Returns: list of (doc_id, qch_proxy_score) tuples, sorted best-first
-    /// filter: optional list of (field, value) pairs for filter-aware routing
+    /// Returns: list of (doc_id, qch_proxy_score) tuples, sorted best-first.
+    /// filter: optional list of (field, value) pairs for filter-aware routing.
+    /// min_cluster_ratio: when filtering, skip clusters where fewer than this
+    ///   fraction of docs match (selectivity-aware pruning).
     #[pyo3(signature = (query_vectors, k = 10, ef = 100, n_probes = 4, enable_shortcuts = false, filter = None, min_cluster_ratio = 0.01))]
     fn search(
         &self,
@@ -203,7 +283,6 @@ impl GemSegment {
         n_probes: usize,
         enable_shortcuts: bool,
         filter: Option<Vec<(String, String)>>,
-        #[allow(unused_variables)]
         min_cluster_ratio: f32,
     ) -> PyResult<Vec<(u64, f32)>> {
         let inner = self.inner.as_ref().ok_or_else(|| {
@@ -276,12 +355,28 @@ impl GemSegment {
 
             // Bottom layer: cluster-guided entry points with adaptive or fixed ctop
             let query_cids = codebook.assign_vectors(&flat, n_query);
-            let query_ctop = match cutoff_tree {
+            let mut query_ctop = match cutoff_tree {
                 Some(tree) => compute_ctop_adaptive(
                     codebook, &query_cids, tree, n_probes.max(inner_ctop_r),
                 ),
                 None => compute_ctop(codebook, &query_cids, n_probes.max(inner_ctop_r)),
             };
+
+            // Selectivity-aware cluster pruning: when filtering, skip clusters
+            // where fewer than min_cluster_ratio of docs match the filter.
+            if let (Some(f), Some(fi)) = (filter.as_ref(), filter_index) {
+                if !f.is_empty() {
+                    let viable: std::collections::HashSet<u32> =
+                        fi.clusters_passing_filter(f, min_cluster_ratio).into_iter().collect();
+                    if !viable.is_empty() {
+                        query_ctop.retain(|c| viable.contains(c));
+                        if query_ctop.is_empty() {
+                            query_ctop = viable.into_iter().collect();
+                        }
+                    }
+                }
+            }
+
             let mut entries: Vec<u32> = postings.representatives_for_clusters(&query_ctop);
             entries.push(cur_entry);
             entries.sort_unstable();
@@ -302,21 +397,35 @@ impl GemSegment {
                 enable_shortcuts,
             );
 
-            results
-                .into_iter()
-                .take(k)
-                .filter_map(|(int_idx, score)| {
-                    doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
-                })
-                .collect::<Vec<(u64, f32)>>()
+            let final_results = if let Some(ref raw_vecs) = inner.raw_vectors {
+                let reranked = rerank_by_maxsim(
+                    results, &flat, raw_vecs, &inner.doc_offsets, dim, k,
+                );
+                reranked
+                    .into_iter()
+                    .filter_map(|(int_idx, score)| {
+                        doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
+                    })
+                    .collect::<Vec<(u64, f32)>>()
+            } else {
+                results
+                    .into_iter()
+                    .take(k)
+                    .filter_map(|(int_idx, score)| {
+                        doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
+                    })
+                    .collect::<Vec<(u64, f32)>>()
+            };
+            final_results
         });
 
         Ok(out)
     }
 
     /// Like `search` but also returns compute stats: (nodes_visited, distance_computations).
+    /// Supports the same filter and min_cluster_ratio parameters as `search`.
     #[allow(clippy::type_complexity)]
-    #[pyo3(signature = (query_vectors, k = 10, ef = 100, n_probes = 4, enable_shortcuts = false))]
+    #[pyo3(signature = (query_vectors, k = 10, ef = 100, n_probes = 4, enable_shortcuts = false, filter = None, min_cluster_ratio = 0.01))]
     fn search_with_stats(
         &self,
         py: Python<'_>,
@@ -325,6 +434,8 @@ impl GemSegment {
         ef: usize,
         n_probes: usize,
         enable_shortcuts: bool,
+        filter: Option<Vec<(String, String)>>,
+        min_cluster_ratio: f32,
     ) -> PyResult<(Vec<(u64, f32)>, (u32, u32))> {
         let inner = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("segment not built; call build() or load() first")
@@ -355,8 +466,24 @@ impl GemSegment {
         let doc_ids = &inner.doc_ids;
         let inner_ctop_r = inner.ctop_r;
         let cutoff_tree = inner.cutoff_tree.as_ref();
+        let filter_index = inner.filter_index.as_ref();
+        let n_docs = doc_ids.len();
 
         let graph_entry = inner.graph.entry_point;
+
+        let filter_mask: Option<Vec<bool>> = filter.as_ref().and_then(|f| {
+            if f.is_empty() { return None; }
+            match filter_index {
+                Some(fi) => {
+                    let mask = fi.build_filter_mask(f, n_docs);
+                    Some(mask.iter().map(|&m| !m).collect())
+                }
+                None => {
+                    log::warn!("filter provided but no filter_index built; call set_doc_payloads() first");
+                    None
+                }
+            }
+        });
 
         let out = py.allow_threads(|| {
             let mut query_scores = codebook.compute_query_centroid_scores(&flat, n_query);
@@ -381,16 +508,32 @@ impl GemSegment {
             }
 
             let query_cids = codebook.assign_vectors(&flat, n_query);
-            let query_ctop = match cutoff_tree {
+            let mut query_ctop = match cutoff_tree {
                 Some(tree) => compute_ctop_adaptive(
                     codebook, &query_cids, tree, n_probes.max(inner_ctop_r),
                 ),
                 None => compute_ctop(codebook, &query_cids, n_probes.max(inner_ctop_r)),
             };
+
+            if let (Some(f), Some(fi)) = (filter.as_ref(), filter_index) {
+                if !f.is_empty() {
+                    let viable: std::collections::HashSet<u32> =
+                        fi.clusters_passing_filter(f, min_cluster_ratio).into_iter().collect();
+                    if !viable.is_empty() {
+                        query_ctop.retain(|c| viable.contains(c));
+                        if query_ctop.is_empty() {
+                            query_ctop = viable.into_iter().collect();
+                        }
+                    }
+                }
+            }
+
             let mut entries: Vec<u32> = postings.representatives_for_clusters(&query_ctop);
             entries.push(cur_entry);
             entries.sort_unstable();
             entries.dedup();
+
+            let deleted_ref = filter_mask.as_deref();
 
             let (results, bottom_stats) = beam_search_with_stats(
                 &graph.levels[0],
@@ -401,19 +544,31 @@ impl GemSegment {
                 flat_codes,
                 n_fine,
                 ef,
-                None,
+                deleted_ref,
                 enable_shortcuts,
             );
             total_stats.nodes_visited += bottom_stats.nodes_visited;
             total_stats.distance_computations += bottom_stats.distance_computations;
 
-            let hits: Vec<(u64, f32)> = results
-                .into_iter()
-                .take(k)
-                .filter_map(|(int_idx, score)| {
-                    doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
-                })
-                .collect();
+            let hits: Vec<(u64, f32)> = if let Some(ref raw_vecs) = inner.raw_vectors {
+                let reranked = rerank_by_maxsim(
+                    results, &flat, raw_vecs, &inner.doc_offsets, dim, k,
+                );
+                reranked
+                    .into_iter()
+                    .filter_map(|(int_idx, score)| {
+                        doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
+                    })
+                    .collect()
+            } else {
+                results
+                    .into_iter()
+                    .take(k)
+                    .filter_map(|(int_idx, score)| {
+                        doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
+                    })
+                    .collect()
+            };
             (hits, (total_stats.nodes_visited, total_stats.distance_computations))
         });
 
@@ -436,6 +591,9 @@ impl GemSegment {
         let dim = inner.dim;
         let ctop_r = inner.ctop_r;
 
+        let raw_vectors = inner.raw_vectors.clone();
+        let doc_offsets = inner.doc_offsets.clone();
+
         py.allow_threads(move || {
             let data = SegmentData {
                 dim,
@@ -450,6 +608,8 @@ impl GemSegment {
                 flat_codes: flat_codes.clone(),
                 postings: postings.clone(),
                 ctop_r,
+                raw_vectors,
+                doc_offsets,
             };
             save_segment(&data, &std::path::PathBuf::from(path))
         }).map_err(|e| PyValueError::new_err(format!("save failed: {e}")))
@@ -480,6 +640,8 @@ impl GemSegment {
             dim: data.dim,
             cutoff_tree: None,
             filter_index: None,
+            raw_vectors: data.raw_vectors,
+            doc_offsets: data.doc_offsets,
         });
 
         Ok(())
@@ -634,12 +796,25 @@ impl GemSegment {
                     enable_shortcuts,
                 );
 
-                hits.into_iter()
-                    .take(k)
-                    .filter_map(|(int_idx, score)| {
-                        doc_ids.get(int_idx as usize).map(|&did| (did, score))
-                    })
-                    .collect::<Vec<(u64, f32)>>()
+                if let Some(ref raw_vecs) = inner.raw_vectors {
+                    let dim = inner.dim;
+                    let reranked = rerank_by_maxsim(
+                        hits, flat, raw_vecs, &inner.doc_offsets, dim, k,
+                    );
+                    reranked
+                        .into_iter()
+                        .filter_map(|(int_idx, score)| {
+                            doc_ids.get(int_idx as usize).map(|&did| (did, score))
+                        })
+                        .collect::<Vec<(u64, f32)>>()
+                } else {
+                    hits.into_iter()
+                        .take(k)
+                        .filter_map(|(int_idx, score)| {
+                            doc_ids.get(int_idx as usize).map(|&did| (did, score))
+                        })
+                        .collect::<Vec<(u64, f32)>>()
+                }
             }).collect()
         });
 
@@ -664,6 +839,18 @@ impl GemSegment {
 
     fn is_ready(&self) -> bool {
         self.inner.is_some()
+    }
+
+    /// BFS connectivity report on the bottom graph layer.
+    ///
+    /// Returns (n_components, giant_component_frac):
+    ///   - n_components: number of connected components
+    ///   - giant_component_frac: fraction of nodes in the largest component (1.0 = fully connected)
+    fn graph_connectivity_report(&self) -> PyResult<(usize, f64)> {
+        let inner = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built; call build() or load() first")
+        })?;
+        Ok(inner.graph.connectivity_report())
     }
 
     /// Set per-document payload field-value pairs for filter-aware routing.
@@ -772,6 +959,106 @@ impl GemSegment {
         Ok(out)
     }
 
+    /// Brute-force rank all docs by exact MaxSim on raw vectors.
+    ///
+    /// Returns the true top-k docs by MaxSim similarity (negated, so lower = better).
+    /// Only available when raw vectors are stored (i.e., after build(), not after load()).
+    #[pyo3(signature = (query_vectors, k = 10))]
+    fn brute_force_maxsim(
+        &self,
+        py: Python<'_>,
+        query_vectors: PyReadonlyArray2<f32>,
+        k: usize,
+    ) -> PyResult<Vec<(u64, f32)>> {
+        let inner = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built")
+        })?;
+        let raw_vecs = inner.raw_vectors.as_ref().ok_or_else(|| {
+            PyValueError::new_err("raw vectors not available (loaded from disk without vectors)")
+        })?;
+        let arr = query_vectors.as_array();
+        let dim = arr.shape()[1];
+        if dim != inner.dim {
+            return Err(PyValueError::new_err(format!(
+                "dimension mismatch: expected {}, got {}", inner.dim, dim
+            )));
+        }
+        let query_flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
+            PyValueError::new_err("array must be C-contiguous")
+        })?.to_vec();
+
+        let doc_ids = &inner.doc_ids;
+        let doc_offsets = &inner.doc_offsets;
+        let n_docs = doc_ids.len();
+
+        let out = py.allow_threads(|| {
+            let mut scored: Vec<(usize, f32)> = (0..n_docs)
+                .map(|i| {
+                    let (start, end) = doc_offsets[i];
+                    let doc_vecs = &raw_vecs[start * dim..end * dim];
+                    let s = maxsim_score(&query_flat, doc_vecs, dim);
+                    (i, s)
+                })
+                .collect();
+            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            scored.truncate(k);
+            scored
+                .into_iter()
+                .filter_map(|(idx, score)| {
+                    doc_ids.get(idx).map(|&did| (did, score))
+                })
+                .collect::<Vec<(u64, f32)>>()
+        });
+        Ok(out)
+    }
+
+    /// Return raw vectors for each document, keyed by external doc_id.
+    ///
+    /// Returns None if raw vectors were not stored (store_raw_vectors=False
+    /// at build time, or loaded from a v1 segment file).
+    /// Otherwise returns a list of (doc_id, ndarray) tuples.
+    #[allow(clippy::type_complexity)]
+    fn get_doc_vectors<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<Vec<(u64, Bound<'py, PyArray2<f32>>)>>> {
+        let inner = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built or loaded")
+        })?;
+        let raw_vecs = match &inner.raw_vectors {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let dim = inner.dim;
+        let mut result = Vec::with_capacity(inner.doc_ids.len());
+        for (i, &doc_id) in inner.doc_ids.iter().enumerate() {
+            if i >= inner.doc_offsets.len() {
+                break;
+            }
+            let (start, end) = inner.doc_offsets[i];
+            let n_tokens = end.saturating_sub(start);
+            if n_tokens == 0 || start * dim >= raw_vecs.len() {
+                continue;
+            }
+            let slice = &raw_vecs[start * dim..end * dim];
+            let rows: Vec<Vec<f32>> = (0..n_tokens)
+                .map(|t| slice[t * dim..(t + 1) * dim].to_vec())
+                .collect();
+            let arr = PyArray2::from_vec2_bound(py, &rows)
+                .map_err(|e| PyValueError::new_err(format!("array creation failed: {e}")))?;
+            result.push((doc_id, arr));
+        }
+        Ok(Some(result))
+    }
+
+    /// Return true if this segment has raw vectors available for MaxSim reranking.
+    fn has_raw_vectors(&self) -> bool {
+        self.inner
+            .as_ref()
+            .map(|i| i.raw_vectors.is_some())
+            .unwrap_or(false)
+    }
+
     /// Export codebook centroids as a flat float32 array: shape (n_fine, dim).
     fn get_codebook_centroids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
         let inner = self.inner.as_ref().ok_or_else(|| {
@@ -797,6 +1084,7 @@ impl GemSegment {
     }
 
     /// Export flat doc codes as (codes: u16[], offsets: u32[], lengths: u16[]).
+    #[allow(clippy::type_complexity)]
     fn get_flat_codes<'py>(&self, py: Python<'py>) -> PyResult<(
         Bound<'py, PyArray1<u16>>,
         Bound<'py, PyArray1<u32>>,
@@ -886,7 +1174,8 @@ impl PyMutableGemSegment {
     }
 
     /// Search the mutable segment. `n_probes` is accepted for API parity but
-    /// unused: mutable segments use a flat single-layer graph.
+    /// unused: mutable segments use a flat single-layer graph without cluster
+    /// routing. Use sealed segments for cluster-guided multi-probe search.
     #[pyo3(signature = (query_vectors, k = 10, ef = 100, n_probes = 4))]
     fn search(
         &self,
@@ -1057,6 +1346,18 @@ impl PyMutableGemSegment {
             PyValueError::new_err("segment not built")
         })?;
         Ok(seg.graph_quality_metrics())
+    }
+
+    /// Deep connectivity report: (n_components, giant_component_frac, cross_cluster_edge_ratio).
+    ///
+    /// - n_components: number of connected components among live nodes
+    /// - giant_component_frac: fraction of live nodes in the largest component (1.0 = fully connected)
+    /// - cross_cluster_edge_ratio: fraction of edges connecting different clusters (higher = better navigability)
+    fn graph_connectivity_report(&self) -> PyResult<(usize, f64, f64)> {
+        let seg = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built")
+        })?;
+        Ok(seg.graph_connectivity_report())
     }
 
     /// Returns True if the graph needs healing based on drift thresholds.

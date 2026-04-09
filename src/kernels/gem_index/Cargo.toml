@@ -1,6 +1,6 @@
 [package]
 name = "latence-gem-index"
-version = "0.2.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["Latence Team"]
 description = "Native GEM graph index for multi-vector retrieval — filter routing, GPU qCH, self-healing graphs, multi-modal ensembles"
@@ -15,6 +15,7 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 latence-gem-router = { path = "../gem_router" }
 rayon = "1.10"
+matrixmultiply = "0.3"
 parking_lot = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

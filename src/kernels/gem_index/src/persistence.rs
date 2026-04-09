@@ -11,8 +11,8 @@ use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes};
 use crate::graph::CsrAdjacency;
 
 const MAGIC: &[u8; 4] = b"GEMS";
-const VERSION: u32 = 1;
-const COMPAT_VERSIONS: &[u32] = &[1];
+const VERSION: u32 = 2;
+const COMPAT_VERSIONS: &[u32] = &[1, 2];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SegmentData {
@@ -28,6 +28,11 @@ pub struct SegmentData {
     pub flat_codes: FlatDocCodes,
     pub postings: ClusterPostings,
     pub ctop_r: usize,
+    // v2: raw vectors + offsets for MaxSim reranking after load
+    #[serde(default)]
+    pub raw_vectors: Option<Vec<f32>>,
+    #[serde(default)]
+    pub doc_offsets: Vec<(usize, usize)>,
 }
 
 #[derive(Debug)]
@@ -224,9 +229,8 @@ mod tests {
     use crate::graph::Adjacency;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_save_load_roundtrip() {
-        let data = SegmentData {
+    fn make_test_segment_data() -> SegmentData {
+        SegmentData {
             dim: 32,
             max_degree: 16,
             levels: vec![CsrAdjacency::from_adj_lists(&[vec![1, 2], vec![0, 2], vec![0, 1]])],
@@ -258,7 +262,14 @@ mod tests {
                 cluster_reps: vec![Some(0), Some(1)],
             },
             ctop_r: 2,
-        };
+            raw_vectors: Some(vec![1.0; 32 * 3]),
+            doc_offsets: vec![(0, 1), (1, 2), (2, 3)],
+        }
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        let data = make_test_segment_data();
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.gem");
@@ -269,43 +280,14 @@ mod tests {
         assert_eq!(loaded.dim, 32);
         assert_eq!(loaded.doc_ids, vec![100, 200, 300]);
         assert_eq!(loaded.levels[0].n_nodes(), 3);
+        assert!(loaded.raw_vectors.is_some());
+        assert_eq!(loaded.raw_vectors.as_ref().unwrap().len(), 32 * 3);
+        assert_eq!(loaded.doc_offsets.len(), 3);
     }
 
     #[test]
     fn test_migration_roundtrip() {
-        let data = SegmentData {
-            dim: 32,
-            max_degree: 16,
-            levels: vec![CsrAdjacency::from_adj_lists(&[vec![1, 2], vec![0, 2], vec![0, 1]])],
-            shortcuts: vec![Vec::new(); 3],
-            node_levels: vec![0, 0, 0],
-            entry_point: 0,
-            codebook: TwoStageCodebook {
-                cquant: vec![0.0; 16],
-                n_fine: 2,
-                dim: 8,
-                cindex_labels: vec![0, 1],
-                n_coarse: 2,
-                centroid_dists: vec![0.0, 1.0, 1.0, 0.0],
-                idf: vec![1.0, 1.0],
-            },
-            doc_profiles: vec![
-                DocProfile { centroid_ids: vec![0], ctop: vec![0] },
-                DocProfile { centroid_ids: vec![1], ctop: vec![1] },
-                DocProfile { centroid_ids: vec![0, 1], ctop: vec![0, 1] },
-            ],
-            doc_ids: vec![100, 200, 300],
-            flat_codes: FlatDocCodes {
-                codes: vec![0, 1, 0, 1],
-                offsets: vec![0, 1, 2],
-                lengths: vec![1, 1, 2],
-            },
-            postings: ClusterPostings {
-                lists: vec![vec![0, 2], vec![1, 2]],
-                cluster_reps: vec![Some(0), Some(1)],
-            },
-            ctop_r: 2,
-        };
+        let data = make_test_segment_data();
 
         let dir = tempdir().unwrap();
         let src_path = dir.path().join("original.gem");

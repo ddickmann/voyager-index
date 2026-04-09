@@ -133,6 +133,50 @@ impl GemGraph {
         &self.levels[0]
     }
 
+    /// BFS-based connectivity report on the bottom layer.
+    ///
+    /// Returns (n_components, giant_component_frac) where giant_component_frac
+    /// is the fraction of nodes in the largest connected component.
+    pub fn connectivity_report(&self) -> (usize, f64) {
+        if self.levels.is_empty() {
+            return (0, 0.0);
+        }
+        let n = self.levels[0].n_nodes();
+        if n == 0 {
+            return (0, 0.0);
+        }
+
+        let adj = &self.levels[0];
+        let mut visited = vec![false; n];
+        let mut component_sizes: Vec<usize> = Vec::new();
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+        for start in 0..n {
+            if visited[start] {
+                continue;
+            }
+            let mut size = 0usize;
+            queue.push_back(start);
+            visited[start] = true;
+            while let Some(node) = queue.pop_front() {
+                size += 1;
+                for &nbr in adj.neighbors(node) {
+                    let nb = nbr as usize;
+                    if nb < n && !visited[nb] {
+                        visited[nb] = true;
+                        queue.push_back(nb);
+                    }
+                }
+            }
+            component_sizes.push(size);
+        }
+
+        let n_components = component_sizes.len();
+        let giant = component_sizes.iter().copied().max().unwrap_or(0);
+        let frac = if n > 0 { giant as f64 / n as f64 } else { 0.0 };
+        (n_components, frac)
+    }
+
     /// Remove shortcuts pointing to deleted nodes. Optionally prune shortcuts
     /// older than `max_age` generations (tracked via `shortcut_generations`).
     pub fn prune_stale_shortcuts(&mut self, deleted: &[bool], max_age: Option<usize>, current_generation: usize) {
@@ -286,7 +330,7 @@ fn select_neighbors_heuristic_inner(
 
     // Pre-compute candidate-to-query distances using the construction metric.
     // When use_emd=true, this uses qEMD (metric, triangle inequality) instead of qCH.
-    let cand_to_query_scores: Vec<f32> = if candidates.len() > 64 {
+    let cand_to_query_scores: Vec<f32> = if candidates.len() > 16 {
         candidates.par_iter()
             .map(|&(cand_idx, _)| {
                 let cand_codes = flat_codes.doc_codes(cand_idx as usize);
@@ -368,21 +412,45 @@ pub fn shrink_neighbors_emd(
     flat_codes: &FlatDocCodes,
     use_emd: bool,
 ) {
+    shrink_neighbors_emd_cached(node_idx, max_degree, adjacency, codebook, flat_codes, use_emd, None)
+}
+
+pub fn shrink_neighbors_emd_cached(
+    node_idx: usize,
+    max_degree: usize,
+    adjacency: &mut [Vec<u32>],
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    use_emd: bool,
+    mut cache: Option<&mut ScoreCache>,
+) {
     let node_codes = flat_codes.doc_codes(node_idx);
     let neighbors: Vec<u32> = adjacency[node_idx].clone();
+    let node_u32 = node_idx as u32;
 
     let mut scored: Vec<(u32, f32)> = neighbors
         .iter()
         .map(|&nbr| {
-            let nbr_codes = flat_codes.doc_codes(nbr as usize);
-            let dist = construction_distance(codebook, node_codes, nbr_codes, use_emd);
+            let dist = if let Some(ref mut c) = cache {
+                if let Some(d) = c.get(node_u32, nbr) {
+                    d
+                } else {
+                    let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                    let d = construction_distance(codebook, node_codes, nbr_codes, use_emd);
+                    c.insert(node_u32, nbr, d);
+                    d
+                }
+            } else {
+                let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                construction_distance(codebook, node_codes, nbr_codes, use_emd)
+            };
             (nbr, dist)
         })
         .collect();
     scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let kept = select_neighbors_heuristic_cached(
-        &scored, node_codes, max_degree, codebook, flat_codes, None, use_emd,
+        &scored, node_codes, max_degree, codebook, flat_codes, cache, use_emd,
     );
     let kept_set: std::collections::HashSet<u32> = kept.iter().map(|&(idx, _)| idx).collect();
 
@@ -540,9 +608,10 @@ pub fn build_graph_with_payload(
                 levels[level][nbr_idx as usize].push(i as u32);
 
                 if levels[level][nbr_idx as usize].len() > md {
-                    shrink_neighbors_emd(
+                    shrink_neighbors_emd_cached(
                         nbr_idx as usize, md,
                         &mut levels[level], codebook, flat_codes, use_emd,
+                        Some(&mut score_cache),
                     );
                 }
             }
@@ -555,6 +624,7 @@ pub fn build_graph_with_payload(
 
     // Bridge repair on bottom layer only
     bridge_repair_emd(&mut levels[0], max_degree, postings, codebook, flat_codes, use_emd);
+    global_bridge_repair(&mut levels[0], max_degree, codebook, flat_codes, use_emd);
 
     let csr_levels: Vec<CsrAdjacency> = levels
         .iter()
@@ -592,47 +662,61 @@ pub fn bridge_repair_emd(
 ) {
     let n_clusters = postings.lists.len();
 
-    for cluster_id in 0..n_clusters {
-        let entry_rep = match postings.cluster_reps.get(cluster_id) {
-            Some(Some(rep)) => *rep as usize,
-            _ => continue,
-        };
+    // Phase 1 (parallel): BFS per-cluster to discover unreachable members.
+    // Returns (cluster_entry_rep, spare_capacity_nodes, unreachable_members).
+    let adj_snapshot: &[Vec<u32>] = adjacency;
+    let cluster_plans: Vec<(usize, Vec<u32>, Vec<u32>)> = (0..n_clusters)
+        .into_par_iter()
+        .filter_map(|cluster_id| {
+            let entry_rep = match postings.cluster_reps.get(cluster_id) {
+                Some(Some(rep)) => *rep as usize,
+                _ => return None,
+            };
+            let members = &postings.lists[cluster_id];
+            if members.len() <= 1 {
+                return None;
+            }
 
-        let members = &postings.lists[cluster_id];
-        if members.len() <= 1 {
-            continue;
-        }
+            let member_set: std::collections::HashSet<u32> = members.iter().copied().collect();
+            let mut reachable = std::collections::HashSet::new();
+            let mut bfs_queue = std::collections::VecDeque::new();
 
-        let mut reachable = std::collections::HashSet::new();
-        let mut bfs_queue = std::collections::VecDeque::new();
-        let member_set: std::collections::HashSet<u32> = members.iter().copied().collect();
+            bfs_queue.push_back(entry_rep as u32);
+            reachable.insert(entry_rep as u32);
 
-        bfs_queue.push_back(entry_rep as u32);
-        reachable.insert(entry_rep as u32);
+            let mut spare = Vec::new();
+            if adj_snapshot[entry_rep].len() < max_degree {
+                spare.push(entry_rep as u32);
+            }
 
-        let mut spare_capacity: Vec<u32> = Vec::new();
-        if adjacency[entry_rep].len() < max_degree {
-            spare_capacity.push(entry_rep as u32);
-        }
-
-        while let Some(node) = bfs_queue.pop_front() {
-            for &nbr in &adjacency[node as usize] {
-                if member_set.contains(&nbr) && !reachable.contains(&nbr) {
-                    reachable.insert(nbr);
-                    bfs_queue.push_back(nbr);
-                    if adjacency[nbr as usize].len() < max_degree {
-                        spare_capacity.push(nbr);
+            while let Some(node) = bfs_queue.pop_front() {
+                for &nbr in &adj_snapshot[node as usize] {
+                    if member_set.contains(&nbr) && !reachable.contains(&nbr) {
+                        reachable.insert(nbr);
+                        bfs_queue.push_back(nbr);
+                        if adj_snapshot[nbr as usize].len() < max_degree {
+                            spare.push(nbr);
+                        }
                     }
                 }
             }
-        }
 
-        let mut spare_idx = 0;
-        for &member in members {
-            if reachable.contains(&member) {
-                continue;
+            let unreachable: Vec<u32> = members.iter()
+                .copied()
+                .filter(|m| !reachable.contains(m))
+                .collect();
+
+            if unreachable.is_empty() {
+                return None;
             }
+            Some((entry_rep, spare, unreachable))
+        })
+        .collect();
 
+    // Phase 2 (sequential): Apply bridge edges.
+    for (entry_rep, spare_capacity, unreachable) in cluster_plans {
+        let mut spare_idx = 0;
+        for &member in &unreachable {
             let bridge_source = if spare_idx < spare_capacity.len() {
                 let src = spare_capacity[spare_idx] as usize;
                 spare_idx += 1;
@@ -652,6 +736,142 @@ pub fn bridge_repair_emd(
                     evict_worst_neighbor_emd(m, max_degree, adjacency, codebook, flat_codes, use_emd);
                 }
             }
+        }
+    }
+}
+
+fn bfs_components(adjacency: &[Vec<u32>]) -> Vec<Vec<usize>> {
+    let n = adjacency.len();
+    let mut visited = vec![false; n];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        queue.push_back(start);
+        visited[start] = true;
+        while let Some(node) = queue.pop_front() {
+            comp.push(node);
+            for &nbr in &adjacency[node] {
+                let nb = nbr as usize;
+                if nb < n && !visited[nb] {
+                    visited[nb] = true;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        components.push(comp);
+    }
+    components
+}
+
+/// Add a bridge edge that cannot be evicted. We allow max_degree+1 for bridge
+/// nodes rather than risk the bridge being evicted as the "worst" neighbor,
+/// which would leave components disconnected.
+fn add_bridge_edge(
+    adjacency: &mut [Vec<u32>],
+    a: usize,
+    b: usize,
+    _max_degree: usize,
+    _codebook: &TwoStageCodebook,
+    _flat_codes: &FlatDocCodes,
+    _use_emd: bool,
+) {
+    if !adjacency[a].contains(&(b as u32)) {
+        adjacency[a].push(b as u32);
+    }
+    if !adjacency[b].contains(&(a as u32)) {
+        adjacency[b].push(a as u32);
+    }
+}
+
+/// Global bridge repair: connect ALL disconnected components into a single
+/// connected graph. Runs iteratively until only one component remains.
+///
+/// For each small component, finds the nearest bridge edge to the giant
+/// component by scanning all giant nodes. Falls back to connecting the first
+/// node of each small component to the giant entry if no code-based pair exists.
+/// Bridge edges are never evicted (they may exceed max_degree by 1).
+pub fn global_bridge_repair(
+    adjacency: &mut [Vec<u32>],
+    max_degree: usize,
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    use_emd: bool,
+) {
+    let n = adjacency.len();
+    if n <= 1 {
+        return;
+    }
+
+    const MAX_ROUNDS: usize = 10;
+    for round in 0..MAX_ROUNDS {
+        let components = bfs_components(adjacency);
+        if components.len() <= 1 {
+            return;
+        }
+
+        let giant_idx = components
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, c)| c.len())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let giant_entry = components[giant_idx][0];
+        let giant_comp = &components[giant_idx];
+
+        // Parallel: find best bridge pair per small component.
+        let small_comps: Vec<(usize, &Vec<usize>)> = components.iter().enumerate()
+            .filter(|&(ci, c)| ci != giant_idx && !c.is_empty())
+            .collect();
+
+        let bridge_pairs: Vec<(usize, usize)> = small_comps.par_iter()
+            .map(|&(_, comp)| {
+                let mut best_pair: Option<(usize, usize, f32)> = None;
+                for &small_node in comp {
+                    let small_codes = flat_codes.doc_codes(small_node);
+                    if small_codes.is_empty() {
+                        continue;
+                    }
+                    for &giant_node in giant_comp {
+                        let giant_codes = flat_codes.doc_codes(giant_node);
+                        if giant_codes.is_empty() {
+                            continue;
+                        }
+                        let d = construction_distance(codebook, small_codes, giant_codes, use_emd);
+                        if best_pair.is_none() || d < best_pair.unwrap().2 {
+                            best_pair = Some((small_node, giant_node, d));
+                        }
+                    }
+                }
+                match best_pair {
+                    Some((s, g, _)) => (s, g),
+                    None => (comp[0], giant_entry),
+                }
+            })
+            .collect();
+
+        if bridge_pairs.is_empty() {
+            break;
+        }
+
+        for (bridge_small, bridge_giant) in bridge_pairs {
+            add_bridge_edge(adjacency, bridge_small, bridge_giant, max_degree, codebook, flat_codes, use_emd);
+        }
+
+        let remaining = bfs_components(adjacency).len();
+        if remaining <= 1 {
+            return;
+        }
+        if round == MAX_ROUNDS - 1 {
+            log::warn!(
+                "global_bridge_repair: {} components remain after {} rounds (expected 1)",
+                remaining, MAX_ROUNDS,
+            );
         }
     }
 }
@@ -783,7 +1003,7 @@ pub fn build_graph_dual(
                     n_fine,
                     ef_construction,
                 );
-                update_bridges(
+                update_bridges_cached(
                     doc_idx,
                     &new_neighbors,
                     &mut adjacency,
@@ -792,6 +1012,7 @@ pub fn build_graph_dual(
                     codebook,
                     flat_codes,
                     use_emd,
+                    Some(&mut score_cache),
                 );
             }
         }
@@ -824,13 +1045,14 @@ pub fn build_graph_dual(
             adjacency[doc_idx].push(best_nbr);
             adjacency[best_nbr as usize].push(doc_idx as u32);
             if adjacency[best_nbr as usize].len() > max_degree {
-                shrink_neighbors_emd(best_nbr as usize, max_degree, &mut adjacency, codebook, flat_codes, use_emd);
+                shrink_neighbors_emd_cached(best_nbr as usize, max_degree, &mut adjacency, codebook, flat_codes, use_emd, Some(&mut score_cache));
             }
         }
     }
 
     // Safety net: bridge repair for any remaining disconnected components
     bridge_repair_emd(&mut adjacency, max_degree, postings, codebook, flat_codes, use_emd);
+    global_bridge_repair(&mut adjacency, max_degree, codebook, flat_codes, use_emd);
 
     // Build single-level graph (dual-graph uses flat structure, not multi-level HNSW)
     let csr = CsrAdjacency::from_adj_lists(&adjacency);
@@ -908,8 +1130,9 @@ fn build_cluster_local(
         adjacency[nbr_idx as usize].push(doc_idx as u32);
 
         if adjacency[nbr_idx as usize].len() > max_degree {
-            shrink_neighbors_emd(
+            shrink_neighbors_emd_cached(
                 nbr_idx as usize, max_degree, adjacency, codebook, flat_codes, use_emd,
+                Some(score_cache),
             );
         }
     }
@@ -972,30 +1195,62 @@ pub fn update_bridges(
     flat_codes: &FlatDocCodes,
     use_emd: bool,
 ) {
-    let doc_codes = flat_codes.doc_codes(doc_idx);
+    update_bridges_cached(doc_idx, new_neighbors, adjacency, doc_profiles, max_degree, codebook, flat_codes, use_emd, None)
+}
 
-    // Step 1: Collect existing + new neighbors
+pub fn update_bridges_cached(
+    doc_idx: usize,
+    new_neighbors: &[(u32, f32)],
+    adjacency: &mut [Vec<u32>],
+    doc_profiles: &[DocProfile],
+    max_degree: usize,
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    use_emd: bool,
+    mut cache: Option<&mut ScoreCache>,
+) {
+    let doc_codes = flat_codes.doc_codes(doc_idx);
+    let doc_u32 = doc_idx as u32;
+
     let old_neighbors: Vec<u32> = adjacency[doc_idx].clone();
     let mut all_candidates: Vec<(u32, f32)> = Vec::new();
 
-    // Score existing neighbors
     for &nbr in &old_neighbors {
-        let nbr_codes = flat_codes.doc_codes(nbr as usize);
-        let dist = construction_distance(codebook, doc_codes, nbr_codes, use_emd);
+        let dist = if let Some(ref mut c) = cache {
+            if let Some(d) = c.get(doc_u32, nbr) {
+                d
+            } else {
+                let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                let d = construction_distance(codebook, doc_codes, nbr_codes, use_emd);
+                c.insert(doc_u32, nbr, d);
+                d
+            }
+        } else {
+            let nbr_codes = flat_codes.doc_codes(nbr as usize);
+            construction_distance(codebook, doc_codes, nbr_codes, use_emd)
+        };
         all_candidates.push((nbr, dist));
     }
 
-    // Add new neighbors (avoid duplicates), re-scoring with the construction metric
-    // to ensure consistent distance comparison (beam_search uses qCH, not qEMD).
     for &(nbr, _) in new_neighbors {
         if nbr as usize != doc_idx && !old_neighbors.contains(&nbr) {
-            let nbr_codes = flat_codes.doc_codes(nbr as usize);
-            let dist = construction_distance(codebook, doc_codes, nbr_codes, use_emd);
+            let dist = if let Some(ref mut c) = cache {
+                if let Some(d) = c.get(doc_u32, nbr) {
+                    d
+                } else {
+                    let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                    let d = construction_distance(codebook, doc_codes, nbr_codes, use_emd);
+                    c.insert(doc_u32, nbr, d);
+                    d
+                }
+            } else {
+                let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                construction_distance(codebook, doc_codes, nbr_codes, use_emd)
+            };
             all_candidates.push((nbr, dist));
         }
     }
 
-    // Step 2: If within budget, just merge
     if all_candidates.len() <= max_degree {
         for &old_nbr in &old_neighbors {
             adjacency[old_nbr as usize].retain(|&x| x != doc_idx as u32);
@@ -1005,7 +1260,7 @@ pub fn update_bridges(
             if !adjacency[nbr as usize].contains(&(doc_idx as u32)) {
                 adjacency[nbr as usize].push(doc_idx as u32);
                 if adjacency[nbr as usize].len() > max_degree {
-                    shrink_neighbors_emd(nbr as usize, max_degree, adjacency, codebook, flat_codes, use_emd);
+                    shrink_neighbors_emd_cached(nbr as usize, max_degree, adjacency, codebook, flat_codes, use_emd, cache.as_deref_mut());
                 }
             }
         }

@@ -118,6 +118,24 @@ class Index:
             embedding_fn: Optional callable for auto-embedding.
                   Must implement embed_documents(texts) -> List[np.ndarray]
                   and embed_query(text) -> np.ndarray.
+            n_fine: Number of fine centroids for quantization (0 = auto).
+            n_coarse: Number of coarse clusters for routing.
+            max_degree: Maximum graph node degree.
+            ef_construction: Beam width during graph construction.
+            n_probes: Number of coarse clusters to probe at search time.
+            enable_wal: Enable write-ahead log for crash recovery.
+
+        Keyword Args (passed through to GemNativeSegmentManager):
+            rerank_device: Device for MaxSim reranking ('cuda', 'cpu', or None
+                to disable reranking). When set, GEM proxy results are reranked
+                with exact late-interaction scoring.
+            roq_rerank: Enable ROQ 4-bit quantized MaxSim reranking.
+                Requires ``rerank_device`` to be a CUDA device.
+            roq_bits: Bit width for ROQ quantization (default 4).
+            use_emd: Use qEMD (Sinkhorn) for graph construction instead of qCH.
+            dual_graph: Build per-cluster local graphs with cross-cluster bridges.
+            warmup_kernels: Pre-compile Triton kernels at init (default True).
+            seed_batch_size: Docs to buffer before building the first graph.
         """
         self._path = Path(path)
         self._path.mkdir(parents=True, exist_ok=True)
@@ -277,6 +295,61 @@ class Index:
     ):
         """Alias for add() — same semantics."""
         self.add(vectors, ids=ids, payloads=payloads)
+
+    def upsert(
+        self,
+        vectors: Union[np.ndarray, List[np.ndarray]],
+        *,
+        ids: List[int],
+        payloads: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """
+        Insert or update documents by ID.
+
+        If a document with a given ID already exists, it is replaced.
+        Unlike ``add()``, ``ids`` is required.
+
+        Args:
+            vectors: (n_docs, n_tokens, dim) array or list of (n_tokens, dim) arrays.
+            ids: External document IDs (required).
+            payloads: Optional per-document metadata dicts.
+        """
+        self._check_open()
+
+        with self._lock:
+            if isinstance(vectors, list):
+                vecs_list = [np.asarray(v, dtype=np.float32) for v in vectors]
+            elif isinstance(vectors, np.ndarray) and vectors.ndim == 3:
+                vecs_list = [vectors[i] for i in range(vectors.shape[0])]
+            elif isinstance(vectors, np.ndarray) and vectors.ndim == 2:
+                vecs_list = [vectors]
+            else:
+                raise ValueError("vectors must be 2D, 3D array or list of 2D arrays")
+
+            n_docs = len(vecs_list)
+
+            for v in vecs_list:
+                if v.shape[-1] != self._dim:
+                    raise ValueError(
+                        f"dimension mismatch: expected {self._dim}, got {v.shape[-1]}"
+                    )
+
+            if len(ids) != n_docs:
+                raise ValueError(
+                    f"ids length ({len(ids)}) != vectors count ({n_docs})"
+                )
+            if payloads is not None and len(payloads) != n_docs:
+                raise ValueError(
+                    f"payloads length ({len(payloads)}) != vectors count ({n_docs})"
+                )
+
+            if payloads is None:
+                payloads = [{} for _ in range(n_docs)]
+
+            self._manager.upsert_multidense(vecs_list, ids, payloads)
+
+            for i, doc_id in enumerate(ids):
+                self._payloads[doc_id] = payloads[i]
 
     def delete(self, ids: List[int]):
         """Delete documents by their IDs."""
@@ -566,6 +639,35 @@ class IndexBuilder:
     def with_quantization(self, n_fine: int = 256, n_coarse: int = 32) -> IndexBuilder:
         self._kwargs["n_fine"] = n_fine
         self._kwargs["n_coarse"] = n_coarse
+        return self
+
+    def with_gpu_rerank(self, device: str = "cuda") -> IndexBuilder:
+        """Enable GPU-accelerated MaxSim reranking.
+
+        GEM proxy search produces candidates ranked by quantized Chamfer
+        distance.  This option adds a second-stage exact late-interaction
+        rerank on the specified device for higher recall.
+
+        Args:
+            device: PyTorch device string (default ``'cuda'``).
+        """
+        self._kwargs["rerank_device"] = device
+        return self
+
+    def with_roq(self, bits: int = 4, device: str = "cuda") -> IndexBuilder:
+        """Enable ROQ (Rotational Quantization) compressed reranking.
+
+        Stores document vectors in ``bits``-bit quantized form and runs
+        MaxSim reranking with a fused Triton kernel.  Reduces memory by
+        ~8x (at 4-bit) compared to FP32 with minimal recall loss.
+
+        Args:
+            bits: Quantization bit width (default 4).
+            device: PyTorch device string (default ``'cuda'``).
+        """
+        self._kwargs["roq_rerank"] = True
+        self._kwargs["roq_bits"] = bits
+        self._kwargs["rerank_device"] = device
         return self
 
     def build(self) -> Index:

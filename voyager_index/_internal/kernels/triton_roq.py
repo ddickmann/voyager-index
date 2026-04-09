@@ -570,6 +570,117 @@ def _roq_maxsim_4bit_kernel(
     tl.store(out_ptr, total_score)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_D': 32, 'DOCS_PER_PROG': 1}, num_warps=2),
+        triton.Config({'BLOCK_D': 64, 'DOCS_PER_PROG': 1}, num_warps=4),
+        triton.Config({'BLOCK_D': 128, 'DOCS_PER_PROG': 1}, num_warps=4),
+        triton.Config({'BLOCK_D': 256, 'DOCS_PER_PROG': 1}, num_warps=8),
+        triton.Config({'BLOCK_D': 64, 'DOCS_PER_PROG': 4}, num_warps=4),
+        triton.Config({'BLOCK_D': 128, 'DOCS_PER_PROG': 4}, num_warps=4),
+        triton.Config({'BLOCK_D': 128, 'DOCS_PER_PROG': 8}, num_warps=4),
+    ],
+    key=['n_d_tokens', 'n_bytes', 'n_docs'],
+)
+@triton.jit
+def _roq_maxsim_4bit_v2_kernel(
+    Q_CODES_PTR, D_CODES_PTR,
+    Q_META_PTR, D_META_PTR,
+    D_MASK_PTR,
+    OUTPUT_PTR,
+    q_batch_stride, q_token_stride,
+    d_batch_stride, d_token_stride,
+    d_meta_token_stride,
+    d_mask_batch_stride, d_mask_token_stride,
+    output_q_stride, output_d_stride,
+    n_queries, n_docs,
+    n_q_tokens, n_d_tokens,
+    dim,
+    n_bytes: tl.constexpr,
+    BLOCK_DIM: tl.constexpr,
+    HAS_D_MASK: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    DOCS_PER_PROG: tl.constexpr,
+):
+    """
+    Optimized 4-bit RoQ MaxSim kernel.
+    - Document tiling: each program processes DOCS_PER_PROG documents
+    - FP32 dot path with fused nibble unpack
+    - Optional document mask (HAS_D_MASK constexpr eliminates branch when unused)
+    - Wider autotune configs including BLOCK_D=256
+    - Query codes loaded once per query token, reused across all docs in tile
+    """
+    q_idx = tl.program_id(0)
+    d_tile_idx = tl.program_id(1)
+
+    q_ptr_base = Q_CODES_PTR + q_idx * q_batch_stride
+    q_meta_ptr_base = Q_META_PTR + q_idx * n_q_tokens * 4
+
+    byte_offsets = tl.arange(0, BLOCK_DIM)
+
+    for doc_in_tile in range(DOCS_PER_PROG):
+        d_idx = d_tile_idx * DOCS_PER_PROG + doc_in_tile
+        if d_idx < n_docs:
+            d_ptr_base = D_CODES_PTR + d_idx * d_batch_stride
+            d_meta_ptr_base = D_META_PTR + d_idx * n_d_tokens * d_meta_token_stride
+
+            total_score = 0.0
+
+            for i in range(n_q_tokens):
+                q_meta_ptr = q_meta_ptr_base + i * 4
+                q_scale = tl.load(q_meta_ptr + 0)
+                q_offset = tl.load(q_meta_ptr + 1)
+                q_sum = tl.load(q_meta_ptr + 2)
+                q_affine_offset = dim * q_offset + q_scale * q_sum
+
+                q_vec_bytes = tl.load(q_ptr_base + i * q_token_stride + byte_offsets,
+                                      mask=byte_offsets < n_bytes, other=0)
+                q_high = (q_vec_bytes >> 4).to(tl.float32)
+                q_low = (q_vec_bytes & 0x0F).to(tl.float32)
+
+                max_sim = -1.0e9
+
+                for j_start in range(0, n_d_tokens, BLOCK_D):
+                    j_offsets = j_start + tl.arange(0, BLOCK_D)
+                    j_mask = j_offsets < n_d_tokens
+
+                    d_meta_ptrs = d_meta_ptr_base + j_offsets * d_meta_token_stride
+                    d_scale = tl.load(d_meta_ptrs + 0, mask=j_mask, other=0.0)
+                    d_offset = tl.load(d_meta_ptrs + 1, mask=j_mask, other=0.0)
+                    d_sum = tl.load(d_meta_ptrs + 2, mask=j_mask, other=0.0)
+
+                    d_ptr_offs = j_offsets[:, None] * d_token_stride + byte_offsets[None, :]
+                    d_vecs_bytes = tl.load(
+                        d_ptr_base + d_ptr_offs,
+                        mask=(j_mask[:, None] & (byte_offsets[None, :] < n_bytes)),
+                        other=0,
+                    )
+                    d_high = (d_vecs_bytes >> 4).to(tl.float32)
+                    d_low = (d_vecs_bytes & 0x0F).to(tl.float32)
+
+                    dot_val = tl.sum(q_high[None, :] * d_high + q_low[None, :] * d_low, axis=1)
+
+                    est_dot = (d_offset * q_affine_offset) + (d_scale * (q_offset * d_sum + q_scale * dot_val))
+
+                    if HAS_D_MASK:
+                        d_token_active = tl.load(
+                            D_MASK_PTR + d_idx * d_mask_batch_stride + j_offsets * d_mask_token_stride,
+                            mask=j_mask, other=0,
+                        ) > 0
+                        sim = tl.where(j_mask & d_token_active, est_dot, -1.0e9)
+                    else:
+                        sim = tl.where(j_mask, est_dot, -1.0e9)
+
+                    block_max = tl.max(sim, axis=0)
+                    if block_max > max_sim:
+                        max_sim = block_max
+
+                total_score += max_sim
+
+            out_ptr = OUTPUT_PTR + q_idx * output_q_stride + d_idx * output_d_stride
+            tl.store(out_ptr, total_score)
+
+
 def roq_maxsim_4bit(queries_codes, queries_meta, docs_codes, docs_meta, queries_mask=None, documents_mask=None):
     """
     Args:
@@ -578,25 +689,58 @@ def roq_maxsim_4bit(queries_codes, queries_meta, docs_codes, docs_meta, queries_
         docs_codes: (B, T, NB) uint8 (Packed)
         docs_meta: (B, T, 4) float32
     """
-    scores = torch.empty((queries_codes.shape[0], docs_codes.shape[0]), dtype=torch.float32, device=queries_codes.device)
-
     A, S, NB = queries_codes.shape
     B, T, NB2 = docs_codes.shape
     assert NB == NB2
-    if queries_mask is None:
-        queries_mask = torch.ones((A, S), dtype=torch.float32, device=queries_codes.device)
-    else:
-        queries_mask = queries_mask.to(device=queries_codes.device, dtype=torch.float32)
+
+    scores = torch.empty((A, B), dtype=torch.float32, device=queries_codes.device)
+    dim = NB * 2
+    block_dim = 32
+    while block_dim < NB:
+        block_dim *= 2
+
+    has_q_mask = queries_mask is not None
+    has_d_mask = documents_mask is not None
+
+    if not has_q_mask:
+        if has_d_mask:
+            documents_mask = documents_mask.to(device=docs_codes.device, dtype=torch.float32)
+        else:
+            documents_mask = torch.empty((1, 1), dtype=torch.float32, device=docs_codes.device)
+
+        grid = lambda META: (A, (B + META['DOCS_PER_PROG'] - 1) // META['DOCS_PER_PROG'])
+        _roq_maxsim_4bit_v2_kernel[grid](
+            Q_CODES_PTR=queries_codes,
+            D_CODES_PTR=docs_codes,
+            Q_META_PTR=queries_meta,
+            D_META_PTR=docs_meta,
+            D_MASK_PTR=documents_mask,
+            OUTPUT_PTR=scores,
+            q_batch_stride=queries_codes.stride(0),
+            q_token_stride=queries_codes.stride(1),
+            d_batch_stride=docs_codes.stride(0),
+            d_token_stride=docs_codes.stride(1),
+            d_meta_token_stride=docs_meta.stride(1),
+            d_mask_batch_stride=documents_mask.stride(0),
+            d_mask_token_stride=documents_mask.stride(1),
+            output_q_stride=scores.stride(0),
+            output_d_stride=scores.stride(1),
+            n_queries=A,
+            n_docs=B,
+            n_q_tokens=S,
+            n_d_tokens=T,
+            dim=dim,
+            n_bytes=NB,
+            BLOCK_DIM=block_dim,
+            HAS_D_MASK=has_d_mask,
+        )
+        return scores
+
+    queries_mask = queries_mask.to(device=queries_codes.device, dtype=torch.float32)
     if documents_mask is None:
         documents_mask = torch.ones((B, T), dtype=torch.float32, device=docs_codes.device)
     else:
         documents_mask = documents_mask.to(device=docs_codes.device, dtype=torch.float32)
-
-    dim = NB * 2 # 2 nibbles per byte
-
-    block_dim = 32
-    while block_dim < NB:
-        block_dim *= 2
 
     grid = (A, B)
     _roq_maxsim_4bit_kernel[grid](

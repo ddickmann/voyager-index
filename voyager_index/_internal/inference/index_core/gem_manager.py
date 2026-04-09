@@ -28,6 +28,33 @@ except ImportError:
     PyMutableGemSegment = None
 
 try:
+    import torch
+
+    from voyager_index._internal.kernels.maxsim import fast_colbert_scores
+    _MAXSIM_AVAILABLE = True
+except ImportError:
+    _MAXSIM_AVAILABLE = False
+
+try:
+    from voyager_index._internal.kernels.kernel_warmup import _next_power_of_2, warmup_triton_kernels
+    _WARMUP_AVAILABLE = True
+except ImportError:
+    _WARMUP_AVAILABLE = False
+
+    def _next_power_of_2(n: int, minimum: int = 32) -> int:
+        v = max(n, minimum)
+        v -= 1
+        v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16
+        return v + 1
+
+try:
+    from voyager_index._internal.kernels.roq import roq_maxsim_4bit, ROQ_TRITON_AVAILABLE
+    from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
+    _ROQ_AVAILABLE = ROQ_TRITON_AVAILABLE
+except ImportError:
+    _ROQ_AVAILABLE = False
+
+try:
     from .hnsw_manager import HnswSegmentManager
 except ImportError:
     HnswSegmentManager = None
@@ -179,11 +206,6 @@ class GemHybridSegmentManager:
                     self._sealed_doc_ids.append(ids)
                 except Exception as e:
                     logger.error("Failed to load sealed segment %s: %s", seg_dir, e)
-
-    def _get_executor(self) -> ThreadPoolExecutor:
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=2)
-        return self._executor
 
     def __enter__(self):
         return self
@@ -362,11 +384,11 @@ class GemNativeSegmentManager:
         shard_path: str,
         dim: int,
         *,
-        n_fine: int = 256,
+        n_fine: int = 0,
         n_coarse: int = 32,
         max_degree: int = 32,
         gem_ef_construction: int = 200,
-        max_kmeans_iter: int = 30,
+        max_kmeans_iter: int = 15,
         ctop_r: int = 3,
         n_probes: int = 4,
         seed_batch_size: int = 256,
@@ -377,11 +399,17 @@ class GemNativeSegmentManager:
         healing_interval_s: float = 30.0,
         enable_shortcuts: bool = False,
         enable_wal: bool = True,
+        rerank_device: Optional[str] = None,
+        use_emd: bool = True,
+        dual_graph: bool = True,
+        roq_rerank: bool = False,
+        roq_bits: int = 4,
+        warmup_kernels: bool = True,
     ):
         if dim <= 0:
             raise ValueError(f"dim must be positive, got {dim}")
-        if n_fine <= 0:
-            raise ValueError(f"n_fine must be positive, got {n_fine}")
+        if n_fine < 0:
+            raise ValueError(f"n_fine must be non-negative (0=auto), got {n_fine}")
         if n_coarse <= 0:
             raise ValueError(f"n_coarse must be positive, got {n_coarse}")
         if max_degree <= 0:
@@ -401,6 +429,8 @@ class GemNativeSegmentManager:
         self._max_kmeans_iter = max_kmeans_iter
         self._ctop_r = ctop_r
         self._n_probes = n_probes
+        self._use_emd = use_emd
+        self._dual_graph = dual_graph
         self._seed_batch_size = seed_batch_size
         self._seal_size_threshold = seal_size_threshold
         self._seal_quality_threshold = seal_quality_threshold
@@ -445,6 +475,26 @@ class GemNativeSegmentManager:
             self._wal_writer = WalWriter(wal_path)
             self._wal_writer.open()
             self._checkpoint_mgr = CheckpointManager(self._shard_path / "checkpoints")
+
+        self._rerank_device: Optional[str] = rerank_device
+        self._doc_vectors: Dict[int, np.ndarray] = {}
+
+        self._roq_rerank = roq_rerank and _ROQ_AVAILABLE
+        self._doc_roq: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        self._quantizer = None
+        if self._roq_rerank:
+            if rerank_device is None:
+                self._rerank_device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._quantizer = RotationalQuantizer(RoQConfig(dim=dim, num_bits=roq_bits, seed=42))
+            logger.info("ROQ %d-bit reranking enabled (device=%s)", roq_bits, self._rerank_device)
+
+        if warmup_kernels and _WARMUP_AVAILABLE and self._rerank_device and self._rerank_device != "cpu":
+            warmup_triton_kernels(
+                device=self._rerank_device,
+                dim=dim,
+                include_roq=self._roq_rerank,
+                include_maxsim=_MAXSIM_AVAILABLE,
+            )
 
         self._compaction_thread: Optional[threading.Thread] = None
         self._compaction_stop = threading.Event()
@@ -556,8 +606,39 @@ class GemNativeSegmentManager:
                         ids = json.load(f)
                     self._sealed_segments.append(seg)
                     self._sealed_doc_ids.append(ids)
+                    self._restore_doc_vectors_from_segment(seg)
                 except Exception as e:
                     logger.error("Failed to load sealed segment %s: %s", seg_dir, e)
+
+    def _restore_doc_vectors_from_segment(self, seg):
+        """Load raw vectors from a sealed segment into _doc_vectors/_doc_roq for reranking."""
+        if self._rerank_device is None:
+            return
+        try:
+            doc_vecs = seg.get_doc_vectors()
+            if doc_vecs is not None:
+                for doc_id, vecs_arr in doc_vecs:
+                    fp32 = np.asarray(vecs_arr, dtype=np.float32)
+                    if self._roq_rerank:
+                        self._doc_roq[int(doc_id)] = self._quantize_doc_vectors(fp32)
+                    else:
+                        self._doc_vectors[int(doc_id)] = fp32
+                logger.debug(
+                    "Restored %d doc vector sets from sealed segment for reranking (roq=%s)",
+                    len(doc_vecs), self._roq_rerank,
+                )
+        except Exception as e:
+            logger.warning("Could not restore doc vectors from segment: %s", e)
+
+    def _quantize_doc_vectors(self, vecs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Quantize (n_tokens, dim) float32 vectors to ROQ 4-bit packed codes + meta.
+
+        Returns (codes, meta) where codes is (n_tokens, effective_dim//2) uint8
+        and meta is (n_tokens, 4) float32 [scale, offset, code_sum, norm_sq].
+        """
+        q = self._quantizer.quantize(vecs, store=False)
+        meta = self._quantizer.build_triton_meta(q, include_norm_sq=True)
+        return np.asarray(q["codes"], dtype=np.uint8), np.asarray(meta, dtype=np.float32)
 
     def _load_payloads(self):
         p = self._shard_path / "payloads.json"
@@ -597,6 +678,12 @@ class GemNativeSegmentManager:
                         self._seed_buffer_vecs.append(entry.vectors)
                         self._seed_buffer_ids.append(entry.external_id)
                         checkpoint_ids.add(entry.external_id)
+                    if self._rerank_device is not None:
+                        vecs_f32 = entry.vectors.astype(np.float32)
+                        if self._roq_rerank:
+                            self._doc_roq[entry.external_id] = self._quantize_doc_vectors(vecs_f32)
+                        else:
+                            self._doc_vectors[entry.external_id] = vecs_f32
                     if entry.payload is not None:
                         self._payloads[entry.external_id] = entry.payload
                 elif entry.op == WalOp.DELETE:
@@ -607,6 +694,12 @@ class GemNativeSegmentManager:
                         self._seed_buffer_vecs.append(entry.vectors)
                         self._seed_buffer_ids.append(entry.external_id)
                         checkpoint_ids.add(entry.external_id)
+                    if self._rerank_device is not None:
+                        vecs_f32 = entry.vectors.astype(np.float32)
+                        if self._roq_rerank:
+                            self._doc_roq[entry.external_id] = self._quantize_doc_vectors(vecs_f32)
+                        else:
+                            self._doc_vectors[entry.external_id] = vecs_f32
                     if entry.payload is not None:
                         self._payloads[entry.external_id] = entry.payload
                 elif entry.op == WalOp.UPDATE_PAYLOAD and entry.payload is not None:
@@ -644,11 +737,6 @@ class GemNativeSegmentManager:
             ctop_r=self._ctop_r, n_probes=self._n_probes,
         )
         self._codebook_trained = True
-
-    def _get_executor(self) -> ThreadPoolExecutor:
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=2)
-        return self._executor
 
     def _init_active_from_seed(self):
         """Train codebook from seed buffer and build the initial mutable graph."""
@@ -767,6 +855,10 @@ class GemNativeSegmentManager:
 
                 self._payloads[doc_id] = doc_payload
                 self._next_doc_id = max(self._next_doc_id, doc_id + 1)
+                if self._roq_rerank:
+                    self._doc_roq[doc_id] = self._quantize_doc_vectors(vecs)
+                elif self._rerank_device is not None:
+                    self._doc_vectors[doc_id] = vecs.copy()
 
                 if self._active is not None and self._active.is_ready():
                     self._active.insert(vecs, doc_id)
@@ -943,9 +1035,11 @@ class GemNativeSegmentManager:
             has_filter = bool(filters)
 
             qv = np.ascontiguousarray(query_vectors, dtype=np.float32)
+            _can_rerank = (self._roq_rerank and _ROQ_AVAILABLE) or (self._rerank_device and _MAXSIM_AVAILABLE)
+            fetch_k = ef if _can_rerank else k
 
             if self._active is not None and self._active.is_ready():
-                raw = self._active.search(qv, k=k, ef=ef)
+                raw = self._active.search(qv, k=fetch_k, ef=ef)
                 for doc_id, score in self._gem_to_similarity(raw):
                     if doc_id not in self._deleted_ids:
                         if not has_filter or self._match_filter_snapshot(doc_id, filters, payloads_snap):
@@ -955,7 +1049,7 @@ class GemNativeSegmentManager:
             for seg, seg_ids in zip(self._sealed_segments, self._sealed_doc_ids):
                 raw = seg.search(
                     qv,
-                    k=k, ef=ef, n_probes=n_probes,
+                    k=fetch_k, ef=ef, n_probes=n_probes,
                     enable_shortcuts=self._enable_shortcuts,
                 )
                 for doc_id, score in self._gem_to_similarity(raw):
@@ -964,8 +1058,134 @@ class GemNativeSegmentManager:
                             if doc_id not in all_results or score > all_results[doc_id]:
                                 all_results[doc_id] = score
 
+            if _can_rerank and all_results:
+                all_results = self._rerank_maxsim(qv, all_results, k)
+
             sorted_results = sorted(all_results.items(), key=lambda x: -x[1])
             return sorted_results[:k]
+
+    def _rerank_maxsim(
+        self,
+        query_vectors: np.ndarray,
+        candidate_results: Dict[int, float],
+        k: int,
+    ) -> Dict[int, float]:
+        """Rerank GEM proxy candidates using MaxSim (ROQ 4-bit or FP32)."""
+        if self._roq_rerank:
+            return self._rerank_maxsim_roq(query_vectors, candidate_results, k)
+        return self._rerank_maxsim_fp32(query_vectors, candidate_results, k)
+
+    def _rerank_maxsim_fp32(
+        self,
+        query_vectors: np.ndarray,
+        candidate_results: Dict[int, float],
+        k: int,
+    ) -> Dict[int, float]:
+        """Rerank using exact FP32 MaxSim (Triton/PyTorch)."""
+        candidate_ids = list(candidate_results.keys())
+        doc_vecs_list: List[np.ndarray] = []
+        valid_ids = []
+        for doc_id in candidate_ids:
+            vecs = self._doc_vectors.get(doc_id)
+            if vecs is not None:
+                doc_vecs_list.append(vecs)
+                valid_ids.append(doc_id)
+
+        if not valid_ids:
+            return candidate_results
+
+        device = torch.device(self._rerank_device)
+        dim = query_vectors.shape[-1]
+
+        max_tokens_raw = max(v.shape[0] for v in doc_vecs_list)
+        max_tokens = _next_power_of_2(max_tokens_raw)
+        n_docs = len(valid_ids)
+
+        D_np = np.zeros((n_docs, max_tokens, dim), dtype=np.float32)
+        d_mask_np = np.zeros((n_docs, max_tokens), dtype=np.float32)
+        for i, v in enumerate(doc_vecs_list):
+            t = v.shape[0]
+            D_np[i, :t] = v
+            d_mask_np[i, :t] = 1.0
+
+        q_tensor = torch.from_numpy(query_vectors).unsqueeze(0).to(device, non_blocking=True)
+        D = torch.from_numpy(D_np).to(device, non_blocking=True)
+        d_mask = torch.from_numpy(d_mask_np).to(device, non_blocking=True)
+
+        scores = fast_colbert_scores(q_tensor, D, documents_mask=d_mask).squeeze(0)
+
+        reranked: Dict[int, float] = {}
+        for i, doc_id in enumerate(valid_ids):
+            reranked[doc_id] = float(scores[i])
+
+        for doc_id, score in candidate_results.items():
+            if doc_id not in reranked:
+                reranked[doc_id] = score
+
+        return reranked
+
+    def _rerank_maxsim_roq(
+        self,
+        query_vectors: np.ndarray,
+        candidate_results: Dict[int, float],
+        k: int,
+    ) -> Dict[int, float]:
+        """Rerank using ROQ 4-bit quantized MaxSim (Triton GPU kernel)."""
+        candidate_ids = list(candidate_results.keys())
+        valid_ids = []
+        doc_codes_list = []
+        doc_meta_list = []
+        for doc_id in candidate_ids:
+            roq = self._doc_roq.get(doc_id)
+            if roq is not None:
+                codes, meta = roq
+                valid_ids.append(doc_id)
+                doc_codes_list.append(codes)
+                doc_meta_list.append(meta)
+
+        if not valid_ids:
+            return candidate_results
+
+        device = torch.device(self._rerank_device)
+
+        q_codes_np, q_meta_np = self._quantize_doc_vectors(query_vectors)
+        nb = q_codes_np.shape[1]
+        q_codes = torch.from_numpy(q_codes_np).unsqueeze(0).to(device)
+        q_meta = torch.from_numpy(q_meta_np).unsqueeze(0).to(device)
+
+        max_tokens_raw = max(c.shape[0] for c in doc_codes_list)
+        n_docs_raw = len(valid_ids)
+        max_tokens = _next_power_of_2(max_tokens_raw)
+        n_docs = _next_power_of_2(n_docs_raw)
+
+        d_codes_np = np.zeros((n_docs, max_tokens, nb), dtype=np.uint8)
+        d_meta_np = np.zeros((n_docs, max_tokens, 4), dtype=np.float32)
+        d_mask_np = np.zeros((n_docs, max_tokens), dtype=np.float32)
+
+        for i, (codes, meta) in enumerate(zip(doc_codes_list, doc_meta_list)):
+            t = codes.shape[0]
+            d_codes_np[i, :t] = codes
+            d_meta_np[i, :t] = meta
+            d_mask_np[i, :t] = 1.0
+
+        d_codes = torch.from_numpy(d_codes_np).to(device, non_blocking=True)
+        d_meta = torch.from_numpy(d_meta_np).to(device, non_blocking=True)
+        d_mask = torch.from_numpy(d_mask_np).to(device, non_blocking=True)
+
+        scores = roq_maxsim_4bit(
+            q_codes, q_meta, d_codes, d_meta,
+            documents_mask=d_mask,
+        ).squeeze(0)
+
+        reranked: Dict[int, float] = {}
+        for i, doc_id in enumerate(valid_ids):
+            reranked[doc_id] = float(scores[i])
+
+        for doc_id, score in candidate_results.items():
+            if doc_id not in reranked:
+                reranked[doc_id] = score
+
+        return reranked
 
     def search(
         self,
@@ -984,14 +1204,17 @@ class GemNativeSegmentManager:
         ef: int = 100,
         n_probes: Optional[int] = None,
     ) -> List[List[Tuple[int, float]]]:
-        """Batch search across all segments using parallel Rust execution."""
+        """Batch search across all segments with optional MaxSim reranking."""
         n_probes = n_probes if n_probes is not None else self._n_probes
         ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        use_rerank = (self._roq_rerank and _ROQ_AVAILABLE) or bool(self._rerank_device and _MAXSIM_AVAILABLE)
+        fetch_k = ef if use_rerank else k
+
         with ctx:
             all_query_results: List[List[Tuple[int, float]]] = [[] for _ in queries]
 
             for seg in self._sealed_segments:
-                batch_results = seg.search_batch(queries, k=k, ef=ef, n_probes=n_probes)
+                batch_results = seg.search_batch(queries, k=fetch_k, ef=ef, n_probes=n_probes)
                 for qi, res in enumerate(batch_results):
                     for doc_id, score in self._gem_to_similarity(res):
                         if doc_id not in self._deleted_ids and doc_id not in self._sealed_deleted_ids:
@@ -1000,7 +1223,7 @@ class GemNativeSegmentManager:
             if self._active is not None and self._active.is_ready():
                 for qi, query in enumerate(queries):
                     qv = query if query.ndim == 2 else query.reshape(1, -1)
-                    active_res = self._active.search(qv, k=k, ef=ef)
+                    active_res = self._active.search(qv, k=fetch_k, ef=ef)
                     for doc_id, score in self._gem_to_similarity(active_res):
                         if doc_id not in self._deleted_ids:
                             all_query_results[qi].append((doc_id, score))
@@ -1011,6 +1234,11 @@ class GemNativeSegmentManager:
                 for doc_id, score in all_query_results[qi]:
                     if doc_id not in merged or score > merged[doc_id]:
                         merged[doc_id] = score
+
+                if use_rerank and merged:
+                    qv = queries[qi] if queries[qi].ndim == 2 else queries[qi].reshape(1, -1)
+                    merged = self._rerank_maxsim(qv, merged, k)
+
                 sorted_res = sorted(merged.items(), key=lambda x: -x[1])
                 final.append(sorted_res[:k])
             return final
@@ -1080,9 +1308,12 @@ class GemNativeSegmentManager:
             ef_construction=self._gem_ef_construction,
             max_kmeans_iter=self._max_kmeans_iter,
             ctop_r=self._ctop_r,
+            use_emd=self._use_emd,
+            dual_graph=self._dual_graph,
         )
 
         sealed.save(str(seg_dir / "segment.gem"))
+        self._restore_doc_vectors_from_segment(sealed)
         if atomic_json_write is not None:
             atomic_json_write(seg_dir / "doc_ids.json", ids)
         else:
@@ -1183,6 +1414,11 @@ class GemNativeSegmentManager:
                     self._wal_writer.log_upsert(doc_id, vecs, doc_payload)
                 self._payloads[doc_id] = doc_payload
                 self._next_doc_id = max(self._next_doc_id, doc_id + 1)
+
+                if self._roq_rerank:
+                    self._doc_roq[doc_id] = self._quantize_doc_vectors(vecs)
+                elif self._rerank_device is not None:
+                    self._doc_vectors[doc_id] = vecs.copy()
 
                 if self._active is not None and self._active.is_ready():
                     self._active.upsert(vecs, doc_id)

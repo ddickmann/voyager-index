@@ -542,6 +542,88 @@ impl MutableGemSegment {
         (del_ratio, avg_deg, isolated_ratio, stale_rep_ratio)
     }
 
+    /// Deep graph connectivity report via BFS.
+    ///
+    /// Returns (n_components, giant_component_frac, cross_cluster_edge_ratio):
+    ///   - n_components: number of connected components among live nodes
+    ///   - giant_component_frac: fraction of live nodes in the largest component
+    ///   - cross_cluster_edge_ratio: fraction of edges that connect nodes in
+    ///     different coarse clusters (higher = better navigability)
+    pub fn graph_connectivity_report(&self) -> (usize, f64, f64) {
+        let total = self.id_tracker.n_total();
+        if total == 0 {
+            return (0, 0.0, 0.0);
+        }
+
+        let mut visited = vec![false; total];
+        let mut component_sizes: Vec<usize> = Vec::new();
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+        for start in 0..total {
+            if visited[start] || self.id_tracker.is_deleted(start as u32) {
+                continue;
+            }
+            let mut comp_size = 0usize;
+            queue.push_back(start);
+            visited[start] = true;
+            while let Some(node) = queue.pop_front() {
+                comp_size += 1;
+                for &nbr in &self.adjacency[node] {
+                    let n = nbr as usize;
+                    if n < total && !visited[n] && !self.id_tracker.is_deleted(nbr) {
+                        visited[n] = true;
+                        queue.push_back(n);
+                    }
+                }
+            }
+            component_sizes.push(comp_size);
+        }
+
+        let n_components = component_sizes.len();
+        let live_count: usize = component_sizes.iter().sum();
+        let giant = component_sizes.iter().copied().max().unwrap_or(0);
+        let giant_frac = if live_count > 0 {
+            giant as f64 / live_count as f64
+        } else {
+            0.0
+        };
+
+        // Cross-cluster edge ratio: fraction of edges connecting different clusters.
+        // Build node -> primary cluster mapping from postings.
+        let mut node_cluster = vec![u32::MAX; total];
+        for (c, members) in self.postings.lists.iter().enumerate() {
+            for &doc in members {
+                let d = doc as usize;
+                if d < total {
+                    node_cluster[d] = c as u32;
+                }
+            }
+        }
+        let mut total_edges = 0u64;
+        let mut cross_edges = 0u64;
+        for node in 0..total {
+            if self.id_tracker.is_deleted(node as u32) {
+                continue;
+            }
+            for &nbr in &self.adjacency[node] {
+                let n = nbr as usize;
+                if n < total && !self.id_tracker.is_deleted(nbr) {
+                    total_edges += 1;
+                    if node_cluster[node] != node_cluster[n] {
+                        cross_edges += 1;
+                    }
+                }
+            }
+        }
+        let cross_ratio = if total_edges > 0 {
+            cross_edges as f64 / total_edges as f64
+        } else {
+            0.0
+        };
+
+        (n_components, giant_frac, cross_ratio)
+    }
+
     /// Returns true if the graph needs healing based on drift thresholds.
     pub fn needs_healing(&self) -> bool {
         let (del_ratio, _avg_deg, isolated_ratio, stale_rep_ratio) = self.graph_quality_metrics();

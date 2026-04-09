@@ -1,27 +1,31 @@
 """
-QA Savage Test Suite -- Complete GEM Feature Coverage
-=====================================================
+QA Savage Test Suite -- GEM Feature Coverage
+============================================
 
-Exhaustive integration tests covering EVERY public API method across all GEM
-subsystems and all 4 Elite Innovations. Every assertion is quantitative.
-No feature untested. Data or it didn't happen.
+Integration tests covering core GEM subsystems and Elite Innovations.
+Assertions are quantitative where feasible; GPU / Triton / router sections
+require their respective native extensions and are skipped when unavailable.
+
+NOTE: Tests guarded by ``GEM_AVAILABLE``, ``ROUTER_AVAILABLE``, ``TORCH_AVAILABLE``,
+and ``TRITON_AVAILABLE`` will be skipped in environments without those
+dependencies.  Run ``pip install -e src/kernels/gem_index`` and
+``pip install -e src/kernels/gem_router`` to enable full coverage.
 
 Sections:
   1. Sealed GemSegment (core)
   2. Mutable PyMutableGemSegment
-  3. GPU qCH Scorer (Innovation 3)
+  3. GPU qCH Scorer (Innovation 3)    [requires CUDA + Triton]
   4. Filter-Aware Routing (Innovation 1)
   5. Multi-Index Ensemble / RRF (Innovation 5)
   6. Self-Healing Graph (Innovation 4)
   7. Persistence
-  8. Router / Codebook
+  8. Router / Codebook                [requires latence_gem_router]
   9. Edge Cases & Stress
  10. Quantitative Benchmarks
 """
 
 from __future__ import annotations
 
-import struct
 import tempfile
 import time
 from pathlib import Path
@@ -34,7 +38,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 try:
-    from latence_gem_index import GemSegment, PyMutableGemSegment, PyEnsembleGemSegment
+    from latence_gem_index import GemSegment, PyEnsembleGemSegment, PyMutableGemSegment
     GEM_AVAILABLE = True
 except ImportError:
     GEM_AVAILABLE = False
@@ -55,9 +59,9 @@ except ImportError:
 
 try:
     from voyager_index._internal.inference.index_core.triton_qch_kernel import (
+        TRITON_AVAILABLE,
         qch_max_gather_gpu,
         qch_max_gather_torch,
-        TRITON_AVAILABLE,
     )
     QCH_KERNEL_AVAILABLE = True
 except ImportError:
@@ -209,6 +213,14 @@ class TestSealedCore:
         recall_low = len(set(d for d, _ in r_low) & bf_ids) / max(len(bf_ids), 1)
         recall_high = len(set(d for d, _ in r_high) & bf_ids) / max(len(bf_ids), 1)
         assert recall_high >= recall_low - 0.1
+
+    # -- graph_connectivity_report --
+
+    def test_connectivity_report(self):
+        seg, *_ = _build_sealed(n_docs=50, vpd=8, dual_graph=True)
+        n_comp, giant_frac = seg.graph_connectivity_report()
+        assert n_comp >= 1
+        assert 0.0 < giant_frac <= 1.0, f"giant component fraction: {giant_frac}"
 
     # -- search_with_stats --
 
@@ -487,7 +499,7 @@ class TestGpuQchSavage:
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="No GPU")
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="No Triton")
     def test_over_2048_fallback(self):
-        n_docs, n_q, n_fine = 2, 4, 32
+        n_q, n_fine = 4, 32
         rng = np.random.default_rng(55)
         scores = rng.standard_normal(n_q * n_fine).astype(np.float32)
         codes = rng.integers(0, n_fine, size=3000).astype(np.int32)
@@ -699,7 +711,7 @@ class TestEnsembleRRFSavage:
 @pytest.mark.skipif(not GEM_AVAILABLE, reason="latence_gem_index not installed")
 class TestSelfHealingSavage:
 
-    @pytest.mark.parametrize("pct", [10, 30, 50])
+    @pytest.mark.parametrize("pct", [10, 30, 50, 70, 80])
     def test_heal_at_delete_pct(self, pct):
         seg, _, ids, _ = _build_mutable(n_docs=60, vpd=8)
         n_del = int(len(ids) * pct / 100)
@@ -747,6 +759,34 @@ class TestSelfHealingSavage:
         q = _query()
         r = seg.search(q, k=5, ef=32)
         assert len(r) > 0
+
+    def test_connectivity_report_after_heal(self):
+        """graph_connectivity_report returns meaningful component/edge stats."""
+        seg, _, ids, _ = _build_mutable(n_docs=60, vpd=8)
+        for d in ids[:30]:
+            seg.delete(d)
+        for _ in range(3):
+            seg.heal()
+        n_comp, giant_frac, cross_ratio = seg.graph_connectivity_report()
+        assert n_comp >= 1, "should have at least one component"
+        assert 0.0 < giant_frac <= 1.0, f"giant frac out of range: {giant_frac}"
+        assert 0.0 <= cross_ratio <= 1.0, f"cross ratio out of range: {cross_ratio}"
+
+    def test_extreme_delete_90_pct(self):
+        """Smoke test: 90% deletes + heal + compact should not crash."""
+        seg, _, ids, _ = _build_mutable(n_docs=100, vpd=4)
+        n_del = int(len(ids) * 0.9)
+        for d in ids[:n_del]:
+            seg.delete(d)
+        for _ in range(5):
+            seg.heal()
+        seg.compact()
+        assert seg.delete_ratio() == 0.0
+        q = _query()
+        r = seg.search(q, k=5, ef=32)
+        deleted_set = set(ids[:n_del])
+        for d, _ in r:
+            assert d not in deleted_set
 
 
 # ###########################################################################

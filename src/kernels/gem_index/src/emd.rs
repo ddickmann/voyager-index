@@ -1,7 +1,7 @@
 use latence_gem_router::codebook::TwoStageCodebook;
 use latence_gem_router::router::FlatDocCodes;
 
-use crate::network_simplex::emd_sinkhorn;
+use crate::network_simplex::{emd_sinkhorn, emd_sinkhorn_f32};
 
 /// Compute IP-based asymmetric Chamfer distance between two documents
 /// using their centroid codes. For each code in doc_a, finds the maximum
@@ -154,16 +154,36 @@ fn build_histogram(codes: &[u16], n_fine: usize) -> (Vec<u16>, Vec<f64>) {
 ///
 /// 1. Reduces each document's code sequence to a centroid histogram (unique centroids + weights).
 /// 2. Extracts the relevant sub-matrix from the precomputed centroid distance table.
-/// 3. Solves the transport problem via network simplex.
+/// 3. Solves the transport problem via Sinkhorn iterations.
 ///
-/// The cost matrix uses L2 distances between centroids (stored in `codebook.centroid_dists`).
-/// For L2-normalized centroids: d_X(a,b) = centroid_dists[a][b] (already L2 distance).
+/// When `fast=true` (graph construction), uses f32 Sinkhorn with relaxed convergence
+/// (check every 5 iters, tol=1e-4, max 30 iters). This is ~2x faster than the precise
+/// path and sufficient for ranking.
 ///
-/// Returns a distance value (lower = more similar). Satisfies triangle inequality.
+/// When `fast=false`, uses f64 Sinkhorn with strict convergence
+/// (check every 10 iters, tol=1e-6, max 50 iters).
 pub fn qemd_between_docs(
     codebook: &TwoStageCodebook,
     codes_a: &[u16],
     codes_b: &[u16],
+) -> f32 {
+    qemd_between_docs_inner(codebook, codes_a, codes_b, false)
+}
+
+/// Fast qEMD for graph construction (f32, relaxed convergence).
+pub fn qemd_between_docs_fast(
+    codebook: &TwoStageCodebook,
+    codes_a: &[u16],
+    codes_b: &[u16],
+) -> f32 {
+    qemd_between_docs_inner(codebook, codes_a, codes_b, true)
+}
+
+fn qemd_between_docs_inner(
+    codebook: &TwoStageCodebook,
+    codes_a: &[u16],
+    codes_b: &[u16],
+    fast: bool,
 ) -> f32 {
     if codes_a.is_empty() || codes_b.is_empty() {
         return f32::MAX;
@@ -178,26 +198,42 @@ pub fn qemd_between_docs(
 
     let na = ids_a.len();
     let nb = ids_b.len();
-
-    // Extract sub-matrix of centroid distances for the relevant centroids
     let dists = &codebook.centroid_dists;
-    let mut cost_matrix: Vec<f64> = Vec::with_capacity(na * nb);
-    for &ca in &ids_a {
-        let row_base = (ca as usize) * n_fine;
-        for &cb in &ids_b {
-            let d = if row_base + (cb as usize) < dists.len() {
-                dists[row_base + cb as usize] as f64
-            } else {
-                1.0 // fallback
-            };
-            cost_matrix.push(d);
-        }
-    }
 
-    // Log-domain Sinkhorn: lambda=20 for ranking accuracy, max 50 iters with
-    // early stopping (tol=1e-6, checked every 10 iters). Typical convergence: 10-30 iters.
-    let result = emd_sinkhorn(&weights_a, &weights_b, &cost_matrix, 20.0, 50);
-    result as f32
+    if fast {
+        let mut cost_f32: Vec<f32> = Vec::with_capacity(na * nb);
+        let mut weights_a_f32: Vec<f32> = Vec::with_capacity(na);
+        let mut weights_b_f32: Vec<f32> = Vec::with_capacity(nb);
+        for &w in &weights_a { weights_a_f32.push(w as f32); }
+        for &w in &weights_b { weights_b_f32.push(w as f32); }
+        for &ca in &ids_a {
+            let row_base = (ca as usize) * n_fine;
+            for &cb in &ids_b {
+                let d = if row_base + (cb as usize) < dists.len() {
+                    dists[row_base + cb as usize]
+                } else {
+                    1.0
+                };
+                cost_f32.push(d);
+            }
+        }
+        emd_sinkhorn_f32(&weights_a_f32, &weights_b_f32, &cost_f32, 20.0, 30, 5, 1e-4)
+    } else {
+        let mut cost_matrix: Vec<f64> = Vec::with_capacity(na * nb);
+        for &ca in &ids_a {
+            let row_base = (ca as usize) * n_fine;
+            for &cb in &ids_b {
+                let d = if row_base + (cb as usize) < dists.len() {
+                    dists[row_base + cb as usize] as f64
+                } else {
+                    1.0
+                };
+                cost_matrix.push(d);
+            }
+        }
+        let result = emd_sinkhorn(&weights_a, &weights_b, &cost_matrix, 20.0, 50);
+        result as f32
+    }
 }
 
 /// Symmetric qEMD: average of both directions.
@@ -214,6 +250,7 @@ pub fn qemd_symmetric(
 
 /// Choose between qEMD and qCH distance based on `use_emd` flag.
 /// This is the primary distance function for graph construction.
+/// Uses the fast f32 Sinkhorn path for qEMD (sufficient for ranking).
 #[inline]
 pub fn construction_distance(
     codebook: &TwoStageCodebook,
@@ -222,7 +259,7 @@ pub fn construction_distance(
     use_emd: bool,
 ) -> f32 {
     if use_emd {
-        qemd_between_docs(codebook, codes_a, codes_b)
+        qemd_between_docs_fast(codebook, codes_a, codes_b)
     } else {
         qch_proxy_between_docs(codebook, codes_a, codes_b)
     }

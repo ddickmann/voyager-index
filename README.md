@@ -36,6 +36,8 @@ results = idx.search(query_vectors, k=10)
 - **Semantic shortcuts** — optional learned shortcut edges from query-positive training pairs
 - **Hybrid dense+sparse** — BM25 + vector fusion via `SearchPipeline`
 - **Triton MaxSim** — exact late-interaction scoring with FP16/INT8/FP8/RoQ profiles
+- **ROQ 4-bit reranking** — rotational quantization with fused Triton kernel (~8x memory reduction, p50 2.8ms)
+- **Pre-autotune kernel warmup** — vLLM-style Triton kernel pre-compilation at init for zero cold-start latency
 - **Tabu Search solver** — constraint-aware context packing as an alternative to RRF
 - **Docker + FastAPI** — production reference server with CRUD, preprocessing, and optimization endpoints
 
@@ -102,14 +104,22 @@ from voyager_index import Index, IndexBuilder
 # Simple creation
 idx = Index("my_index", dim=128, engine="gem", seed_batch_size=64)
 
-# Builder pattern
+# Builder pattern with GPU reranking
 idx = (IndexBuilder("my_index", dim=128)
        .with_gem(seed_batch_size=64, n_fine=128)
+       .with_gpu_rerank(device="cuda")      # FP32 MaxSim reranking
        .with_wal(enabled=True)
+       .build())
+
+# Builder with ROQ 4-bit compressed reranking (~8x less memory)
+idx = (IndexBuilder("my_index", dim=128)
+       .with_gem(seed_batch_size=64)
+       .with_roq(bits=4)                    # ROQ 4-bit + CUDA rerank
        .build())
 
 # CRUD
 idx.add(embeddings, ids=[1, 2, 3], payloads=[{"cat": "A"}, ...])
+idx.upsert(new_vecs, ids=[2, 3], payloads=[{"cat": "X"}, ...])  # insert or replace
 results = idx.search(query, k=10)          # -> List[SearchResult]
 idx.update_payload(1, {"cat": "B"})
 idx.delete([2])
@@ -131,9 +141,32 @@ idx.snapshot("backup.tar.gz")              # full snapshot
 - **Self-healing graphs**: `heal()` on mutable segments detects stale cluster representatives, reconnects isolated nodes, and cleans up edges to deleted documents; background healing thread in the segment manager
 - **Multi-modal ensemble**: `PyEnsembleGemSegment` builds per-modality codebooks and graphs, searches each independently, and fuses results via 1-based Reciprocal Rank Fusion
 
+### Reranking Profiles
+
+GEM's two-stage architecture uses fast qCH proxy scoring for graph traversal,
+then reranks the top candidates with exact late-interaction scoring.  Three
+reranking profiles are available:
+
+| Profile | Latency (p50) | Memory | How to enable |
+|---|---|---|---|
+| Proxy only (qCH) | ~0.3 ms | baseline | default (no `rerank_device`) |
+| FP32 MaxSim (Triton) | ~1.4 ms | 512 B/token | `rerank_device="cuda"` |
+| ROQ 4-bit (Triton) | ~2.8 ms | ~68 B/token | `roq_rerank=True, roq_bits=4` |
+
+Latencies measured on a single A100 (500 docs, 32 tokens/doc, dim=128).
+The FP32 and ROQ paths include vectorized NumPy batch stacking, bulk GPU
+transfer, and shape-bucketed Triton autotune for stable kernel selection.
+Triton kernels are pre-compiled at initialization (vLLM-style warmup) so
+the first query sees no compilation overhead.
+
+### Full-Scale Benchmarks (1M+ docs)
+
+> Comprehensive benchmarks at scale (1M documents x 1024 tokens, recall-latency
+> Pareto curves, memory scaling, build time extrapolation) are in progress and
+> will be published here shortly.
+
 ### Future Work
 
-- Full-scale benchmarks at 1M+ documents
 - Learned search policy for adaptive ef/n_probes (trained model, deferred)
 
 ## Additional Components
@@ -205,10 +238,10 @@ Supported ColPali models:
 
 | Profile | Default | Notes |
 |---|---|---|
-| Exact (FP16) | Yes | Triton MaxSim, truthful baseline |
+| Exact (FP32/FP16) | Yes | Triton MaxSim, truthful baseline |
 | Fast (INT8) | Opt-in | Fused Triton MaxSim |
-| FP8 | No | Experimental |
-| RoQ4 | No | Memory saver |
+| FP8 | Experimental | Under evaluation |
+| ROQ 4-bit | Opt-in | Fused Triton kernel, ~8x memory reduction vs FP32 |
 
 ## License
 

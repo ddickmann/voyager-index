@@ -103,6 +103,8 @@ class SearchService:
         self._journal_root.mkdir(parents=True, exist_ok=True)
         self.request_count = 0
         self.total_latency = 0.0
+        self.nodes_visited_total = 0
+        self.distance_comps_total = 0
         self.collections: Dict[str, CollectionRuntime] = {}
         self.load_failures: Dict[str, str] = {}
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -118,10 +120,14 @@ class SearchService:
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _record_search_metrics(self, elapsed_ms: float) -> None:
+    def _record_search_metrics(
+        self, elapsed_ms: float, nodes_visited: int = 0, distance_comps: int = 0,
+    ) -> None:
         with self._metrics_lock:
             self.request_count += 1
             self.total_latency += elapsed_ms / 1000.0
+            self.nodes_visited_total += nodes_visited
+            self.distance_comps_total += distance_comps
 
     def _increment_filter_scan_limit_hits(self) -> None:
         with self._metrics_lock:
@@ -1954,6 +1960,8 @@ class SearchService:
             request_count = self.request_count
             total_latency = self.total_latency
             filter_scan_limit_hits = self.filter_scan_limit_hits
+            nodes_visited_total = self.nodes_visited_total
+            distance_comps_total = self.distance_comps_total
         with self._collections_lock:
             collection_kinds = {
                 name: runtime.kind.value
@@ -1962,6 +1970,8 @@ class SearchService:
         return {
             "request_count": request_count,
             "total_latency": total_latency,
+            "nodes_visited_total": nodes_visited_total,
+            "distance_comps_total": distance_comps_total,
             "collections_total": len(collection_kinds),
             "points_total": self.total_points(),
             "failed_collection_loads": len(readiness["failed_collection_loads"]),

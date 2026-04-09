@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.2 — Performance & API Polish
+
+Optimization-focused release delivering production-grade reranking latency,
+quantized reranking, and API surface improvements.
+
+### Graph Construction
+- qEMD graph construction with f32 Sinkhorn solver + rayon parallelism + ScoreCache memoization
+- Dual-graph build: per-cluster local graphs with cross-cluster bridge enforcement
+
+### Triton Kernels
+- ROQ 4-bit v2 Triton kernel with document tiling, FP32 nibble arithmetic, and optional mask constexpr
+- Shape bucketing (power-of-2 padding) for Triton autotune stability across variable-length documents
+- Pre-autotune kernel warmup at init (vLLM-style) — eliminates first-query compilation overhead
+
+### Reranking Performance
+- Vectorized rerank data-prep: NumPy batch stacking + bulk `non_blocking` GPU transfer
+- FP32 MaxSim rerank latency: 3.57 ms -> 1.40 ms p50 (2.6x improvement)
+- ROQ 4-bit rerank latency: 7.72 ms -> 2.82 ms p50 (2.7x improvement)
+- Eliminated double-padding in FP32 MaxSim path (CPU-side power-of-2 pre-pad)
+
+### API
+- `Index.upsert()` method for insert-or-replace by document ID
+- `IndexBuilder.with_gpu_rerank(device)` for FP32 Triton MaxSim reranking
+- `IndexBuilder.with_roq(bits, device)` for ROQ compressed reranking
+- Documented all passthrough kwargs (`rerank_device`, `roq_rerank`, `roq_bits`,
+  `use_emd`, `dual_graph`, `warmup_kernels`, `seed_batch_size`) in `Index.__init__`
+
+### Documentation
+- README: reranking profiles table, pre-autotune warmup feature, full-scale benchmark placeholder
+- CHANGELOG: full optimization audit trail
+
+---
+
 ## 0.2.0 — Elite Innovation Layer
 
 Production-hardened release adding four innovations that extend the GEM graph

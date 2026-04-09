@@ -24,6 +24,8 @@ import torch
 import triton
 import triton.language as tl
 
+from .kernel_warmup import _next_power_of_2
+
 logger = logging.getLogger(__name__)
 
 TRITON_AVAILABLE = True
@@ -684,13 +686,32 @@ def fast_colbert_scores(
     if Q.dim() != 3 or D.dim() != 3:
         raise ValueError("queries_embeddings and documents_embeddings must be 3D: (A/B, S/T, H)")
 
-    A, S, H = Q.shape
-    B, T, H_D = D.shape
+    A, S_raw, H = Q.shape
+    B, T_raw, H_D = D.shape
 
     if H != H_D:
         raise ValueError(f"Embedding dimensions must match: Q={H}, D={H_D}")
 
     device = Q.device
+
+    S = _next_power_of_2(S_raw, minimum=8)
+    T = _next_power_of_2(T_raw, minimum=32)
+
+    if S > S_raw:
+        Q = torch.nn.functional.pad(Q, (0, 0, 0, S - S_raw))
+        if queries_mask is not None:
+            queries_mask = torch.nn.functional.pad(queries_mask, (0, S - S_raw))
+        else:
+            queries_mask = torch.ones(A, S, device=device, dtype=torch.float32)
+            queries_mask[:, S_raw:] = 0.0
+
+    if T > T_raw:
+        D = torch.nn.functional.pad(D, (0, 0, 0, T - T_raw))
+        if documents_mask is not None:
+            documents_mask = torch.nn.functional.pad(documents_mask, (0, T - T_raw))
+        else:
+            documents_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+            documents_mask[:, T_raw:] = 0.0
 
     # FP16 is crucial for performance
     Qh = Q.to(torch.float16)

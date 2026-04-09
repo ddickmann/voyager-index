@@ -104,7 +104,7 @@ Sealed (read-only) GEM graph segment.
 | Method | Signature |
 |---|---|
 | `build()` | `(all_vectors, doc_ids, doc_offsets, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3, use_emd=False, dual_graph=True)` |
-| `search()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False, filter=None)` → `List[(doc_id, score)]` |
+| `search()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False, filter=None, min_cluster_ratio=0.01)` → `List[(doc_id, score)]` |
 | `search_with_stats()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False)` → `(results, (nodes_visited, distance_computations))` |
 | `search_batch()` | `(queries, k=10, ef=100, n_probes=4, enable_shortcuts=False)` → `List[List[(doc_id, score)]]` |
 | `brute_force_proxy()` | `(query_vectors, k=10)` → `List[(doc_id, score)]` — exhaustive qCH ranking (oracle baseline) |
@@ -117,12 +117,17 @@ Sealed (read-only) GEM graph segment.
 | `get_codebook_centroids()` | → `ndarray (n_fine, dim)` |
 | `get_idf()` | → `ndarray (n_fine,)` |
 | `get_flat_codes()` | → `(codes, offsets, lengths)` |
+| `graph_connectivity_report()` | → `(n_components, giant_component_frac)` — BFS connectivity analysis |
 | `n_docs()` | Number of documents |
 | `n_nodes()` | Number of graph nodes |
 | `n_edges()` | Total directed edges |
 | `dim()` | Vector dimension |
 | `is_ready()` | Whether segment is built/loaded |
 | `total_shortcuts()` | Number of shortcut edges |
+
+**`search()` parameters:**
+- `filter`: list of `(field, value)` pairs for filter-aware routing (AND semantics)
+- `min_cluster_ratio`: when filtering, skip clusters where fewer than this fraction of docs match (selectivity-aware pruning, default 0.01)
 
 ### `PyMutableGemSegment`
 
@@ -141,6 +146,7 @@ Writable GEM segment with CRUD and self-healing support.
 | `heal()` | Local graph repair: fix stale reps, reconnect isolated nodes, clean edges |
 | `needs_healing()` | → `bool` — drift detection based on quality thresholds |
 | `graph_quality_metrics()` | → `(delete_ratio, avg_degree, isolated_ratio, stale_rep_ratio)` |
+| `graph_connectivity_report()` | → `(n_components, giant_frac, cross_cluster_edge_ratio)` — BFS connectivity with cross-cluster analysis |
 | `n_live()` | Live (non-deleted) count |
 | `n_nodes()` | Total nodes including deleted |
 | `n_edges()` | Total directed edges |
