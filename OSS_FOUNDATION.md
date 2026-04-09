@@ -57,6 +57,11 @@ treated as internal compatibility paths, not the long-term OSS contract.
   - `nemotron_colembed`
 - reference FastAPI service under `voyager_index.server`, with deploy assets under `deploy/reference-api/`
 - the `voyager-index-server` CLI entrypoint under `voyager_index.server`
+- filter-aware multi-vector routing via `GemSegment.set_doc_payloads()` and `search(filter=...)`
+- optional GPU-accelerated qCH proxy scoring via `GpuQchScorer` (requires PyTorch; Triton optional)
+- self-healing mutable graph segments via `PyMutableGemSegment.heal()` and `needs_healing()`
+- multi-modal ensemble indexing via `PyEnsembleGemSegment` with Reciprocal Rank Fusion
+- background healing and compaction threads in `GemNativeSegmentManager`
 
 ## Default OSS Production Path
 

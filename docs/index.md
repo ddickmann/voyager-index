@@ -14,7 +14,10 @@ than HNSW at 1024-token sequence length.
 | Search @ 1024 tokens | **1.3 ms** | 67 ms |
 | CRUD operations | Insert, delete, upsert, compact | Varies |
 | Crash recovery | WAL + checkpointing | Varies |
-| Segment lifecycle | Sealed + active | Varies |
+| Segment lifecycle | Sealed + active with auto-healing | Varies |
+| Filtered search | Cluster-level bitmap pruning | Post-filter only |
+| GPU scoring | Optional Triton qCH kernel | N/A |
+| Multi-modal | Ensemble with per-modality graphs | N/A |
 
 ## Quick Example
 
@@ -37,15 +40,20 @@ idx.close()
 │  add() / search() / delete() / scroll()     │
 ├─────────────────────────────────────────────┤
 │          GemNativeSegmentManager            │
-│  WAL / checkpoint / compaction / sealing    │
+│  WAL / checkpoint / compaction / healing    │
 ├──────────────────┬──────────────────────────┤
 │  Active Mutable  │  Sealed GEM Segments     │
-│  (insert/delete) │  (read-only, optimized)  │
+│  insert / delete │  read-only / optimized   │
+│  heal / compact  │  filter-aware search     │
 ├──────────────────┴──────────────────────────┤
 │         latence_gem_index (Rust/PyO3)       │
-│  graph.rs / search.rs / mutable.rs / ...    │
+│  GemSegment · MutableGemSegment · Ensemble  │
+│  graph · search · heal · persistence        │
 ├─────────────────────────────────────────────┤
 │         latence_gem_router (Rust/PyO3)      │
-│  codebook / qCH scoring / cluster routing   │
+│  codebook · qCH scoring · filter bitmaps   │
+├─────────────────────────────────────────────┤
+│        Optional: GPU qCH (Triton/PyTorch)   │
+│        GpuQchScorer · autotuned kernel      │
 └─────────────────────────────────────────────┘
 ```

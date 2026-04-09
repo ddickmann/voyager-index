@@ -34,6 +34,7 @@ from .models import (
     PointVector,
     RenderDocumentsRequest,
     ScoredPoint,
+    ScreeningMode,
     SearchRequest,
     SearchResponse,
     SearchStrategy,
@@ -1590,13 +1591,17 @@ class SearchService:
 
                 candidate_ids = self._candidate_ids_for_filter(runtime, request.filter)
                 screening_profile: Dict[str, Any] = {}
-                if request.strategy == SearchStrategy.OPTIMIZED:
+                skip_screening = request.screening_mode == ScreeningMode.NONE
+                if request.strategy == SearchStrategy.OPTIMIZED and not skip_screening:
                     candidate_ids, screening_profile = self._multimodal_candidate_factory(
                         runtime,
                         request,
                         query_embedding,
                         candidate_ids,
                     )
+                if skip_screening:
+                    screening_profile["skipped"] = True
+                    screening_profile["screening_mode"] = "none"
                 multimodal_mode = self._multimodal_optimize_mode(request)
                 explicit_multimodal_mode = request.multimodal_optimize_mode not in (None, MultimodalOptimizeMode.AUTO)
                 if (

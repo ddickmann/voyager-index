@@ -1,0 +1,69 @@
+{
+  "config": {
+    "n_docs": 100,
+    "dim": 32,
+    "vecs_per_doc": 16,
+    "n_queries": 200,
+    "k": 10,
+    "ef": 64,
+    "n_probes": 2,
+    "gem_params": {
+      "n_fine": 16,
+      "n_coarse": 4,
+      "max_degree": 8,
+      "ef_construction": 64,
+      "max_kmeans_iter": 10,
+      "ctop_r": 2
+    }
+  },
+  "thread_results": [
+    {
+      "n_threads": 1,
+      "n_queries": 200,
+      "wall_time_s": 0.0177,
+      "throughput_qps": 11296.87,
+      "p50_ms": 0.068,
+      "p95_ms": 0.08,
+      "p99_ms": 0.092,
+      "mean_ms": 0.074,
+      "min_ms": 0.047,
+      "max_ms": 1.171
+    },
+    {
+      "n_threads": 2,
+      "n_queries": 200,
+      "wall_time_s": 0.0089,
+      "throughput_qps": 22575.59,
+      "p50_ms": 0.06,
+      "p95_ms": 0.086,
+      "p99_ms": 0.154,
+      "mean_ms": 0.067,
+      "min_ms": 0.046,
+      "max_ms": 1.044
+    },
+    {
+      "n_threads": 4,
+      "n_queries": 200,
+      "wall_time_s": 0.0078,
+      "throughput_qps": 25607.76,
+      "p50_ms": 0.109,
+      "p95_ms": 0.195,
+      "p99_ms": 0.253,
+      "mean_ms": 0.111,
+      "min_ms": 0.049,
+      "max_ms": 1.053
+    },
+    {
+      "n_threads": 8,
+      "n_queries": 200,
+      "wall_time_s": 0.0092,
+      "throughput_qps": 21774.63,
+      "p50_ms": 0.244,
+      "p95_ms": 0.459,
+      "p99_ms": 1.501,
+      "mean_ms": 0.27,
+      "min_ms": 0.048,
+      "max_ms": 1.744
+    }
+  ]
+}

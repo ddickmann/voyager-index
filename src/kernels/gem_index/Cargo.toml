@@ -1,9 +1,9 @@
 [package]
 name = "latence-gem-index"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Latence Team"]
-description = "Native GEM graph index for multi-vector retrieval (ColBERT/ColPali)"
+description = "Native GEM graph index for multi-vector retrieval — filter routing, GPU qCH, self-healing graphs, multi-modal ensembles"
 license = "Apache-2.0"
 
 [lib]
@@ -27,6 +27,7 @@ memmap2 = "0.9"
 bit-set = "0.8"
 anyhow = "1"
 tempfile = "3"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

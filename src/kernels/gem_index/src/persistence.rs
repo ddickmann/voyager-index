@@ -12,6 +12,7 @@ use crate::graph::CsrAdjacency;
 
 const MAGIC: &[u8; 4] = b"GEMS";
 const VERSION: u32 = 1;
+const COMPAT_VERSIONS: &[u32] = &[1];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SegmentData {
@@ -114,7 +115,7 @@ pub fn load_segment(path: &Path) -> Result<SegmentData, PersistError> {
     let mut ver_buf = [0u8; 4];
     r.read_exact(&mut ver_buf)?;
     let version = u32::from_le_bytes(ver_buf);
-    if version != VERSION {
+    if !COMPAT_VERSIONS.contains(&version) {
         return Err(PersistError::BadVersion(version));
     }
 
@@ -163,7 +164,7 @@ fn load_segment_mmap(file: &fs::File, file_len: usize) -> Result<SegmentData, Pe
     }
 
     let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if version != VERSION {
+    if !COMPAT_VERSIONS.contains(&version) {
         return Err(PersistError::BadVersion(version));
     }
 
@@ -208,6 +209,13 @@ fn load_segment_mmap(file: &fs::File, file_len: usize) -> Result<SegmentData, Pe
 
     let segment: SegmentData = bincode::deserialize(data_buf)?;
     Ok(segment)
+}
+
+/// Migrate a segment file to the current format version.
+/// Reads from `src`, upgrades in-memory, writes to `dst` with current VERSION.
+pub fn migrate_segment(src: &Path, dst: &Path) -> Result<(), PersistError> {
+    let data = load_segment(src)?;
+    save_segment(&data, dst)
 }
 
 #[cfg(test)]
@@ -261,5 +269,58 @@ mod tests {
         assert_eq!(loaded.dim, 32);
         assert_eq!(loaded.doc_ids, vec![100, 200, 300]);
         assert_eq!(loaded.levels[0].n_nodes(), 3);
+    }
+
+    #[test]
+    fn test_migration_roundtrip() {
+        let data = SegmentData {
+            dim: 32,
+            max_degree: 16,
+            levels: vec![CsrAdjacency::from_adj_lists(&[vec![1, 2], vec![0, 2], vec![0, 1]])],
+            shortcuts: vec![Vec::new(); 3],
+            node_levels: vec![0, 0, 0],
+            entry_point: 0,
+            codebook: TwoStageCodebook {
+                cquant: vec![0.0; 16],
+                n_fine: 2,
+                dim: 8,
+                cindex_labels: vec![0, 1],
+                n_coarse: 2,
+                centroid_dists: vec![0.0, 1.0, 1.0, 0.0],
+                idf: vec![1.0, 1.0],
+            },
+            doc_profiles: vec![
+                DocProfile { centroid_ids: vec![0], ctop: vec![0] },
+                DocProfile { centroid_ids: vec![1], ctop: vec![1] },
+                DocProfile { centroid_ids: vec![0, 1], ctop: vec![0, 1] },
+            ],
+            doc_ids: vec![100, 200, 300],
+            flat_codes: FlatDocCodes {
+                codes: vec![0, 1, 0, 1],
+                offsets: vec![0, 1, 2],
+                lengths: vec![1, 1, 2],
+            },
+            postings: ClusterPostings {
+                lists: vec![vec![0, 2], vec![1, 2]],
+                cluster_reps: vec![Some(0), Some(1)],
+            },
+            ctop_r: 2,
+        };
+
+        let dir = tempdir().unwrap();
+        let src_path = dir.path().join("original.gem");
+        let dst_path = dir.path().join("migrated.gem");
+
+        save_segment(&data, &src_path).unwrap();
+        migrate_segment(&src_path, &dst_path).unwrap();
+
+        let migrated = load_segment(&dst_path).unwrap();
+
+        assert_eq!(migrated.dim, data.dim);
+        assert_eq!(migrated.max_degree, data.max_degree);
+        assert_eq!(migrated.doc_ids, data.doc_ids);
+        assert_eq!(migrated.entry_point, data.entry_point);
+        assert_eq!(migrated.ctop_r, data.ctop_r);
+        assert_eq!(migrated.levels[0].n_nodes(), data.levels[0].n_nodes());
     }
 }

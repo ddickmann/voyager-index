@@ -86,6 +86,8 @@ impl MutableGemSegment {
             });
         }
 
+        postings.compute_medoids(&codebook, &flat_codes);
+
         let mut id_tracker = IdTracker::new();
         for &id in doc_ids {
             id_tracker.add(id);
@@ -341,6 +343,8 @@ impl MutableGemSegment {
         self.all_vectors = new_vectors;
         self.doc_offsets = new_offsets;
         self.initial_edges = self.n_edges();
+
+        self.postings.compute_medoids(&self.codebook, &self.flat_codes);
     }
 
     /// Search the mutable segment with cluster-guided entry points
@@ -479,6 +483,216 @@ impl MutableGemSegment {
             return 0.0;
         }
         self.n_edges() as f64 / n as f64
+    }
+
+    /// Graph quality metrics for drift detection.
+    ///
+    /// Returns (delete_ratio, avg_degree, isolated_node_ratio, stale_rep_ratio).
+    pub fn graph_quality_metrics(&self) -> (f64, f64, f64, f64) {
+        let total = self.id_tracker.n_total();
+        if total == 0 {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let del_ratio = self.delete_ratio();
+        let avg_deg = self.avg_degree();
+
+        let mut isolated = 0usize;
+        let mut live_count = 0usize;
+        for i in 0..total {
+            if !self.id_tracker.is_deleted(i as u32) {
+                live_count += 1;
+                if self.adjacency[i].is_empty() {
+                    isolated += 1;
+                }
+            }
+        }
+        let isolated_ratio = if live_count > 0 {
+            isolated as f64 / live_count as f64
+        } else {
+            0.0
+        };
+
+        let n_clusters = self.postings.lists.len();
+        let mut stale_reps = 0usize;
+        let mut active_clusters = 0usize;
+        for c in 0..n_clusters {
+            if self.postings.lists[c].is_empty() {
+                continue;
+            }
+            active_clusters += 1;
+            match self.postings.cluster_reps[c] {
+                None => { stale_reps += 1; }
+                Some(rep) => {
+                    let rep_idx = rep as usize;
+                    let is_stale = self.id_tracker.is_deleted(rep)
+                        || rep_idx >= self.adjacency.len()
+                        || self.adjacency[rep_idx].len() < 2;
+                    if is_stale {
+                        stale_reps += 1;
+                    }
+                }
+            }
+        }
+        let stale_rep_ratio = if active_clusters > 0 {
+            stale_reps as f64 / active_clusters as f64
+        } else {
+            0.0
+        };
+
+        (del_ratio, avg_deg, isolated_ratio, stale_rep_ratio)
+    }
+
+    /// Returns true if the graph needs healing based on drift thresholds.
+    pub fn needs_healing(&self) -> bool {
+        let (del_ratio, _avg_deg, isolated_ratio, stale_rep_ratio) = self.graph_quality_metrics();
+        isolated_ratio > 0.05 || stale_rep_ratio > 0.2 || del_ratio > 0.15
+    }
+
+    /// Periodic local repair: fix stale reps, reconnect isolated nodes,
+    /// and refresh entry points.
+    pub fn heal(&mut self) {
+        let total = self.id_tracker.n_total();
+        if total == 0 {
+            return;
+        }
+
+        // Phase 1: Recompute medoids for clusters with deleted/stale reps
+        for c in 0..self.postings.lists.len() {
+            let needs_recompute = match self.postings.cluster_reps[c] {
+                None => !self.postings.lists[c].is_empty(),
+                Some(rep) => {
+                    let rep_idx = rep as usize;
+                    self.id_tracker.is_deleted(rep)
+                        || rep_idx >= self.adjacency.len()
+                        || self.adjacency[rep_idx].len() < 2
+                }
+            };
+            if needs_recompute {
+                let members: Vec<u32> = self.postings.lists[c]
+                    .iter()
+                    .copied()
+                    .filter(|&d| !self.id_tracker.is_deleted(d))
+                    .collect();
+                if members.is_empty() {
+                    self.postings.cluster_reps[c] = None;
+                    continue;
+                }
+                let effective = if members.len() > 64 {
+                    &members[..64]
+                } else {
+                    members.as_slice()
+                };
+                let mut best_idx = effective[0];
+                let mut best_total = f32::MAX;
+                for &candidate in effective {
+                    let c_codes = self.flat_codes.doc_codes(candidate as usize);
+                    if c_codes.is_empty() { continue; }
+                    let mut total_d = 0.0f32;
+                    let mut n_compared = 0u32;
+                    for &other in effective {
+                        if other == candidate { continue; }
+                        let o_codes = self.flat_codes.doc_codes(other as usize);
+                        if o_codes.is_empty() { continue; }
+                        let mut d = 0.0f32;
+                        for &cc in c_codes {
+                            let mut min_d = f32::MAX;
+                            for &oc in o_codes {
+                                let cd = self.codebook.centroid_dist(cc as u32, oc as u32);
+                                if cd < min_d { min_d = cd; }
+                            }
+                            if min_d < f32::MAX { d += min_d; }
+                        }
+                        d /= c_codes.len() as f32;
+                        total_d += d;
+                        n_compared += 1;
+                    }
+                    if n_compared > 0 { total_d /= n_compared as f32; }
+                    if total_d < best_total {
+                        best_total = total_d;
+                        best_idx = candidate;
+                    }
+                }
+                self.postings.cluster_reps[c] = Some(best_idx);
+            }
+        }
+
+        // Phase 2: Reconnect isolated live nodes to nearest cluster rep
+        for i in 0..total {
+            if self.id_tracker.is_deleted(i as u32) { continue; }
+            if !self.adjacency[i].is_empty() { continue; }
+
+            let ctop = &self.doc_profiles[i].ctop;
+            let mut connected = false;
+            for &cluster in ctop {
+                if let Some(Some(rep)) = self.postings.cluster_reps.get(cluster as usize) {
+                    let rep = *rep;
+                    if rep as usize != i && !self.id_tracker.is_deleted(rep) {
+                        self.adjacency[i].push(rep);
+                        self.adjacency[rep as usize].push(i as u32);
+                        if self.adjacency[rep as usize].len() > self.max_degree {
+                            shrink_neighbors_emd(
+                                rep as usize, self.max_degree,
+                                &mut self.adjacency, &self.codebook,
+                                &self.flat_codes, self.use_emd,
+                            );
+                        }
+                        connected = true;
+                        break;
+                    }
+                }
+            }
+
+            if !connected {
+                // Fallback: connect to nearest live node by centroid distance.
+                // Cap scan to avoid O(n²) for large segments.
+                let i_codes = self.flat_codes.doc_codes(i);
+                if i_codes.is_empty() { continue; }
+                let mut best: Option<(u32, f32)> = None;
+                let scan_limit = total.min(256);
+                let mut scanned = 0usize;
+                for j in 0..total {
+                    if j == i || self.id_tracker.is_deleted(j as u32) { continue; }
+                    let j_codes = self.flat_codes.doc_codes(j);
+                    if j_codes.is_empty() { continue; }
+                    let mut d = 0.0f32;
+                    for &ic in i_codes {
+                        let mut min_d = f32::MAX;
+                        for &jc in j_codes {
+                            let cd = self.codebook.centroid_dist(ic as u32, jc as u32);
+                            if cd < min_d { min_d = cd; }
+                        }
+                        if min_d < f32::MAX { d += min_d; }
+                    }
+                    d /= i_codes.len().max(1) as f32;
+                    match best {
+                        Some((_, bs)) if d < bs => { best = Some((j as u32, d)); }
+                        None => { best = Some((j as u32, d)); }
+                        _ => {}
+                    }
+                    scanned += 1;
+                    if scanned >= scan_limit { break; }
+                }
+                if let Some((nbr, _)) = best {
+                    self.adjacency[i].push(nbr);
+                    self.adjacency[nbr as usize].push(i as u32);
+                    if self.adjacency[nbr as usize].len() > self.max_degree {
+                        shrink_neighbors_emd(
+                            nbr as usize, self.max_degree,
+                            &mut self.adjacency, &self.codebook,
+                            &self.flat_codes, self.use_emd,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Remove edges pointing to deleted nodes and deduplicate
+        for i in 0..total {
+            if self.id_tracker.is_deleted(i as u32) { continue; }
+            self.adjacency[i].retain(|&nbr| !self.id_tracker.is_deleted(nbr));
+            self.adjacency[i].sort_unstable();
+            self.adjacency[i].dedup();
+        }
     }
 
     pub fn memory_bytes(&self) -> usize {

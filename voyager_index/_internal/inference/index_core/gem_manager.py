@@ -374,6 +374,7 @@ class GemNativeSegmentManager:
         seal_quality_threshold: float = 0.6,
         compaction_threshold: float = 0.3,
         compaction_interval_s: float = 60.0,
+        healing_interval_s: float = 30.0,
         enable_shortcuts: bool = False,
         enable_wal: bool = True,
     ):
@@ -405,6 +406,7 @@ class GemNativeSegmentManager:
         self._seal_quality_threshold = seal_quality_threshold
         self._compaction_threshold = compaction_threshold
         self._compaction_interval_s = compaction_interval_s
+        self._healing_interval_s = healing_interval_s
         self._enable_shortcuts = enable_shortcuts
 
         # Phase 3.4: Reader-writer lock for concurrent reads
@@ -446,6 +448,9 @@ class GemNativeSegmentManager:
 
         self._compaction_thread: Optional[threading.Thread] = None
         self._compaction_stop = threading.Event()
+        self._healing_thread: Optional[threading.Thread] = None
+        self._healing_stop = threading.Event()
+        self._seal_generation = 0
 
         self._load_next_doc_id()
         self._load_deleted_ids()
@@ -454,6 +459,7 @@ class GemNativeSegmentManager:
         self._load_payloads()
         self._recover_from_wal()
         self._start_compaction_thread()
+        self._start_healing_thread()
 
     def _safe_json_load(self, path: Path, default: Any = None) -> Any:
         """Load JSON with graceful recovery on corruption."""
@@ -707,6 +713,43 @@ class GemNativeSegmentManager:
                     self._active.compact()
                     self._emit_metric("compaction", 1)
 
+    def _start_healing_thread(self):
+        if self._healing_interval_s <= 0:
+            return
+        self._healing_stop.clear()
+        self._healing_thread = threading.Thread(
+            target=self._healing_loop, daemon=True,
+        )
+        self._healing_thread.start()
+
+    def _stop_healing_thread(self):
+        self._healing_stop.set()
+        if self._healing_thread and self._healing_thread.is_alive():
+            self._healing_thread.join(timeout=5)
+
+    def _healing_loop(self):
+        while not self._healing_stop.wait(timeout=self._healing_interval_s):
+            try:
+                self._maybe_heal()
+            except Exception as e:
+                logger.error("Healing error: %s", e)
+
+    def _maybe_heal(self):
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
+            if self._active is not None and self._active.is_ready():
+                try:
+                    if self._active.needs_healing():
+                        self._active.heal()
+                        self._emit_metric("healing", 1)
+                        metrics = self._active.graph_quality_metrics()
+                        logger.debug(
+                            "Healing complete: del=%.2f avg_deg=%.1f isolated=%.3f stale_rep=%.3f",
+                            *metrics,
+                        )
+                except Exception as e:
+                    logger.warning("Healing check failed: %s", e)
+
     def add_multidense(
         self,
         vectors: List[np.ndarray],
@@ -896,25 +939,28 @@ class GemNativeSegmentManager:
         ctx = self._rwlock.read_lock() if self._rwlock else self._lock
         with ctx:
             all_results: Dict[int, float] = {}
-            payloads_snap = dict(self._payloads)
+            payloads_snap = dict(self._payloads) if filters else {}
+            has_filter = bool(filters)
+
+            qv = np.ascontiguousarray(query_vectors, dtype=np.float32)
 
             if self._active is not None and self._active.is_ready():
-                raw = self._active.search(query_vectors.astype(np.float32), k=k, ef=ef)
+                raw = self._active.search(qv, k=k, ef=ef)
                 for doc_id, score in self._gem_to_similarity(raw):
                     if doc_id not in self._deleted_ids:
-                        if self._match_filter_snapshot(doc_id, filters, payloads_snap):
+                        if not has_filter or self._match_filter_snapshot(doc_id, filters, payloads_snap):
                             if doc_id not in all_results or score > all_results[doc_id]:
                                 all_results[doc_id] = score
 
             for seg, seg_ids in zip(self._sealed_segments, self._sealed_doc_ids):
                 raw = seg.search(
-                    query_vectors.astype(np.float32),
+                    qv,
                     k=k, ef=ef, n_probes=n_probes,
                     enable_shortcuts=self._enable_shortcuts,
                 )
                 for doc_id, score in self._gem_to_similarity(raw):
                     if doc_id not in self._deleted_ids and doc_id not in self._sealed_deleted_ids:
-                        if self._match_filter_snapshot(doc_id, filters, payloads_snap):
+                        if not has_filter or self._match_filter_snapshot(doc_id, filters, payloads_snap):
                             if doc_id not in all_results or score > all_results[doc_id]:
                                 all_results[doc_id] = score
 
@@ -1050,6 +1096,18 @@ class GemNativeSegmentManager:
         else:
             with open(marker_path, "w") as f:
                 json.dump(marker_data, f)
+
+        self._seal_generation += 1
+        if self._sealed_deleted_ids:
+            n_docs = sealed.n_docs()
+            deleted_flags = [False] * n_docs
+            for i, doc_id in enumerate(ids):
+                if doc_id in self._sealed_deleted_ids:
+                    deleted_flags[i] = True
+            try:
+                sealed.prune_stale_shortcuts(deleted_flags)
+            except Exception as e:
+                logger.debug("Shortcut pruning skipped: %s", e)
 
         self._sealed_segments.append(sealed)
         self._sealed_doc_ids.append(ids)
@@ -1208,6 +1266,7 @@ class GemNativeSegmentManager:
 
     def close(self):
         self._stop_compaction_thread()
+        self._stop_healing_thread()
         self.flush()
         if self._wal_writer:
             self._wal_writer.close()

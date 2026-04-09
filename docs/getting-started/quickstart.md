@@ -51,6 +51,15 @@ for r in results:
     print(f"  Doc {r.doc_id}: score={r.score:.4f}, payload={r.payload}")
 ```
 
+## Filtered Search
+
+```python
+results = idx.search(query, k=10, filters={"title": {"$contains": "science"}})
+```
+
+Qdrant-compatible filter operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`,
+`$in`, `$nin`, `$exists`, `$contains`, `$and`, `$or`, `$not`.
+
 ## Update and Delete
 
 ```python

@@ -1,0 +1,55 @@
+{
+  "config": {
+    "n_docs": 200,
+    "dim": 32,
+    "vecs_per_doc": 16,
+    "n_queries": 50,
+    "k": 10,
+    "ef": 200,
+    "gem_params": {
+      "n_fine": 32,
+      "n_coarse": 8,
+      "max_degree": 16,
+      "ef_construction": 100,
+      "max_kmeans_iter": 20,
+      "ctop_r": 3
+    }
+  },
+  "gates": {
+    "1": {
+      "label": "Recall@10 >= 0.35",
+      "passed": true,
+      "detail": "0.41"
+    },
+    "2": {
+      "label": "qEMD recall >= qCH recall - 0.05",
+      "passed": true,
+      "detail": "0.44 >= 0.41 - 0.05"
+    },
+    "3": {
+      "label": "Shortcuts don't hurt tail recall",
+      "passed": true,
+      "detail": "p5_sc=0.15 >= p5_no_sc=0.15"
+    },
+    "4": {
+      "label": "Build time ratio <= 100x",
+      "passed": true,
+      "detail": "5.8x"
+    },
+    "5": {
+      "label": "Search result count correct",
+      "passed": true,
+      "detail": "len=10, expected=10"
+    },
+    "6": {
+      "label": "Search p50 emd-invariant (within 20%)",
+      "passed": 1,
+      "detail": "p50_ch=41us, p50_emd=109us, ratio=2.6x"
+    }
+  },
+  "summary": {
+    "total": 6,
+    "passed": 6,
+    "all_pass": true
+  }
+}

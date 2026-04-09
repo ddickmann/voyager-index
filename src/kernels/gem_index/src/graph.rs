@@ -104,6 +104,8 @@ pub struct GemGraph {
     /// Layer 0 is the bottom (all nodes), higher layers are sparser.
     pub levels: Vec<CsrAdjacency>,
     pub shortcuts: Vec<Vec<u32>>,
+    /// Per-shortcut generation counter for aging-based pruning.
+    pub shortcut_generations: Vec<Vec<usize>>,
     pub node_levels: Vec<usize>,
     pub entry_point: u32,
     pub max_degree: usize,
@@ -129,6 +131,57 @@ impl GemGraph {
     /// Convenience: bottom-layer adjacency for backward compatibility.
     pub fn bottom_adjacency(&self) -> &CsrAdjacency {
         &self.levels[0]
+    }
+
+    /// Remove shortcuts pointing to deleted nodes. Optionally prune shortcuts
+    /// older than `max_age` generations (tracked via `shortcut_generations`).
+    pub fn prune_stale_shortcuts(&mut self, deleted: &[bool], max_age: Option<usize>, current_generation: usize) {
+        let n = self.shortcuts.len();
+        let has_gens = self.shortcut_generations.len() == n;
+
+        // Phase 1: Remove shortcuts pointing to deleted nodes, keeping
+        // shortcut_generations in lockstep so indices stay aligned.
+        for i in 0..n {
+            let mut keep_sc = Vec::new();
+            let mut keep_gen = Vec::new();
+            for (idx, &target) in self.shortcuts[i].iter().enumerate() {
+                let t = target as usize;
+                if t < deleted.len() && deleted[t] {
+                    continue;
+                }
+                keep_sc.push(target);
+                if has_gens {
+                    if let Some(&g) = self.shortcut_generations[i].get(idx) {
+                        keep_gen.push(g);
+                    }
+                }
+            }
+            self.shortcuts[i] = keep_sc;
+            if has_gens {
+                self.shortcut_generations[i] = keep_gen;
+            }
+        }
+
+        // Phase 2: Age-based pruning (only if generations are tracked).
+        if let Some(age_limit) = max_age {
+            if has_gens {
+                for i in 0..n {
+                    let gens = &mut self.shortcut_generations[i];
+                    let sc = &mut self.shortcuts[i];
+                    let mut keep = Vec::with_capacity(sc.len());
+                    let mut keep_gen = Vec::with_capacity(gens.len());
+                    for (idx, &target) in sc.iter().enumerate() {
+                        let gen = gens.get(idx).copied().unwrap_or(0);
+                        if current_generation.saturating_sub(gen) <= age_limit {
+                            keep.push(target);
+                            keep_gen.push(gen);
+                        }
+                    }
+                    *sc = keep;
+                    *gens = keep_gen;
+                }
+            }
+        }
     }
 
     pub fn inject_shortcuts(
@@ -378,6 +431,7 @@ pub fn build_graph_with_payload(
         return GemGraph {
             levels: vec![CsrAdjacency::empty(0)],
             shortcuts: Vec::new(),
+            shortcut_generations: Vec::new(),
             node_levels: Vec::new(),
             entry_point: 0,
             max_degree,
@@ -510,6 +564,7 @@ pub fn build_graph_with_payload(
     GemGraph {
         levels: csr_levels,
         shortcuts: vec![Vec::new(); n_docs],
+        shortcut_generations: vec![Vec::new(); n_docs],
         node_levels,
         entry_point,
         max_degree,
@@ -662,6 +717,7 @@ pub fn build_graph_dual(
         return GemGraph {
             levels: vec![CsrAdjacency::empty(0)],
             shortcuts: Vec::new(),
+            shortcut_generations: Vec::new(),
             node_levels: Vec::new(),
             entry_point: 0,
             max_degree,
@@ -787,6 +843,7 @@ pub fn build_graph_dual(
     GemGraph {
         levels: vec![csr],
         shortcuts: vec![Vec::new(); n_docs],
+        shortcut_generations: vec![Vec::new(); n_docs],
         node_levels: vec![0; n_docs],
         entry_point,
         max_degree,
@@ -1073,7 +1130,7 @@ mod tests {
         let graph = build_graph(&vecs, dim, &offsets, &cb, &fc, &dp, &post, 8, 32);
         assert_eq!(graph.n_nodes(), 20);
         assert!(graph.n_edges() > 0, "graph should have edges");
-        assert!(graph.levels.len() >= 1);
+        assert!(!graph.levels.is_empty());
         for i in 0..20 {
             let nbrs = graph.levels[0].neighbors(i);
             assert!(nbrs.len() <= 8, "node {} has {} neighbors > max_degree 8", i, nbrs.len());

@@ -103,11 +103,20 @@ Sealed (read-only) GEM graph segment.
 
 | Method | Signature |
 |---|---|
-| `build()` | `(all_vectors, doc_ids, doc_offsets, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3)` |
-| `search()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False)` → `List[(doc_id, score)]` |
-| `save(path)` | Save to disk |
-| `load(path)` | Load from disk |
+| `build()` | `(all_vectors, doc_ids, doc_offsets, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3, use_emd=False, dual_graph=True)` |
+| `search()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False, filter=None)` → `List[(doc_id, score)]` |
+| `search_with_stats()` | `(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False)` → `(results, (nodes_visited, distance_computations))` |
+| `search_batch()` | `(queries, k=10, ef=100, n_probes=4, enable_shortcuts=False)` → `List[List[(doc_id, score)]]` |
+| `brute_force_proxy()` | `(query_vectors, k=10)` → `List[(doc_id, score)]` — exhaustive qCH ranking (oracle baseline) |
+| `save(path)` | Save to disk with CRC32 integrity |
+| `load(path)` | Load from disk with integrity verification |
+| `set_doc_payloads()` | `(payloads: List[(doc_id, [(field, value)])])` — build filter index for filtered search |
 | `inject_shortcuts()` | `(training_pairs, max_shortcuts_per_node=4)` |
+| `prune_stale_shortcuts()` | `(deleted_flags, max_age=None, current_generation=0)` |
+| `load_cutoff_tree()` | `(tree_bytes)` — load adaptive cluster cutoff tree |
+| `get_codebook_centroids()` | → `ndarray (n_fine, dim)` |
+| `get_idf()` | → `ndarray (n_fine,)` |
+| `get_flat_codes()` | → `(codes, offsets, lengths)` |
 | `n_docs()` | Number of documents |
 | `n_nodes()` | Number of graph nodes |
 | `n_edges()` | Total directed edges |
@@ -117,16 +126,21 @@ Sealed (read-only) GEM graph segment.
 
 ### `PyMutableGemSegment`
 
-Writable GEM segment with CRUD support.
+Writable GEM segment with CRUD and self-healing support.
 
 | Method | Signature |
 |---|---|
-| `build()` | `(all_vectors, doc_ids, doc_offsets, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3, n_probes=4)` |
-| `search()` | `(query_vectors, k=10, ef=100, _n_probes=4)` → `List[(doc_id, score)]` |
+| `build()` | `(all_vectors, doc_ids, doc_offsets, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3, n_probes=4, use_emd=False)` |
+| `search()` | `(query_vectors, k=10, ef=100, n_probes=4)` → `List[(doc_id, score)]` |
+| `search_batch()` | `(queries, k=10, ef=100)` → `List[List[(doc_id, score)]]` |
 | `insert(vectors, doc_id)` | Insert one document |
+| `insert_batch(vectors_list, doc_ids)` | Batch insert multiple documents |
 | `delete(doc_id)` | Soft-delete → `bool` |
 | `upsert(vectors, doc_id)` | Delete old + insert new |
 | `compact()` | Remove soft-deleted, rebuild |
+| `heal()` | Local graph repair: fix stale reps, reconnect isolated nodes, clean edges |
+| `needs_healing()` | → `bool` — drift detection based on quality thresholds |
+| `graph_quality_metrics()` | → `(delete_ratio, avg_degree, isolated_ratio, stale_rep_ratio)` |
 | `n_live()` | Live (non-deleted) count |
 | `n_nodes()` | Total nodes including deleted |
 | `n_edges()` | Total directed edges |
@@ -134,3 +148,45 @@ Writable GEM segment with CRUD support.
 | `delete_ratio()` | Fraction of deleted nodes |
 | `avg_degree()` | Average neighbors per node |
 | `memory_bytes()` | Estimated memory usage |
+| `dim()` | Vector dimension |
+| `is_ready()` | Whether segment is built |
+
+### `PyEnsembleGemSegment`
+
+Multi-modal ensemble with per-modality codebooks and RRF fusion.
+
+| Method | Signature |
+|---|---|
+| `build()` | `(all_vectors, doc_ids, doc_offsets, modality_tags, n_modalities, n_fine=256, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=30, ctop_r=3)` |
+| `search()` | `(query_vectors, query_modality_tags, k=10, ef=100, n_probes=4)` → `List[(doc_id, score)]` |
+| `n_docs()` | Number of documents |
+| `n_modalities()` | Number of modality types |
+| `is_ready()` | Whether ensemble is built |
+
+`modality_tags` is a per-token `u8` array mapping each token to its modality
+(0 = text, 1 = image, etc.). The ensemble builds a separate codebook and graph
+per modality, searches each independently, and fuses results via Reciprocal
+Rank Fusion.
+
+---
+
+## GPU Scoring: `GpuQchScorer`
+
+Optional GPU-native qCH proxy scorer. Requires PyTorch; uses Triton when available.
+
+```python
+from voyager_index._internal.inference.index_core.gpu_qch import GpuQchScorer
+
+scorer = GpuQchScorer.from_gem_segment(segment, device="cuda")
+scores = scorer.score_query(query_vecs)           # (n_docs,) lower = closer
+scores = scorer.score_query_filtered(query_vecs, mask)  # masked scoring
+```
+
+| Method | Description |
+|---|---|
+| `from_gem_segment(segment, device)` | Construct from a built `GemSegment` |
+| `score_query(query_vecs)` | Score all docs → `(n_docs,)` float32 |
+| `score_query_filtered(query_vecs, doc_mask)` | Score masked docs; unmasked get `inf` |
+
+The GPU path is fully optional. CPU scoring via the Rust `qch_proxy_score_u16`
+function remains the default and requires no additional dependencies.

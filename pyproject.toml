@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voyager-index"
-version = "0.1.0"
-description = "Local-first multivector and hybrid retrieval with MaxSim, durable CRUD, Docker deployment, and Tabu Search optimization."
+version = "0.2.0"
+description = "Native multi-vector graph index for ColBERT/ColPali retrieval — 52x faster than HNSW with filter-aware routing, GPU-accelerated scoring, self-healing graphs, and multi-modal ensemble fusion."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

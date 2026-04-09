@@ -31,12 +31,36 @@ constructs a diversity-pruned proximity graph. This is a one-time cost that
 pays for itself at query time. For read-heavy workloads (the common case),
 the 52x search speedup far outweighs the build overhead.
 
+## GPU-Accelerated qCH Scoring
+
+When a CUDA GPU is available, the optional `GpuQchScorer` offloads proxy
+scoring to the GPU via a Triton-autotuned max-gather kernel. This is most
+beneficial for large candidate sets (1000+ documents) where the GPU can
+amortize the kernel launch overhead.
+
+| Backend | Typical latency (1000 docs, 64 queries, 256 codes) |
+|---|---|
+| CPU (Rust AVX2) | Baseline |
+| GPU (Triton) | Faster for large batches |
+| GPU (PyTorch fallback) | Faster for large batches, no Triton needed |
+
+The GPU path is fully optional and does not affect the CPU search path.
+Documents up to 2048 tokens are scored without truncation; longer documents
+automatically fall back to the PyTorch path.
+
+Run the innovation benchmarks:
+
+```bash
+python benchmarks/bench_elite_innovations.py
+```
+
 ## Methodology
 
 Benchmarks use random data with `np.random.RandomState(42)` for reproducibility.
-All measurements are wall-clock time on a single CPU core without GPU acceleration.
+CPU measurements are wall-clock time on a single core. GPU measurements include
+kernel launch overhead.
 
-Run the benchmark:
+Run the core benchmark:
 
 ```bash
 python benchmarks/gem_vs_hnsw_benchmark.py

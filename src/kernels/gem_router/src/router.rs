@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use roaring::RoaringBitmap;
 
 use crate::codebook::{TwoStageCodebook, cluster_overlap, compute_ctop, qch_proxy_score_u16};
 
@@ -54,6 +55,142 @@ impl FlatDocCodes {
     }
 }
 
+/// Per-cluster per-field-value Roaring bitmaps for filter-aware routing.
+#[derive(Debug, Clone, Default)]
+pub struct FilterIndex {
+    /// cluster_bitmaps[cluster_id][(field, value)] = bitmap of doc indices in that cluster matching
+    pub cluster_bitmaps: Vec<HashMap<(String, String), RoaringBitmap>>,
+    /// Total doc count per cluster (for ratio computation)
+    pub cluster_counts: Vec<u32>,
+}
+
+impl FilterIndex {
+    pub fn new(n_clusters: usize) -> Self {
+        Self {
+            cluster_bitmaps: vec![HashMap::new(); n_clusters],
+            cluster_counts: vec![0; n_clusters],
+        }
+    }
+
+    /// Build filter summaries from doc payloads.
+    /// `doc_payloads`: (doc_internal_id, vec of (field, value) pairs)
+    /// `postings`: used to determine which clusters each doc belongs to
+    pub fn build_from_payloads(
+        &mut self,
+        doc_payloads: &[(u32, Vec<(String, String)>)],
+        postings: &ClusterPostings,
+    ) {
+        let n_clusters = postings.lists.len();
+        self.cluster_bitmaps = vec![HashMap::new(); n_clusters];
+        self.cluster_counts = vec![0; n_clusters];
+
+        let mut doc_to_clusters: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (c, members) in postings.lists.iter().enumerate() {
+            self.cluster_counts[c] = members.len() as u32;
+            for &doc_id in members {
+                doc_to_clusters.entry(doc_id).or_default().push(c);
+            }
+        }
+
+        for &(doc_id, ref field_values) in doc_payloads {
+            if let Some(clusters) = doc_to_clusters.get(&doc_id) {
+                for &c in clusters {
+                    for (field, value) in field_values {
+                        self.cluster_bitmaps[c]
+                            .entry((field.clone(), value.clone()))
+                            .or_default()
+                            .insert(doc_id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns cluster IDs where the filter covers >= min_ratio of the cluster's docs.
+    /// filter: AND-semantics — all (field, value) pairs must match.
+    pub fn clusters_passing_filter(
+        &self,
+        filter: &[(String, String)],
+        min_ratio: f32,
+    ) -> Vec<u32> {
+        let n = self.cluster_bitmaps.len();
+        let mut passing = Vec::new();
+        for c in 0..n {
+            let total = self.cluster_counts[c];
+            if total == 0 {
+                continue;
+            }
+            let cluster_map = &self.cluster_bitmaps[c];
+
+            let mut intersection: Option<RoaringBitmap> = None;
+            let mut all_present = true;
+            for (field, value) in filter {
+                match cluster_map.get(&(field.clone(), value.clone())) {
+                    Some(bm) => {
+                        intersection = Some(match intersection {
+                            None => bm.clone(),
+                            Some(acc) => &acc & bm,
+                        });
+                    }
+                    None => {
+                        all_present = false;
+                        break;
+                    }
+                }
+            }
+
+            if !all_present {
+                continue;
+            }
+
+            let matched = intersection.map_or(total as u64, |bm| bm.len());
+            let ratio = matched as f32 / total as f32;
+            if ratio >= min_ratio {
+                passing.push(c as u32);
+            }
+        }
+        passing
+    }
+
+    /// Build a doc-level boolean mask for docs matching the filter.
+    /// Returns Vec<bool> of length n_docs where true = matches filter.
+    pub fn build_filter_mask(
+        &self,
+        filter: &[(String, String)],
+        n_docs: usize,
+    ) -> Vec<bool> {
+        let mut mask = vec![false; n_docs];
+        if filter.is_empty() {
+            mask.iter_mut().for_each(|m| *m = true);
+            return mask;
+        }
+
+        let mut global_intersection: Option<RoaringBitmap> = None;
+        for (field, value) in filter {
+            let mut union = RoaringBitmap::new();
+            for cluster_map in &self.cluster_bitmaps {
+                if let Some(bm) = cluster_map.get(&(field.clone(), value.clone())) {
+                    union |= bm;
+                }
+            }
+            global_intersection = Some(match global_intersection {
+                None => union,
+                Some(acc) => &acc & &union,
+            });
+        }
+
+        if let Some(bm) = global_intersection {
+            for doc_id in bm {
+                let idx = doc_id as usize;
+                if idx < n_docs {
+                    mask[idx] = true;
+                }
+            }
+        }
+        mask
+    }
+}
+
 /// Per-cluster posting list: maps coarse cluster ID -> list of doc indices
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterPostings {
@@ -95,6 +232,73 @@ impl ClusterPostings {
         let mut docs: Vec<(u32, u32)> = seen.into_iter().collect();
         docs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         docs.into_iter().map(|(d, _)| d).collect()
+    }
+
+    /// Recompute cluster representatives as geometric medoids.
+    ///
+    /// For each cluster, the medoid is the member document whose total qCH
+    /// proxy distance to all other cluster members is minimized. This places
+    /// the representative at a central position, improving beam search entry.
+    pub fn compute_medoids(
+        &mut self,
+        codebook: &TwoStageCodebook,
+        flat_codes: &FlatDocCodes,
+    ) {
+        for (c, members) in self.lists.iter().enumerate() {
+            if members.len() <= 1 {
+                continue;
+            }
+            let effective = if members.len() > 64 {
+                &members[..64]
+            } else {
+                members.as_slice()
+            };
+
+            let mut best_idx = effective[0];
+            let mut best_total = f32::MAX;
+
+            for &candidate in effective {
+                let c_codes = flat_codes.doc_codes(candidate as usize);
+                if c_codes.is_empty() {
+                    continue;
+                }
+                let mut total = 0.0f32;
+                let mut n_compared = 0u32;
+                for &other in effective {
+                    if other == candidate {
+                        continue;
+                    }
+                    let o_codes = flat_codes.doc_codes(other as usize);
+                    if o_codes.is_empty() {
+                        continue;
+                    }
+                    let mut d = 0.0f32;
+                    for &cc in c_codes {
+                        let mut min_d = f32::MAX;
+                        for &oc in o_codes {
+                            let cd = codebook.centroid_dist(cc as u32, oc as u32);
+                            if cd < min_d {
+                                min_d = cd;
+                            }
+                        }
+                        if min_d < f32::MAX {
+                            d += min_d;
+                        }
+                    }
+                    d /= c_codes.len() as f32;
+                    total += d;
+                    n_compared += 1;
+                }
+                if n_compared > 0 {
+                    total /= n_compared as f32;
+                }
+                if total < best_total {
+                    best_total = total;
+                    best_idx = candidate;
+                }
+            }
+            self.cluster_reps[c] = Some(best_idx);
+        }
     }
 
     pub fn representatives_for_clusters(&self, clusters: &[u32]) -> Vec<u32> {
@@ -177,6 +381,8 @@ impl GemRouter {
             });
         }
 
+        postings.compute_medoids(&codebook, &flat_codes);
+
         self.state = Some(GemRouterState {
             codebook,
             doc_profiles,
@@ -242,6 +448,7 @@ impl GemRouter {
 
         let mut buf = vec![0.0f32; needed];
         state.codebook.compute_query_centroid_scores_into(query_vectors, n_query_vecs, &mut buf);
+        state.codebook.apply_idf_weights(&mut buf, n_query_vecs);
         let query_centroid_scores = &buf[..needed];
 
         let flat_codes = &state.flat_codes;
@@ -511,7 +718,7 @@ mod tests {
         let state = router.state().unwrap();
         assert_eq!(state.flat_codes.offsets.len(), 50);
         assert_eq!(state.flat_codes.lengths.len(), 50);
-        assert!(state.flat_codes.codes.len() > 0);
+        assert!(!state.flat_codes.codes.is_empty());
 
         let mut rng = StdRng::seed_from_u64(99);
         let query: Vec<f32> = (0..5 * dim).map(|_| rng.gen::<f32>() - 0.5).collect();

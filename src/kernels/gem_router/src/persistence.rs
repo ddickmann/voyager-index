@@ -6,6 +6,7 @@ use crate::router::GemRouterState;
 
 const MAGIC: &[u8; 4] = b"GEMR";
 const VERSION: u32 = 2;
+const COMPAT_VERSIONS: &[u32] = &[1, 2];
 
 #[derive(Debug)]
 pub enum PersistenceError {
@@ -82,7 +83,7 @@ pub fn load_state(path: &Path) -> Result<GemRouterState, PersistenceError> {
     let mut ver_buf = [0u8; 4];
     r.read_exact(&mut ver_buf)?;
     let version = u32::from_le_bytes(ver_buf);
-    if version != VERSION && version != 1 {
+    if !COMPAT_VERSIONS.contains(&version) {
         return Err(PersistenceError::UnsupportedVersion(version));
     }
 
@@ -108,6 +109,13 @@ pub fn load_state(path: &Path) -> Result<GemRouterState, PersistenceError> {
 
     let state: GemRouterState = serde_json::from_slice(&json_buf)?;
     Ok(state)
+}
+
+/// Migrate a router state file to the current format version.
+/// Reads from `src`, upgrades in-memory, writes to `dst` with current VERSION.
+pub fn migrate_router_state(src: &Path, dst: &Path) -> Result<(), PersistenceError> {
+    let state = load_state(src)?;
+    save_state(&state, dst)
 }
 
 #[cfg(test)]

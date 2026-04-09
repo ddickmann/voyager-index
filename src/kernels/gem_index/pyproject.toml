@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "latence-gem-index"
-version = "0.1.0"
-description = "Native GEM graph index for multi-vector retrieval"
+version = "0.2.0"
+description = "Native GEM graph index for multi-vector retrieval — filter routing, GPU scoring, self-healing, ensemble fusion"
 authors = [{name = "Latence Team"}]
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"

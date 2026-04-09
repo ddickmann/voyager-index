@@ -46,23 +46,74 @@ impl TwoStageCodebook {
 
         let data = ArrayView2::from_shape((n_vectors, dim), vectors)
             .expect("vector shape mismatch");
-
         let normalized = l2_normalize_rows(&data.to_owned());
-        let (centroids, _labels) = kmeans(&normalized.view(), n_fine, max_iter, seed);
 
-        let (_coarse_centroids, cindex_labels) =
-            kmeans(&centroids.view(), n_coarse, max_iter, seed + 1);
-        let cindex_labels: Vec<u32> = cindex_labels.iter().map(|&l| l as u32).collect();
+        // Paper-faithful hierarchical construction:
+        // 1) Coarse k-means on all tokens
+        let (_coarse_centroids, coarse_labels) =
+            kmeans(&normalized.view(), n_coarse, max_iter, seed);
+
+        // 2) Partition tokens by coarse assignment
+        let mut coarse_groups: Vec<Vec<usize>> = vec![Vec::new(); n_coarse];
+        for (i, &label) in coarse_labels.iter().enumerate() {
+            coarse_groups[label].push(i);
+        }
+
+        // 3) Distribute n_fine budget across coarse clusters proportionally
+        let n_nonempty = coarse_groups.iter().filter(|g| !g.is_empty()).count().max(1);
+        let base_per = n_fine / n_nonempty;
+        let extra = n_fine % n_nonempty;
+        let mut extra_idx = 0usize;
+        let fine_per_coarse: Vec<usize> = (0..n_coarse)
+            .map(|c| {
+                if coarse_groups[c].is_empty() {
+                    return 0;
+                }
+                let bonus = if extra_idx < extra { extra_idx += 1; 1 } else { 0 };
+                let budget = base_per + bonus;
+                budget.min(coarse_groups[c].len()).max(1)
+            })
+            .collect();
+        let actual_n_fine: usize = fine_per_coarse.iter().sum();
+
+        // 4) Fine k-means within each coarse cluster
+        let mut all_fine_centroids = Array2::<f32>::zeros((actual_n_fine, dim));
+        let mut cindex_labels: Vec<u32> = Vec::with_capacity(actual_n_fine);
+        let mut offset = 0usize;
+
+        for (c, group) in coarse_groups.iter().enumerate() {
+            let k_local = fine_per_coarse[c];
+            if group.is_empty() || k_local == 0 {
+                continue;
+            }
+
+            let mut local_data = Array2::<f32>::zeros((group.len(), dim));
+            for (li, &gi) in group.iter().enumerate() {
+                local_data.row_mut(li).assign(&normalized.row(gi));
+            }
+
+            let (local_centroids, _) =
+                kmeans(&local_data.view(), k_local, max_iter, seed + 2 + c as u64);
+
+            for fi in 0..local_centroids.nrows() {
+                all_fine_centroids.row_mut(offset + fi)
+                    .assign(&local_centroids.row(fi));
+                cindex_labels.push(c as u32);
+            }
+            offset += local_centroids.nrows();
+        }
+
+        let actual_n_fine = offset;
+        let centroids = all_fine_centroids.slice(ndarray::s![..actual_n_fine, ..]).to_owned();
+        let cindex_labels = cindex_labels[..actual_n_fine].to_vec();
 
         let centroid_dists = pairwise_l2_flat(&centroids.view());
-
         let cquant_flat: Vec<f32> = centroids.as_slice().unwrap().to_vec();
-
-        let idf = vec![1.0f32; n_fine];
+        let idf = vec![1.0f32; actual_n_fine];
 
         Self {
             cquant: cquant_flat,
-            n_fine,
+            n_fine: actual_n_fine,
             dim,
             cindex_labels,
             n_coarse,
@@ -239,6 +290,30 @@ impl TwoStageCodebook {
                 0.0,
                 out.as_mut_ptr(), n as isize, 1,
             );
+        }
+    }
+
+    /// Apply IDF weights to pre-computed query-centroid scores in-place.
+    ///
+    /// Multiplies each score[qi][c] by idf[c], so that discriminative centroids
+    /// (rare across docs) contribute more to the qCH proxy. This implements the
+    /// IDF-weighted Chamfer from the GEM paper (Section 4.1, Eq. 3).
+    ///
+    /// Call this immediately after `compute_query_centroid_scores` for search.
+    pub fn apply_idf_weights(&self, scores: &mut [f32], n_query: usize) {
+        let n_fine = self.n_fine;
+        if self.idf.len() != n_fine || n_fine == 0 {
+            return;
+        }
+        for qi in 0..n_query {
+            let base = qi * n_fine;
+            let end = base + n_fine;
+            if end > scores.len() {
+                break;
+            }
+            for c in 0..n_fine {
+                scores[base + c] *= self.idf[c];
+            }
         }
     }
 
@@ -758,6 +833,36 @@ mod tests {
         assert_eq!(cluster_overlap(&[0, 1, 2], &[1, 3]), 1);
         assert_eq!(cluster_overlap(&[0, 1, 2], &[0, 1, 2]), 3);
         assert_eq!(cluster_overlap(&[0], &[1]), 0);
+    }
+
+    #[test]
+    fn test_apply_idf_weights() {
+        let dim = 8;
+        let n = 50;
+        let mut rng = StdRng::seed_from_u64(42);
+        let data: Vec<f32> = (0..n * dim).map(|_| rng.gen::<f32>() - 0.5).collect();
+        let mut cb = TwoStageCodebook::build(&data, n, dim, 8, 4, 10, 42);
+        // Give distinct IDF values
+        let doc_sets: Vec<Vec<u32>> = (0..10).map(|i| vec![i % 8]).collect();
+        cb.update_idf(&doc_sets);
+
+        let n_q = 2;
+        let query: Vec<f32> = (0..n_q * dim).map(|_| rng.gen::<f32>() - 0.5).collect();
+        let raw_scores = cb.compute_query_centroid_scores(&query, n_q);
+        let mut weighted = raw_scores.clone();
+        cb.apply_idf_weights(&mut weighted, n_q);
+
+        // Verify each element is multiplied by idf
+        for qi in 0..n_q {
+            for c in 0..cb.n_fine {
+                let idx = qi * cb.n_fine + c;
+                let expected = raw_scores[idx] * cb.idf[c];
+                assert!(
+                    (weighted[idx] - expected).abs() < 1e-6,
+                    "mismatch at qi={} c={}: got {} expected {}", qi, c, weighted[idx], expected
+                );
+            }
+        }
     }
 
     #[test]

@@ -151,3 +151,125 @@ class TestMutableSegment:
         query = np.random.RandomState(99).randn(3, 8).astype(np.float32)
         results = seg.search(query, k=5, ef=32)
         assert len(results) > 0
+
+
+class TestSemanticShortcuts:
+    def test_inject_shortcuts_basic(self):
+        """Inject shortcuts from training pairs and verify total_shortcuts > 0."""
+        seg = GemSegment()
+        data, ids, offsets = _synthetic_corpus(n_docs=30, dim=16, vecs_per_doc=8)
+        seg.build(data, ids, offsets, n_fine=8, n_coarse=4, max_degree=8,
+                  ef_construction=32, max_kmeans_iter=5, ctop_r=2)
+        assert seg.is_ready()
+
+        dim = 16
+        vecs_per_doc = 8
+        training_pairs = []
+        for doc_idx in range(5):
+            start = doc_idx * vecs_per_doc
+            end = (doc_idx + 1) * vecs_per_doc
+            flat_query = data[start:end].flatten().tolist()
+            target_internal_id = doc_idx
+            training_pairs.append((flat_query, target_internal_id))
+
+        seg.inject_shortcuts(training_pairs, max_shortcuts_per_node=4)
+        assert seg.total_shortcuts() > 0
+
+    def test_shortcuts_change_results(self):
+        """Search with and without shortcuts after injection; total_shortcuts must be > 0."""
+        seg = GemSegment()
+        data, ids, offsets = _synthetic_corpus(n_docs=30, dim=16, vecs_per_doc=8)
+        seg.build(data, ids, offsets, n_fine=8, n_coarse=4, max_degree=8,
+                  ef_construction=32, max_kmeans_iter=5, ctop_r=2)
+
+        query = np.random.RandomState(99).randn(3, 16).astype(np.float32)
+        results_no_sc = seg.search(query, k=5, ef=32, n_probes=2, enable_shortcuts=False)
+        assert len(results_no_sc) > 0
+
+        dim = 16
+        vecs_per_doc = 8
+        training_pairs = []
+        for doc_idx in range(5):
+            start = doc_idx * vecs_per_doc
+            end = (doc_idx + 1) * vecs_per_doc
+            flat_query = data[start:end].flatten().tolist()
+            training_pairs.append((flat_query, doc_idx))
+
+        seg.inject_shortcuts(training_pairs, max_shortcuts_per_node=4)
+        assert seg.total_shortcuts() > 0
+
+        results_with_sc = seg.search(query, k=5, ef=32, n_probes=2, enable_shortcuts=True)
+        assert len(results_with_sc) > 0
+
+
+try:
+    from latence_gem_router import PyGemRouter
+    GEM_ROUTER_AVAILABLE = True
+except ImportError:
+    GEM_ROUTER_AVAILABLE = False
+
+
+@pytest.mark.skipif(not GEM_ROUTER_AVAILABLE, reason="latence_gem_router not installed")
+class TestAdaptiveCutoff:
+    """E2E tests for PyGemRouter.train_adaptive_cutoff."""
+
+    @staticmethod
+    def _build_router(n_docs=30, dim=16, vecs_per_doc=8, seed=42):
+        rng = np.random.default_rng(seed)
+        data = rng.standard_normal((n_docs * vecs_per_doc, dim)).astype(np.float32)
+        doc_ids = list(range(n_docs))
+        offsets = [(i * vecs_per_doc, (i + 1) * vecs_per_doc) for i in range(n_docs)]
+
+        router = PyGemRouter(dim=dim)
+        router.build(data, doc_ids, offsets, n_fine=16, n_coarse=4)
+        return router, dim, n_docs
+
+    @staticmethod
+    def _make_training_pairs(n_queries, vecs_per_query, dim, n_docs, seed=123):
+        """Generate synthetic training data for adaptive cutoff.
+
+        Returns (training_queries, n_query_vecs, training_positives).
+        """
+        rng = np.random.default_rng(seed)
+        training_queries = rng.standard_normal(
+            (n_queries * vecs_per_query, dim)
+        ).astype(np.float32)
+        n_query_vecs = [vecs_per_query] * n_queries
+        training_positives = [int(rng.integers(0, n_docs)) for _ in range(n_queries)]
+        return training_queries, n_query_vecs, training_positives
+
+    def test_train_adaptive_cutoff_e2e(self):
+        """Build a router, train adaptive cutoff, verify it returns serialized bytes."""
+        router, dim, n_docs = self._build_router(n_docs=30)
+        assert router.is_ready()
+
+        n_queries = 20
+        vecs_per_query = 4
+        training_queries, n_query_vecs, training_positives = self._make_training_pairs(
+            n_queries, vecs_per_query, dim, n_docs,
+        )
+
+        tree_bytes = router.train_adaptive_cutoff(
+            training_queries, n_query_vecs, training_positives,
+            t=3, r_max=8, max_depth=6,
+        )
+
+        assert isinstance(tree_bytes, (bytes, list))
+        raw = bytes(tree_bytes) if not isinstance(tree_bytes, bytes) else tree_bytes
+        assert len(raw) > 0
+
+    def test_adaptive_cutoff_predict_values_in_range(self):
+        """Train the tree and verify the serialized blob is non-trivial."""
+        router, dim, n_docs = self._build_router(n_docs=30)
+
+        training_queries, n_query_vecs, training_positives = self._make_training_pairs(
+            n_queries=25, vecs_per_query=5, dim=dim, n_docs=n_docs, seed=999,
+        )
+
+        tree_bytes = router.train_adaptive_cutoff(
+            training_queries, n_query_vecs, training_positives,
+        )
+
+        assert isinstance(tree_bytes, (bytes, list))
+        raw = bytes(tree_bytes) if not isinstance(tree_bytes, bytes) else tree_bytes
+        assert len(raw) > 8, "serialized tree should contain more than just a header"

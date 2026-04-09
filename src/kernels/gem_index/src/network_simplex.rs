@@ -623,11 +623,11 @@ mod tests {
     fn test_single_element() {
         let supply = vec![1.0];
         let demand = vec![1.0];
-        let cost = vec![3.14];
+        let cost = vec![std::f64::consts::PI];
         let result = emd_solve(&supply, &demand, &cost, 0);
         assert!(
-            (result - 3.14).abs() < 1e-6,
-            "expected 3.14, got {result}"
+            (result - std::f64::consts::PI).abs() < 1e-6,
+            "expected PI, got {result}"
         );
     }
 
@@ -771,10 +771,10 @@ mod tests {
             }
         }
         let mut total = 0.0f64;
-        for i in 0..m {
+        for (i, &lu) in log_u.iter().enumerate().take(m) {
             let row_base = i * n;
             for j in 0..n {
-                let log_t = log_u[i] + log_k[row_base + j] + log_v[j];
+                let log_t = lu + log_k[row_base + j] + log_v[j];
                 if log_t > -500.0 {
                     total += log_t.exp() * cost[row_base + j];
                 }

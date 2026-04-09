@@ -1,0 +1,77 @@
+{
+  "config": {
+    "n_docs": 200,
+    "dim": 32,
+    "vecs_per_doc": 16,
+    "n_queries": 50,
+    "k": 10,
+    "ef": 200,
+    "gem_params": {
+      "n_fine": 32,
+      "n_coarse": 8,
+      "max_degree": 16,
+      "ef_construction": 100,
+      "max_kmeans_iter": 20,
+      "ctop_r": 3
+    }
+  },
+  "build_configs": {
+    "qCH (default)": {
+      "config": "qCH (default)",
+      "build_time_ms": 62.5,
+      "n_edges": 2327,
+      "recall_at_10": 0.464,
+      "recall_at_100": 0.2328,
+      "recall_at_10_ood": 0.424,
+      "recall_at_10_vs_proxy": 0.376,
+      "local_minima_rate": 0.86,
+      "connectivity_ok": true,
+      "build_time_ratio": 1.0
+    },
+    "qEMD": {
+      "config": "qEMD",
+      "build_time_ms": 199.4,
+      "n_edges": 1737,
+      "recall_at_10": 0.278,
+      "recall_at_100": 0.8568,
+      "recall_at_10_ood": 0.384,
+      "recall_at_10_vs_proxy": 0.324,
+      "local_minima_rate": 1.0,
+      "connectivity_ok": true,
+      "build_time_ratio": 3.19
+    },
+    "Dual-graph": {
+      "config": "Dual-graph",
+      "build_time_ms": 18.27,
+      "n_edges": 770,
+      "recall_at_10": 0.412,
+      "recall_at_100": 0.4132,
+      "recall_at_10_ood": 0.386,
+      "recall_at_10_vs_proxy": 0.536,
+      "local_minima_rate": 1.0,
+      "connectivity_ok": true,
+      "build_time_ratio": 0.29
+    },
+    "qEMD + Dual": {
+      "config": "qEMD + Dual",
+      "build_time_ms": 109.54,
+      "n_edges": 741,
+      "recall_at_10": 0.436,
+      "recall_at_100": 0.9302,
+      "recall_at_10_ood": 0.468,
+      "recall_at_10_vs_proxy": 0.402,
+      "local_minima_rate": 1.0,
+      "connectivity_ok": true,
+      "build_time_ratio": 1.75
+    }
+  },
+  "mutable_resilience": {
+    "n_docs_initial": 50,
+    "n_deleted": 10,
+    "n_live_after_compact": 40,
+    "search_returned": 5,
+    "no_crash": true,
+    "no_deleted_in_results": true,
+    "pass": true
+  }
+}

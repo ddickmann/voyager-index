@@ -32,6 +32,11 @@ class MultimodalOptimizeMode(str, Enum):
     MAXSIM_THEN_SOLVER = "maxsim_then_solver"
 
 
+class ScreeningMode(str, Enum):
+    GEM = "gem"
+    NONE = "none"
+
+
 class PointVector(BaseModel):
     """Vector or multivector payload for a point."""
 
@@ -176,6 +181,15 @@ class SearchRequest(BaseModel):
         ge=1,
         le=2048,
         description="Optional exact MaxSim frontier size passed into the solver-after packing stage.",
+    )
+    screening_mode: ScreeningMode = Field(
+        default=ScreeningMode.GEM,
+        description=(
+            'Screening strategy for multimodal search. "gem" (default) runs a '
+            "two-stage pipeline: GEM router screening followed by full MaxSim "
+            'reranking. "none" skips screening and queries the GEM graph index '
+            "directly."
+        ),
     )
 
     @model_validator(mode="after")

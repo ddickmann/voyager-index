@@ -35,6 +35,13 @@ except ImportError:
     GEM_ROUTER_AVAILABLE = False
     logger.debug("latence_gem_router not available; GemScreeningIndex will use fallback")
 
+try:
+    from .gpu_qch import GpuQchScorer
+    GPU_QCH_AVAILABLE = True
+except ImportError:
+    GpuQchScorer = None
+    GPU_QCH_AVAILABLE = False
+
 
 DEFAULT_N_FINE_RATIO = 0.5
 MAX_FINE_CENTROIDS = 4096

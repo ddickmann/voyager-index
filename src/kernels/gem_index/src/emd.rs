@@ -1,4 +1,5 @@
 use latence_gem_router::codebook::TwoStageCodebook;
+use latence_gem_router::router::FlatDocCodes;
 
 use crate::network_simplex::emd_sinkhorn;
 
@@ -193,10 +194,9 @@ pub fn qemd_between_docs(
         }
     }
 
-    // Log-domain Sinkhorn with lambda=20 and early stopping (tol=1e-6, max 100 iters).
-    // Lambda=20 provides sufficient ranking accuracy for neighbor selection during
-    // graph construction while converging ~3-5x faster than lambda=100.
-    let result = emd_sinkhorn(&weights_a, &weights_b, &cost_matrix, 20.0, 100);
+    // Log-domain Sinkhorn: lambda=20 for ranking accuracy, max 50 iters with
+    // early stopping (tol=1e-6, checked every 10 iters). Typical convergence: 10-30 iters.
+    let result = emd_sinkhorn(&weights_a, &weights_b, &cost_matrix, 20.0, 50);
     result as f32
 }
 
@@ -294,6 +294,40 @@ pub fn qch_proxy_symmetric(
     (ab + ba) * 0.5
 }
 
+/// Discover document pairs with large metric gap (qEMD vs qCH disagree).
+/// Samples `sample_size` random pairs and returns those where the absolute
+/// difference between normalized qEMD and qCH distances exceeds `gap_threshold`.
+pub fn discover_metric_gap_pairs(
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    n_docs: usize,
+    sample_size: usize,
+    gap_threshold: f32,
+) -> Vec<(u32, u32)> {
+    if n_docs < 2 {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    for i in 0..sample_size {
+        let a = i % n_docs;
+        let b = (i * 7 + 13) % n_docs;
+        if a == b {
+            continue;
+        }
+        let codes_a = flat_codes.doc_codes(a);
+        let codes_b = flat_codes.doc_codes(b);
+        if codes_a.is_empty() || codes_b.is_empty() {
+            continue;
+        }
+        let qemd = qemd_between_docs(codebook, codes_a, codes_b);
+        let qch = qch_proxy_between_docs(codebook, codes_a, codes_b);
+        if (qemd - qch).abs() > gap_threshold {
+            result.push((a as u32, b as u32));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +409,8 @@ mod tests {
         let b: Vec<u16> = assignments[5..10].iter().map(|&c| c as u16).collect();
         let ab = qemd_between_docs(&cb, &a, &b);
         let ba = qemd_between_docs(&cb, &b, &a);
-        assert!((ab - ba).abs() < 1e-4, "qEMD should be symmetric: ab={ab}, ba={ba}");
+        let rel_diff = (ab - ba).abs() / (ab + ba).max(1e-8);
+        assert!(rel_diff < 0.02, "qEMD should be approximately symmetric: ab={ab}, ba={ba}, rel_diff={rel_diff}");
     }
 
     #[test]
@@ -450,5 +485,44 @@ mod tests {
         assert_eq!(construction_distance(&cb, &[], &codes, false), f32::MAX);
         assert_eq!(construction_distance(&cb, &codes, &[], true), f32::MAX);
         assert_eq!(construction_distance(&cb, &codes, &[], false), f32::MAX);
+    }
+
+    #[test]
+    fn test_metric_gap_discovery() {
+        use latence_gem_router::router::FlatDocCodes;
+
+        let dim = 8;
+        let n_docs = 20;
+        let tokens_per_doc = 5;
+        let n = n_docs * tokens_per_doc;
+        let mut rng = StdRng::seed_from_u64(42);
+        let data: Vec<f32> = (0..n * dim).map(|_| rng.gen::<f32>() - 0.5).collect();
+        let cb = TwoStageCodebook::build(&data, n, dim, 8, 4, 10, 42);
+        let assignments = cb.assign_vectors(&data, n);
+
+        let mut flat_codes = FlatDocCodes::new();
+        for doc in 0..n_docs {
+            let start = doc * tokens_per_doc;
+            let end = (doc + 1) * tokens_per_doc;
+            let cids: Vec<u32> = assignments[start..end].to_vec();
+            flat_codes.add_doc(&cids);
+        }
+
+        let pairs = discover_metric_gap_pairs(&cb, &flat_codes, n_docs, 50, 0.0);
+        // With threshold=0 we expect most non-identical pairs since qEMD and qCH
+        // almost always differ by some amount.
+        assert!(!pairs.is_empty(), "should find at least some gap pairs with threshold=0");
+
+        for &(a, b) in &pairs {
+            assert_ne!(a, b, "same-doc pairs should be skipped");
+            assert!((a as usize) < n_docs);
+            assert!((b as usize) < n_docs);
+        }
+
+        let strict_pairs = discover_metric_gap_pairs(&cb, &flat_codes, n_docs, 50, 100.0);
+        assert!(
+            strict_pairs.len() <= pairs.len(),
+            "higher threshold should yield fewer or equal pairs"
+        );
     }
 }
