@@ -3,6 +3,7 @@
 pub mod codebook;
 pub mod router;
 pub mod persistence;
+pub mod adaptive_cutoff;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -253,6 +254,47 @@ impl PyGemRouter {
             })
             .collect();
         Ok(results)
+    }
+
+    /// Train an adaptive cluster cutoff decision tree from query-positive pairs.
+    ///
+    /// Args:
+    ///   training_queries: (Q_total, D) float32 matrix of all query vectors
+    ///   n_query_vecs: list of ints — number of vectors per query
+    ///   training_positives: list of internal doc indices (positive examples)
+    ///   t: top centroids per query token (default 3)
+    ///   r_max: maximum cluster cutoff to consider (default 8)
+    ///   max_depth: decision tree depth limit (default 6)
+    ///
+    /// Returns: serialized tree as bytes (use with CutoffTree.from_bytes)
+    #[pyo3(signature = (training_queries, n_query_vecs, training_positives, t = 3, r_max = 8, max_depth = 6))]
+    fn train_adaptive_cutoff(
+        &self,
+        training_queries: PyReadonlyArray2<f32>,
+        n_query_vecs: Vec<usize>,
+        training_positives: Vec<usize>,
+        t: usize,
+        r_max: usize,
+        max_depth: usize,
+    ) -> PyResult<Vec<u8>> {
+        if !self.inner.is_ready() {
+            return Err(PyValueError::new_err("router not built"));
+        }
+        let arr = training_queries.as_array();
+        let flat = arr.as_slice().ok_or_else(|| {
+            PyValueError::new_err("array must be C-contiguous")
+        })?;
+
+        let tree = self.inner.train_adaptive_cutoff(
+            flat,
+            &n_query_vecs,
+            &training_positives,
+            t,
+            r_max,
+            max_depth,
+        ).ok_or_else(|| PyValueError::new_err("training failed: no state or no pairs"))?;
+
+        Ok(tree.to_bytes())
     }
 }
 

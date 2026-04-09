@@ -228,6 +228,7 @@ dependencies = [
 name = "latence-gem-router"
 version = "0.1.1"
 dependencies = [
+ "bincode",
  "crc32fast",
  "matrixmultiply",
  "ndarray",

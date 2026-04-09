@@ -1,7 +1,7 @@
 use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop, qch_proxy_score_u16};
 use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes};
 
-use crate::graph::{select_neighbors_heuristic, shrink_neighbors, VecAdjacency};
+use crate::graph::{select_neighbors_heuristic_cached, shrink_neighbors_emd, VecAdjacency};
 use crate::id_tracker::IdTracker;
 use crate::search::{beam_search, beam_search_construction};
 
@@ -25,6 +25,7 @@ pub struct MutableGemSegment {
     pub dim: usize,
     pub all_vectors: Vec<f32>,
     pub doc_offsets: Vec<(usize, usize)>,
+    pub use_emd: bool,
     initial_edges: usize,
 }
 
@@ -119,6 +120,7 @@ impl MutableGemSegment {
             dim,
             all_vectors: all_vectors.to_vec(),
             doc_offsets: doc_offsets.to_vec(),
+            use_emd: false,
             initial_edges,
         }
     }
@@ -191,12 +193,14 @@ impl MutableGemSegment {
             };
 
             let doc_codes = self.flat_codes.doc_codes(idx);
-            let neighbors = select_neighbors_heuristic(
+            let neighbors = select_neighbors_heuristic_cached(
                 &candidates,
                 doc_codes,
                 self.max_degree,
                 &self.codebook,
                 &self.flat_codes,
+                None,
+                self.use_emd,
             );
 
             for &(nbr_idx, _score) in &neighbors {
@@ -204,12 +208,13 @@ impl MutableGemSegment {
                 self.adjacency[nbr_idx as usize].push(int_id);
 
                 if self.adjacency[nbr_idx as usize].len() > self.max_degree {
-                    shrink_neighbors(
+                    shrink_neighbors_emd(
                         nbr_idx as usize,
                         self.max_degree,
                         &mut self.adjacency,
                         &self.codebook,
                         &self.flat_codes,
+                        self.use_emd,
                     );
                 }
             }
@@ -251,23 +256,25 @@ impl MutableGemSegment {
             }
 
             if self.adjacency[node_idx].len() >= self.max_degree {
-                shrink_neighbors(
+                shrink_neighbors_emd(
                     node_idx,
                     self.max_degree - 1,
                     &mut self.adjacency,
                     &self.codebook,
                     &self.flat_codes,
+                    self.use_emd,
                 );
             }
             self.adjacency[node_idx].push(rep);
             self.adjacency[rep_usize].push(node_u32);
             if self.adjacency[rep_usize].len() > self.max_degree {
-                shrink_neighbors(
+                shrink_neighbors_emd(
                     rep_usize,
                     self.max_degree,
                     &mut self.adjacency,
                     &self.codebook,
                     &self.flat_codes,
+                    self.use_emd,
                 );
             }
         }

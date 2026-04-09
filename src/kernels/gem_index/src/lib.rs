@@ -3,6 +3,7 @@
 pub mod visited;
 pub mod id_tracker;
 pub mod emd;
+pub mod network_simplex;
 pub mod graph;
 pub mod search;
 pub mod persistence;
@@ -58,7 +59,9 @@ impl GemSegment {
     ///   max_kmeans_iter: k-means iteration limit
     ///   ctop_r: number of top coarse clusters per document
     ///   payload_clusters: optional per-doc cluster IDs for payload-aware construction
-    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, payload_clusters = None))]
+    ///   use_emd: use qEMD (Earth Mover's Distance) for graph construction instead of qCH
+    ///   dual_graph: use per-cluster dual-graph construction (GEM paper Algorithm 1)
+    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, payload_clusters = None, use_emd = true, dual_graph = true))]
     fn build(
         &mut self,
         py: Python<'_>,
@@ -72,6 +75,8 @@ impl GemSegment {
         max_kmeans_iter: usize,
         ctop_r: usize,
         payload_clusters: Option<Vec<u32>>,
+        use_emd: bool,
+        dual_graph: bool,
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
         let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
@@ -140,11 +145,19 @@ impl GemSegment {
                 });
             }
 
-            let gem_graph = graph::build_graph_with_payload(
-                &flat, dim, &doc_offsets, &codebook, &flat_codes,
-                &doc_profiles, &postings, max_degree, ef_construction,
-                payload_clusters.as_deref(),
-            );
+            let gem_graph = if dual_graph {
+                graph::build_graph_dual(
+                    &flat, dim, &doc_offsets, &codebook, &flat_codes,
+                    &doc_profiles, &postings, max_degree, ef_construction,
+                    use_emd,
+                )
+            } else {
+                graph::build_graph_with_payload(
+                    &flat, dim, &doc_offsets, &codebook, &flat_codes,
+                    &doc_profiles, &postings, max_degree, ef_construction,
+                    payload_clusters.as_deref(), use_emd,
+                )
+            };
 
             SealedInner {
                 graph: gem_graph,
@@ -496,7 +509,8 @@ impl PyMutableGemSegment {
     }
 
     /// Build a mutable segment from a seed batch: trains codebook + builds initial graph.
-    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, n_probes = 4))]
+    ///   use_emd: use qEMD for neighbor selection during insert (default false for latency)
+    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, n_probes = 4, use_emd = false))]
     fn build(
         &mut self,
         py: Python<'_>,
@@ -510,6 +524,7 @@ impl PyMutableGemSegment {
         max_kmeans_iter: usize,
         ctop_r: usize,
         n_probes: usize,
+        use_emd: bool,
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
         let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
@@ -535,13 +550,14 @@ impl PyMutableGemSegment {
             PyValueError::new_err("array must be C-contiguous")
         })?.to_vec();
 
-        let seg = py.allow_threads(move || {
+        let mut seg = py.allow_threads(move || {
             MutableGemSegment::build(
                 &flat, dim, &doc_ids, &doc_offsets,
                 n_fine, n_coarse, max_degree, ef_construction,
                 max_kmeans_iter, ctop_r, n_probes,
             )
         });
+        seg.use_emd = use_emd;
 
         self.inner = Some(seg);
         Ok(())

@@ -352,6 +352,128 @@ impl GemRouter {
     pub fn restore_state(&mut self, state: GemRouterState) {
         self.state = Some(state);
     }
+
+    /// Train an adaptive cutoff decision tree from query-positive training pairs.
+    ///
+    /// For each (query, positive_doc) pair, computes the optimal cluster cutoff
+    /// and trains a decision tree to predict it from document features.
+    ///
+    /// - `training_queries`: flat query vectors
+    /// - `n_query_vecs`: number of vectors per query
+    /// - `training_positives`: positive document indices (internal)
+    /// - `t`: top centroids per query token for label computation
+    /// - `r_max`: maximum clusters to consider
+    /// - `max_depth`: tree depth limit
+    pub fn train_adaptive_cutoff(
+        &self,
+        training_queries: &[f32],
+        n_query_vecs: &[usize],
+        training_positives: &[usize],
+        t: usize,
+        r_max: usize,
+        max_depth: usize,
+    ) -> Option<crate::adaptive_cutoff::CutoffTree> {
+        let state = self.state.as_ref()?;
+        let n_pairs = training_positives.len();
+        if n_pairs == 0 {
+            return None;
+        }
+
+        // Build query top-clusters for each pair
+        let mut query_top_clusters: Vec<Vec<u32>> = Vec::with_capacity(n_pairs);
+        let mut offset = 0usize;
+        for &nq in n_query_vecs {
+            let qvecs = &training_queries[offset..offset + nq * state.codebook.dim];
+            let q_cids = state.codebook.assign_vectors(qvecs, nq);
+            let q_ctop = compute_ctop(&state.codebook, &q_cids, t);
+            query_top_clusters.push(q_ctop);
+            offset += nq * state.codebook.dim;
+        }
+
+        // Build doc sorted clusters for each positive
+        let doc_sorted_clusters: Vec<Vec<u32>> = training_positives
+            .iter()
+            .map(|&doc_idx| {
+                if doc_idx < state.doc_profiles.len() {
+                    let cids = &state.doc_profiles[doc_idx].centroid_ids;
+                    let mut coarse_scores = vec![0.0f32; state.codebook.n_coarse];
+                    for &cid in cids {
+                        let idx = cid as usize;
+                        if idx < state.codebook.n_fine {
+                            let coarse = state.codebook.cindex_labels[idx] as usize;
+                            if coarse < state.codebook.n_coarse {
+                                coarse_scores[coarse] += state.codebook.idf[idx];
+                            }
+                        }
+                    }
+                    let mut indexed: Vec<(usize, f32)> = coarse_scores
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &s)| s > 0.0)
+                        .map(|(i, &s)| (i, s))
+                        .collect();
+                    indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    indexed.iter().map(|&(i, _)| i as u32).collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+
+        // Compute labels
+        let labels = crate::adaptive_cutoff::compute_training_labels(
+            &query_top_clusters,
+            &doc_sorted_clusters,
+            r_max,
+        );
+
+        // Build features for each positive doc
+        let cluster_scores: Vec<Vec<f32>> = training_positives
+            .iter()
+            .map(|&doc_idx| {
+                if doc_idx < state.doc_profiles.len() {
+                    let cids = &state.doc_profiles[doc_idx].centroid_ids;
+                    let mut coarse_scores = vec![0.0f32; state.codebook.n_coarse];
+                    for &cid in cids {
+                        let idx = cid as usize;
+                        if idx < state.codebook.n_fine {
+                            let coarse = state.codebook.cindex_labels[idx] as usize;
+                            if coarse < state.codebook.n_coarse {
+                                coarse_scores[coarse] += state.codebook.idf[idx];
+                            }
+                        }
+                    }
+                    coarse_scores
+                } else {
+                    vec![0.0; state.codebook.n_coarse]
+                }
+            })
+            .collect();
+
+        let doc_lengths: Vec<usize> = training_positives
+            .iter()
+            .map(|&doc_idx| {
+                if doc_idx < state.doc_profiles.len() {
+                    state.doc_profiles[doc_idx].centroid_ids.len()
+                } else {
+                    0
+                }
+            })
+            .collect();
+
+        let doc_features = crate::adaptive_cutoff::build_doc_features(
+            &cluster_scores,
+            &doc_lengths,
+            r_max,
+        );
+
+        Some(crate::adaptive_cutoff::CutoffTree::train(
+            &doc_features,
+            &labels,
+            max_depth,
+            r_max,
+        ))
+    }
 }
 
 #[cfg(test)]

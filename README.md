@@ -107,10 +107,14 @@ stats = idx.stats()                        # IndexStats
 idx.snapshot("backup.tar.gz")              # full snapshot
 ```
 
+### Implemented GEM Paper Features
+
+- **qEMD graph construction** (Section 4.2): Graph edges built using quantized Earth Mover's Distance via Sinkhorn-regularized OT with histogram reduction, providing metric-decoupled construction for stable navigation
+- **Dual-graph construction** (Section 4.3): Per-cluster local graph build with explicit cross-cluster bridge enforcement (Algorithms 1-3)
+- **Adaptive cluster cutoff** (Section 4.4.2): Decision tree predictor for per-document cluster membership, trained from query-positive pairs
+
 ### Future Work
 
-- qEMD-routed graph edges (Earth Mover's Distance for construction, Section 4.2)
-- Adaptive per-document cluster cutoff (decision tree, Section 4.4.2)
 - Full-scale benchmarks at 1M+ documents
 
 ## Additional Components

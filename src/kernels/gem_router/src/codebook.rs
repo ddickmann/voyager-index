@@ -469,6 +469,49 @@ pub fn compute_ctop(
     indexed.iter().map(|&(i, _)| i as u32).collect()
 }
 
+/// Compute coarse cluster profile with adaptive cutoff via decision tree.
+///
+/// Instead of a fixed top_r, uses a CutoffTree to predict the optimal number
+/// of clusters based on per-document features (TF-IDF scores and doc length).
+pub fn compute_ctop_adaptive(
+    codebook: &TwoStageCodebook,
+    centroid_ids: &[u32],
+    tree: &crate::adaptive_cutoff::CutoffTree,
+    r_max: usize,
+) -> Vec<u32> {
+    let mut coarse_scores = vec![0.0f32; codebook.n_coarse];
+    for &cid in centroid_ids {
+        let idx = cid as usize;
+        if idx >= codebook.n_fine {
+            continue;
+        }
+        let coarse_label = codebook.cindex_labels[idx] as usize;
+        if coarse_label < codebook.n_coarse {
+            coarse_scores[coarse_label] += codebook.idf[idx];
+        }
+    }
+
+    let mut indexed: Vec<(usize, f32)> = coarse_scores
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s > 0.0)
+        .map(|(i, &s)| (i, s))
+        .collect();
+    indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    // Build feature vector: top r_max scores + normalized doc length
+    let mut features = vec![0.0f32; r_max + 1];
+    for (i, &(_, score)) in indexed.iter().take(r_max).enumerate() {
+        features[i] = score;
+    }
+    features[r_max] = centroid_ids.len() as f32 / 128.0; // normalize by typical doc length
+
+    let predicted_r = tree.predict(&features).max(1).min(indexed.len());
+
+    indexed.truncate(predicted_r);
+    indexed.iter().map(|&(i, _)| i as u32).collect()
+}
+
 pub fn cluster_overlap(a: &[u32], b: &[u32]) -> usize {
     let mut count = 0;
     for &x in a {
