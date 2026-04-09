@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voyager-index"
-version = "0.1.2"
+version = "0.1.0"
 description = "Local-first multivector and hybrid retrieval with MaxSim, durable CRUD, Docker deployment, and Tabu Search optimization."
 readme = "README.md"
 requires-python = ">=3.10"

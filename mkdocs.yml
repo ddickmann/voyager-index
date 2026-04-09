@@ -1,0 +1,55 @@
+site_name: voyager-index
+site_description: Native multi-vector graph index for ColBERT/ColPali retrieval
+site_url: https://ddickmann.github.io/voyager-index/
+
+repo_name: ddickmann/voyager-index
+repo_url: https://github.com/ddickmann/voyager-index
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: getting-started/quickstart.md
+    - Installation: getting-started/installation.md
+  - Guides:
+    - ColBERT Search: guides/colbert.md
+    - ColPali Multimodal: guides/colpali.md
+    - GEM Native Index: guides/gem-native.md
+  - API Reference:
+    - Python API: api/python.md
+    - Rust Crates: api/rust.md
+  - Benchmarks: benchmarks.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search

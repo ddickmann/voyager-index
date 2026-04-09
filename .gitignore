@@ -37,6 +37,7 @@ wandb/
 src/kernels/knapsack_solver/target/
 src/kernels/hnsw_indexer/target/
 src/kernels/gem_router/target/
+src/kernels/gem_index/target/
 *.whl
 
 # IDE

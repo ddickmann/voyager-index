@@ -11,6 +11,11 @@ from typing import Any
 __version__: str = _pkg_version("voyager-index")
 
 _EXPORTS = {
+    "Index": ("voyager_index.index", "Index"),
+    "IndexBuilder": ("voyager_index.index", "IndexBuilder"),
+    "SearchResult": ("voyager_index.index", "SearchResult"),
+    "ScrollPage": ("voyager_index.index", "ScrollPage"),
+    "IndexStats": ("voyager_index.index", "IndexStats"),
     "BM25Config": ("voyager_index.config", "BM25Config"),
     "FusionConfig": ("voyager_index.config", "FusionConfig"),
     "IndexConfig": ("voyager_index.config", "IndexConfig"),
@@ -50,6 +55,11 @@ def __dir__() -> list[str]:
     return sorted(list(globals().keys()) + list(__all__) + ["__version__"])
 
 __all__ = [
+    "Index",
+    "IndexBuilder",
+    "SearchResult",
+    "ScrollPage",
+    "IndexStats",
     "BM25Config",
     "FusionConfig",
     "IndexConfig",

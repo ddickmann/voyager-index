@@ -31,7 +31,18 @@ jobs:
           python -m pip install .
       - name: Smoke import public package
         run: |
-          python -c "import voyager_index; from voyager_index import DEFAULT_MULTIMODAL_MODEL, DEFAULT_MULTIMODAL_MODEL_SPEC, SUPPORTED_MULTIMODAL_MODELS, fast_colbert_scores; assert DEFAULT_MULTIMODAL_MODEL == 'collfm2'; assert DEFAULT_MULTIMODAL_MODEL_SPEC is SUPPORTED_MULTIMODAL_MODELS['collfm2']; assert 'colqwen3' in SUPPORTED_MULTIMODAL_MODELS; assert callable(fast_colbert_scores); print(voyager_index.__all__)"
+          python -c "
+          import voyager_index
+          from voyager_index import DEFAULT_MULTIMODAL_MODEL, DEFAULT_MULTIMODAL_MODEL_SPEC, SUPPORTED_MULTIMODAL_MODELS, fast_colbert_scores
+          from voyager_index import Index, IndexBuilder, SearchResult, ScrollPage, IndexStats
+          assert DEFAULT_MULTIMODAL_MODEL == 'collfm2'
+          assert DEFAULT_MULTIMODAL_MODEL_SPEC is SUPPORTED_MULTIMODAL_MODELS['collfm2']
+          assert 'colqwen3' in SUPPORTED_MULTIMODAL_MODELS
+          assert callable(fast_colbert_scores)
+          assert Index is not None
+          assert IndexBuilder is not None
+          print(voyager_index.__all__)
+          "
 
   package-build:
     runs-on: ubuntu-latest
@@ -108,6 +119,7 @@ jobs:
           python -m pip install -e ".[server,multimodal,dev,native-hnsw-build,native-gem-build]"
           python -m pip install ./src/kernels/hnsw_indexer
           python -m pip install ./src/kernels/gem_router
+          python -m pip install ./src/kernels/gem_index
       - name: Run OSS foundation tests
         run: |
           pytest \
@@ -153,10 +165,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -e ".[server,multimodal,dev,native-build,native-gem-build]"
-          python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver ./src/kernels/gem_router
+          python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver ./src/kernels/gem_router ./src/kernels/gem_index
       - name: Smoke import native packages
         run: |
-          python -c "import latence_hnsw, latence_solver, latence_gem_router; from latence_solver import TabuSearchSolver; assert hasattr(latence_hnsw, 'HnswSegment'); assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; assert hasattr(latence_gem_router, 'PyGemRouter'); print(latence_hnsw.__file__); print(latence_solver.version()); print(latence_gem_router.__file__)"
+          python -c "import latence_hnsw, latence_solver, latence_gem_router, latence_gem_index; from latence_solver import TabuSearchSolver; assert hasattr(latence_hnsw, 'HnswSegment'); assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; assert hasattr(latence_gem_router, 'PyGemRouter'); assert hasattr(latence_gem_index, 'GemSegment'); print(latence_hnsw.__file__); print(latence_solver.version()); print(latence_gem_router.__file__); print(latence_gem_index.__file__)"
       - name: Prepare native validation fixtures
         run: |
           python - <<'PY'

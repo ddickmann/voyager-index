@@ -1,0 +1,20 @@
+{
+  "n_docs": 1000,
+  "tokens_per_doc": 128,
+  "dim": 128,
+  "gem_search_ms": {
+    "p50": 1.435,
+    "p99": 1.96,
+    "mean": 1.46
+  },
+  "maxsim_rerank_ms": {
+    "device": "cuda",
+    "p50": 0.094,
+    "p99": 0.123,
+    "mean": 0.096
+  },
+  "knapsack_ms": {
+    "error": "argument 'embeddings': 'ndarray' object cannot be converted to 'PyArray<T, D>'"
+  },
+  "total_pipeline_ms": 1.556
+}

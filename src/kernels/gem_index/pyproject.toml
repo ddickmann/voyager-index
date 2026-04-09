@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "latence-gem-index"
+version = "0.1.0"
+description = "Native GEM graph index for multi-vector retrieval"
+authors = [{name = "Latence Team"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "latence_gem_index"

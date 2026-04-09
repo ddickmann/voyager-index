@@ -1,0 +1,30 @@
+{
+  "config": {
+    "dim": 128,
+    "seq_len": 1024,
+    "n_docs": 100,
+    "n_queries": 100,
+    "k": 10
+  },
+  "gem": {
+    "build_ms": 2297.9,
+    "n_docs": 100,
+    "n_edges": 0,
+    "search_p50_us": 1288.1,
+    "search_p95_us": 1470.6,
+    "search_p99_us": 1516.9,
+    "search_mean_us": 1296.9
+  },
+  "hnsw": {
+    "build_ms": 102.8,
+    "n_items": 100,
+    "n_query_tokens_used": 32,
+    "note": "per-token search x 32 tokens + MaxSim aggregation",
+    "search_p50_us": 67218.1,
+    "search_p95_us": 71227.3,
+    "search_p99_us": 73957.5,
+    "search_mean_us": 67458.3
+  },
+  "speedup_p50": 52.18,
+  "speedup_p99": 48.76
+}
