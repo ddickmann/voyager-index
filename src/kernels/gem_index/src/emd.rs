@@ -20,20 +20,19 @@ pub fn qch_proxy_between_docs(
     }
     let n_fine = codebook.n_fine;
     let dists = &codebook.centroid_dists;
-
-    debug_assert!(
-        codes_a.iter().all(|&c| (c as usize) < n_fine),
-        "codes_a contains out-of-range centroid"
-    );
-    debug_assert!(
-        codes_b.iter().all(|&c| (c as usize) < n_fine),
-        "codes_b contains out-of-range centroid"
-    );
+    let dists_len = dists.len();
 
     let mut total = 0.0f32;
     for &ca in codes_a {
-        let row_base = (ca as usize) * n_fine;
-        let max_ip = max_ip_from_row(dists, row_base, codes_b);
+        let ca_idx = ca as usize;
+        if ca_idx >= n_fine {
+            continue;
+        }
+        let row_base = ca_idx * n_fine;
+        if row_base + n_fine > dists_len {
+            continue;
+        }
+        let max_ip = max_ip_from_row(dists, row_base, codes_b, n_fine);
         total += max_ip;
     }
     1.0 - total / codes_a.len() as f32
@@ -41,24 +40,38 @@ pub fn qch_proxy_between_docs(
 
 /// Core inner loop: for a single query centroid (row in distance matrix),
 /// find the maximum inner-product score against all document centroids.
+/// `n_fine` is the row width — all codes_b entries must be < n_fine.
 #[inline]
-fn max_ip_from_row(dists: &[f32], row_base: usize, codes_b: &[u16]) -> f32 {
+fn max_ip_from_row(dists: &[f32], row_base: usize, codes_b: &[u16], n_fine: usize) -> f32 {
     let mut max_ip = f32::NEG_INFINITY;
 
-    // Process in chunks of 8 for auto-vectorization
     let chunks = codes_b.chunks_exact(8);
     let remainder = chunks.remainder();
 
     for chunk in chunks {
-        // Gather 8 L2 distances and convert to IP
-        let d0 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(0) as usize) };
-        let d1 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(1) as usize) };
-        let d2 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(2) as usize) };
-        let d3 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(3) as usize) };
-        let d4 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(4) as usize) };
-        let d5 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(5) as usize) };
-        let d6 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(6) as usize) };
-        let d7 = unsafe { *dists.get_unchecked(row_base + *chunk.get_unchecked(7) as usize) };
+        let c0 = chunk[0] as usize;
+        let c1 = chunk[1] as usize;
+        let c2 = chunk[2] as usize;
+        let c3 = chunk[3] as usize;
+        let c4 = chunk[4] as usize;
+        let c5 = chunk[5] as usize;
+        let c6 = chunk[6] as usize;
+        let c7 = chunk[7] as usize;
+
+        if c0 >= n_fine || c1 >= n_fine || c2 >= n_fine || c3 >= n_fine
+            || c4 >= n_fine || c5 >= n_fine || c6 >= n_fine || c7 >= n_fine
+        {
+            continue;
+        }
+
+        let d0 = dists[row_base + c0];
+        let d1 = dists[row_base + c1];
+        let d2 = dists[row_base + c2];
+        let d3 = dists[row_base + c3];
+        let d4 = dists[row_base + c4];
+        let d5 = dists[row_base + c5];
+        let d6 = dists[row_base + c6];
+        let d7 = dists[row_base + c7];
 
         let ip0 = 1.0 - d0 * d0 * 0.5;
         let ip1 = 1.0 - d1 * d1 * 0.5;
@@ -83,7 +96,11 @@ fn max_ip_from_row(dists: &[f32], row_base: usize, codes_b: &[u16]) -> f32 {
     }
 
     for &cb in remainder {
-        let l2 = unsafe { *dists.get_unchecked(row_base + cb as usize) };
+        let idx = cb as usize;
+        if idx >= n_fine {
+            continue;
+        }
+        let l2 = dists[row_base + idx];
         let ip = 1.0 - l2 * l2 * 0.5;
         if ip > max_ip {
             max_ip = ip;
@@ -107,16 +124,20 @@ pub fn qch_proxy_score_idf_weighted(
         return f32::MAX;
     }
 
+    let scores_len = query_centroid_scores.len();
     let mut weighted_total = 0.0f32;
     let mut weight_sum = 0.0f32;
     for qi in 0..n_query_vecs {
         let row_start = qi * n_centroids;
+        if row_start + n_centroids > scores_len {
+            continue;
+        }
         let mut max_score = f32::NEG_INFINITY;
         let mut best_centroid = 0usize;
         for &dc in doc_codes {
             let idx = dc as usize;
             if idx < n_centroids {
-                let s = unsafe { *query_centroid_scores.get_unchecked(row_start + idx) };
+                let s = query_centroid_scores[row_start + idx];
                 if s > max_score {
                     max_score = s;
                     best_centroid = idx;
@@ -125,7 +146,7 @@ pub fn qch_proxy_score_idf_weighted(
         }
         if max_score > f32::NEG_INFINITY {
             let w = if best_centroid < idf.len() {
-                unsafe { *idf.get_unchecked(best_centroid) }
+                idf[best_centroid]
             } else {
                 1.0
             };

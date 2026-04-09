@@ -29,6 +29,18 @@ impl TwoStageCodebook {
         max_iter: usize,
         seed: u64,
     ) -> Self {
+        if n_vectors == 0 || dim == 0 {
+            return Self {
+                cquant: Vec::new(),
+                n_fine: 0,
+                dim,
+                cindex_labels: Vec::new(),
+                n_coarse: 0,
+                centroid_dists: Vec::new(),
+                idf: Vec::new(),
+            };
+        }
+
         let n_fine = n_fine.min(n_vectors).max(2);
         let n_coarse = n_coarse.min(n_fine / 2).max(2);
 
@@ -201,13 +213,23 @@ impl TwoStageCodebook {
         let m = n_query;
         let k = self.dim;
         let n = self.n_fine;
-        debug_assert!(out.len() >= m * n);
+        assert!(
+            query_vecs.len() >= m * k,
+            "sgemm: query_vecs too short ({} < {})", query_vecs.len(), m * k
+        );
+        assert!(
+            out.len() >= m * n,
+            "sgemm: output buffer too short ({} < {})", out.len(), m * n
+        );
+        assert!(
+            self.cquant.len() >= n * k,
+            "sgemm: codebook too short ({} < {})", self.cquant.len(), n * k
+        );
 
-        // C(m x n) = A(m x k) * B^T(k x n)
-        // A = query_vecs, row-major (m, k) → rsa=k, csa=1
-        // B = cquant, stored row-major as (n_fine, dim) = (n, k)
-        // B^T = (k, n) → rsb=1, csb=k  (transpose trick on row-major B)
-        // C = out, row-major (m, n) → rsc=n, csc=1
+        if m == 0 || k == 0 || n == 0 {
+            return;
+        }
+
         unsafe {
             matrixmultiply::sgemm(
                 m, k, n,
@@ -326,14 +348,20 @@ fn qch_proxy_score_u16_scalar(
     n_centroids: usize,
     doc_codes: &[u16],
 ) -> f32 {
+    let scores_len = query_centroid_scores.len();
     let mut total = 0.0f32;
     for qi in 0..n_query_vecs {
-        let row = &query_centroid_scores[qi * n_centroids..(qi + 1) * n_centroids];
+        let start = qi * n_centroids;
+        let end = start + n_centroids;
+        if end > scores_len {
+            continue;
+        }
+        let row = &query_centroid_scores[start..end];
         let mut max_score = f32::NEG_INFINITY;
         for &dc in doc_codes {
             let idx = dc as usize;
             if idx < n_centroids {
-                let s = unsafe { *row.get_unchecked(idx) };
+                let s = row[idx];
                 if s > max_score {
                     max_score = s;
                 }
@@ -436,7 +464,7 @@ pub fn compute_ctop(
         .filter(|(_, &s)| s > 0.0)
         .map(|(i, &s)| (i, s))
         .collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
     indexed.truncate(top_r);
     indexed.iter().map(|&(i, _)| i as u32).collect()
 }

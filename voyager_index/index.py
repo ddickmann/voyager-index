@@ -143,6 +143,8 @@ class Index:
             from voyager_index._internal.inference.index_core.gem_manager import (
                 GemNativeSegmentManager,
             )
+            mgr_kwargs = dict(kwargs)
+            mgr_kwargs["enable_wal"] = enable_wal
             self._manager = GemNativeSegmentManager(
                 shard_path=str(self._path / "shard"),
                 dim=dim,
@@ -151,7 +153,7 @@ class Index:
                 max_degree=max_degree,
                 gem_ef_construction=ef_construction,
                 n_probes=n_probes,
-                **kwargs,
+                **mgr_kwargs,
             )
         elif resolved_engine == "hnsw":
             from voyager_index._internal.inference.index_core.hnsw_manager import (
@@ -317,10 +319,18 @@ class Index:
         self._check_open()
 
         with self._lock:
-            raw = self._manager.search(
-                query.astype(np.float32, copy=False),
-                k=k, ef=ef, filters=filters,
-            )
+            search_kwargs_inner = {"k": k, "ef": ef, "filters": filters}
+            if hasattr(self._manager, 'search_multivector'):
+                qv = query.astype(np.float32, copy=False)
+                qv = qv if qv.ndim == 2 else qv.reshape(1, -1)
+                raw = self._manager.search_multivector(
+                    qv, k=k, ef=ef, n_probes=n_probes, filters=filters,
+                )
+            else:
+                raw = self._manager.search(
+                    query.astype(np.float32, copy=False),
+                    **search_kwargs_inner,
+                )
 
             payloads_snap = dict(self._payloads)
 
@@ -411,15 +421,16 @@ class Index:
         self._check_open()
 
         with self._lock:
-            all_ids = sorted(self._payloads.keys())
-
             if filters and hasattr(self._manager, '_match_filter'):
-                all_ids = [
-                    doc_id for doc_id in all_ids
+                all_ids = sorted(
+                    doc_id for doc_id in self._payloads
                     if self._manager._match_filter(doc_id, filters)
-                ]
-
-            page_ids = all_ids[offset : offset + limit]
+                )
+                page_ids = all_ids[offset : offset + limit]
+            else:
+                ids_list = sorted(self._payloads)
+                page_ids = ids_list[offset : offset + limit]
+                all_ids = ids_list
             results = [
                 SearchResult(doc_id=doc_id, score=0.0, payload=self._payloads.get(doc_id))
                 for doc_id in page_ids

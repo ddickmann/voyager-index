@@ -239,7 +239,9 @@ impl PyGemRouter {
             .compute_query_profile(flat, n_query_vecs, n_probes)
             .ok_or_else(|| PyValueError::new_err("router state missing"))?;
 
-        let state = self.inner.state().unwrap();
+        let state = self.inner.state().ok_or_else(|| {
+            PyValueError::new_err("router state missing")
+        })?;
         let results: Vec<(u64, usize)> = state.doc_profiles
             .iter()
             .enumerate()

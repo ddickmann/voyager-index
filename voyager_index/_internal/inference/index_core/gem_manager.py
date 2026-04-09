@@ -127,24 +127,37 @@ class GemHybridSegmentManager:
     def _load_next_doc_id(self):
         p = self._shard_path / "next_doc_id.json"
         if p.exists():
-            with open(p) as f:
-                self._next_doc_id = json.load(f)
+            try:
+                with open(p) as f:
+                    self._next_doc_id = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.error("Corrupt next_doc_id.json: %s", e)
 
     def _save_next_doc_id(self):
         p = self._shard_path / "next_doc_id.json"
-        with open(p, "w") as f:
-            json.dump(self._next_doc_id, f)
+        if atomic_json_write is not None:
+            atomic_json_write(p, self._next_doc_id)
+        else:
+            with open(p, "w") as f:
+                json.dump(self._next_doc_id, f)
 
     def _load_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
         if p.exists():
-            with open(p) as f:
-                self._deleted_ids = set(json.load(f))
+            try:
+                with open(p) as f:
+                    self._deleted_ids = set(json.load(f))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.error("Corrupt deleted_ids.json: %s", e)
+                self._deleted_ids = set()
 
     def _save_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
-        with open(p, "w") as f:
-            json.dump(sorted(self._deleted_ids), f)
+        if atomic_json_write is not None:
+            atomic_json_write(p, sorted(self._deleted_ids))
+        else:
+            with open(p, "w") as f:
+                json.dump(sorted(self._deleted_ids), f)
 
     def _load_sealed_segments(self):
         sealed_dir = self._shard_path / "sealed"
@@ -349,6 +362,7 @@ class GemNativeSegmentManager:
         compaction_threshold: float = 0.3,
         compaction_interval_s: float = 60.0,
         enable_shortcuts: bool = False,
+        enable_wal: bool = True,
     ):
         if dim <= 0:
             raise ValueError(f"dim must be positive, got {dim}")
@@ -411,7 +425,7 @@ class GemNativeSegmentManager:
         self._wal_writer: Optional[WalWriter] = None
         self._checkpoint_mgr: Optional[CheckpointManager] = None
 
-        if WalWriter is not None:
+        if enable_wal and WalWriter is not None:
             wal_path = self._shard_path / "wal.bin"
             self._wal_writer = WalWriter(wal_path)
             self._wal_writer.open()
@@ -428,11 +442,24 @@ class GemNativeSegmentManager:
         self._recover_from_wal()
         self._start_compaction_thread()
 
+    def _safe_json_load(self, path: Path, default: Any = None) -> Any:
+        """Load JSON with graceful recovery on corruption."""
+        if not path.exists():
+            return default
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            logger.error(
+                "Corrupt JSON at %s (returning default): %s", path, e
+            )
+            return default
+
     def _load_next_doc_id(self):
         p = self._shard_path / "next_doc_id.json"
-        if p.exists():
-            with open(p) as f:
-                self._next_doc_id = json.load(f)
+        val = self._safe_json_load(p, default=None)
+        if val is not None:
+            self._next_doc_id = int(val)
 
     def _save_next_doc_id(self):
         p = self._shard_path / "next_doc_id.json"
@@ -444,9 +471,9 @@ class GemNativeSegmentManager:
 
     def _load_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
-        if p.exists():
-            with open(p) as f:
-                self._deleted_ids = set(json.load(f))
+        val = self._safe_json_load(p, default=None)
+        if val is not None:
+            self._deleted_ids = set(val)
 
     def _save_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
@@ -458,9 +485,9 @@ class GemNativeSegmentManager:
 
     def _load_sealed_deleted_ids(self):
         p = self._shard_path / "sealed_deleted_ids.json"
-        if p.exists():
-            with open(p) as f:
-                self._sealed_deleted_ids = set(json.load(f))
+        val = self._safe_json_load(p, default=None)
+        if val is not None:
+            self._sealed_deleted_ids = set(val)
 
     def _save_sealed_deleted_ids(self):
         p = self._shard_path / "sealed_deleted_ids.json"
@@ -477,7 +504,29 @@ class GemNativeSegmentManager:
         if GemSegment is None:
             logger.error("latence_gem_index not available — cannot load sealed segments")
             return
+        import shutil
         for seg_dir in sorted(sealed_dir.iterdir()):
+            if not seg_dir.is_dir():
+                continue
+            marker_path = seg_dir / "seal_marker.json"
+            if marker_path.exists():
+                try:
+                    with open(marker_path) as f:
+                        marker = json.load(f)
+                    if marker.get("status") != "completed":
+                        logger.warning(
+                            "Removing incomplete sealed segment %s (seal status: %s)",
+                            seg_dir, marker.get("status"),
+                        )
+                        shutil.rmtree(seg_dir, ignore_errors=True)
+                        continue
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(
+                        "Corrupt seal marker in %s, removing segment: %s", seg_dir, e
+                    )
+                    shutil.rmtree(seg_dir, ignore_errors=True)
+                    continue
+
             gem_path = seg_dir / "segment.gem"
             ids_path = seg_dir / "doc_ids.json"
             if gem_path.exists() and ids_path.exists():
@@ -493,10 +542,9 @@ class GemNativeSegmentManager:
 
     def _load_payloads(self):
         p = self._shard_path / "payloads.json"
-        if p.exists():
-            with open(p) as f:
-                raw = json.load(f)
-                self._payloads = {int(k): v for k, v in raw.items()}
+        raw = self._safe_json_load(p, default=None)
+        if raw is not None and isinstance(raw, dict):
+            self._payloads = {int(k): v for k, v in raw.items()}
 
     def _save_payloads(self):
         p = self._shard_path / "payloads.json"
@@ -622,7 +670,8 @@ class GemNativeSegmentManager:
                 logger.error("Compaction error: %s", e)
 
     def _maybe_compact(self):
-        with self._lock:
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
             if self._active is not None and self._active.is_ready():
                 if self._active.delete_ratio() > self._compaction_threshold:
                     self._active.compact()
@@ -899,7 +948,8 @@ class GemNativeSegmentManager:
             return results
 
     def seal_active_segment(self):
-        with self._lock:
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
             self._seal_active_segment_inner()
 
     def _seal_active_segment_inner(self):
@@ -1008,8 +1058,7 @@ class GemNativeSegmentManager:
         return vecs, ids
 
     def should_seal(self) -> bool:
-        with self._lock:
-            return self._should_seal_inner()
+        return self._should_seal_inner()
 
     def _should_seal_inner(self) -> bool:
         if self._active is None or not self._active.is_ready():
@@ -1021,7 +1070,8 @@ class GemNativeSegmentManager:
         return False
 
     def quality_score(self) -> float:
-        with self._lock:
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
             if self._active is not None and self._active.is_ready():
                 return self._active.quality_score()
             return 1.0
@@ -1103,7 +1153,8 @@ class GemNativeSegmentManager:
                 logger.debug("Metrics hook error: %s", e)
 
     def flush(self):
-        with self._lock:
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
             self._save_next_doc_id()
             self._save_deleted_ids()
             self._save_sealed_deleted_ids()
@@ -1117,6 +1168,8 @@ class GemNativeSegmentManager:
                         codebook_trained=self._codebook_trained,
                         sealed_deleted_ids=self._sealed_deleted_ids,
                     )
+                    if self._wal_writer:
+                        self._wal_writer.truncate()
                 except Exception as e:
                     logger.error("Checkpoint save failed: %s", e)
 
@@ -1162,8 +1215,14 @@ class GemNativeSegmentManager:
     def get_statistics(self) -> Dict[str, Any]:
         ctx = self._rwlock.read_lock() if self._rwlock else self._lock
         with ctx:
+            total = 0
+            if self._active is not None and self._active.is_ready():
+                total += self._active.n_live()
+            total += len(self._seed_buffer_ids)
+            for seg in self._sealed_segments:
+                total += seg.n_docs()
             stats: Dict[str, Any] = {
-                "total_vectors": self.total_vectors(),
+                "total_vectors": total,
                 "sealed_segments": len(self._sealed_segments),
                 "deleted_count": len(self._deleted_ids),
                 "dim": self._dim,

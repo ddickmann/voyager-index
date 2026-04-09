@@ -31,16 +31,21 @@ impl FlatDocCodes {
 
     pub fn add_doc(&mut self, centroid_ids: &[u32]) {
         let offset = self.codes.len() as u32;
-        let len = centroid_ids.len() as u16;
+        let len = centroid_ids.len().min(u16::MAX as usize) as u16;
         self.offsets.push(offset);
         self.lengths.push(len);
-        self.codes.extend(centroid_ids.iter().map(|&c| c as u16));
+        let take_n = len as usize;
+        self.codes.extend(centroid_ids[..take_n].iter().map(|&c| c as u16));
     }
 
     pub fn doc_codes(&self, doc_idx: usize) -> &[u16] {
+        if doc_idx >= self.offsets.len() {
+            return &[];
+        }
         let off = self.offsets[doc_idx] as usize;
         let len = self.lengths[doc_idx] as usize;
-        &self.codes[off..off + len]
+        let end = (off + len).min(self.codes.len());
+        &self.codes[off..end]
     }
 }
 
@@ -266,7 +271,7 @@ impl GemRouter {
 
         drop(buf);
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(max_candidates);
 
         scored
