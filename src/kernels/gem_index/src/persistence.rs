@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use latence_gem_router::codebook::TwoStageCodebook;
 use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes};
 
+use crate::graph::CsrAdjacency;
+
 const MAGIC: &[u8; 4] = b"GEMS";
 const VERSION: u32 = 1;
 
@@ -15,8 +17,10 @@ const VERSION: u32 = 1;
 pub struct SegmentData {
     pub dim: usize,
     pub max_degree: usize,
-    pub adjacency: Vec<Vec<u32>>,
+    pub levels: Vec<CsrAdjacency>,
     pub shortcuts: Vec<Vec<u32>>,
+    pub node_levels: Vec<usize>,
+    pub entry_point: u32,
     pub codebook: TwoStageCodebook,
     pub doc_profiles: Vec<DocProfile>,
     pub doc_ids: Vec<u64>,
@@ -209,6 +213,7 @@ fn load_segment_mmap(file: &fs::File, file_len: usize) -> Result<SegmentData, Pe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::Adjacency;
     use tempfile::tempdir;
 
     #[test]
@@ -216,8 +221,10 @@ mod tests {
         let data = SegmentData {
             dim: 32,
             max_degree: 16,
-            adjacency: vec![vec![1, 2], vec![0, 2], vec![0, 1]],
+            levels: vec![CsrAdjacency::from_adj_lists(&[vec![1, 2], vec![0, 2], vec![0, 1]])],
             shortcuts: vec![Vec::new(); 3],
+            node_levels: vec![0, 0, 0],
+            entry_point: 0,
             codebook: TwoStageCodebook {
                 cquant: vec![0.0; 16],
                 n_fine: 2,
@@ -253,6 +260,6 @@ mod tests {
 
         assert_eq!(loaded.dim, 32);
         assert_eq!(loaded.doc_ids, vec![100, 200, 300]);
-        assert_eq!(loaded.adjacency.len(), 3);
+        assert_eq!(loaded.levels[0].n_nodes(), 3);
     }
 }

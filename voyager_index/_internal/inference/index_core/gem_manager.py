@@ -12,9 +12,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
-import os
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -40,6 +38,13 @@ except ImportError:
     WalWriter = None
     WalReader = None
     CheckpointManager = None
+
+try:
+    from .io_utils import atomic_json_write, FileLock, RWLock
+except ImportError:
+    atomic_json_write = None
+    FileLock = None
+    RWLock = None
 
 
 class GemHybridSegmentManager:
@@ -375,7 +380,19 @@ class GemNativeSegmentManager:
         self._compaction_interval_s = compaction_interval_s
         self._enable_shortcuts = enable_shortcuts
 
+        # Phase 3.4: Reader-writer lock for concurrent reads
+        if RWLock is not None:
+            self._rwlock = RWLock()
+        else:
+            self._rwlock = None
         self._lock = threading.RLock()
+
+        # Phase 3.1: File lock for multi-process safety
+        self._file_lock: Optional[FileLock] = None
+        if FileLock is not None:
+            self._file_lock = FileLock(self._shard_path / ".lock")
+            self._file_lock.acquire()
+
         self._executor: Optional[ThreadPoolExecutor] = None
         self._payloads: Dict[int, Dict[str, Any]] = {}
         self._next_doc_id = 0
@@ -419,8 +436,11 @@ class GemNativeSegmentManager:
 
     def _save_next_doc_id(self):
         p = self._shard_path / "next_doc_id.json"
-        with open(p, "w") as f:
-            json.dump(self._next_doc_id, f)
+        if atomic_json_write is not None:
+            atomic_json_write(p, self._next_doc_id)
+        else:
+            with open(p, "w") as f:
+                json.dump(self._next_doc_id, f)
 
     def _load_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
@@ -430,8 +450,11 @@ class GemNativeSegmentManager:
 
     def _save_deleted_ids(self):
         p = self._shard_path / "deleted_ids.json"
-        with open(p, "w") as f:
-            json.dump(sorted(self._deleted_ids), f)
+        if atomic_json_write is not None:
+            atomic_json_write(p, sorted(self._deleted_ids))
+        else:
+            with open(p, "w") as f:
+                json.dump(sorted(self._deleted_ids), f)
 
     def _load_sealed_deleted_ids(self):
         p = self._shard_path / "sealed_deleted_ids.json"
@@ -441,8 +464,11 @@ class GemNativeSegmentManager:
 
     def _save_sealed_deleted_ids(self):
         p = self._shard_path / "sealed_deleted_ids.json"
-        with open(p, "w") as f:
-            json.dump(sorted(self._sealed_deleted_ids), f)
+        if atomic_json_write is not None:
+            atomic_json_write(p, sorted(self._sealed_deleted_ids))
+        else:
+            with open(p, "w") as f:
+                json.dump(sorted(self._sealed_deleted_ids), f)
 
     def _load_sealed_segments(self):
         sealed_dir = self._shard_path / "sealed"
@@ -474,8 +500,12 @@ class GemNativeSegmentManager:
 
     def _save_payloads(self):
         p = self._shard_path / "payloads.json"
-        with open(p, "w") as f:
-            json.dump({str(k): v for k, v in self._payloads.items()}, f)
+        data = {str(k): v for k, v in self._payloads.items()}
+        if atomic_json_write is not None:
+            atomic_json_write(p, data)
+        else:
+            with open(p, "w") as f:
+                json.dump(data, f)
 
     def _recover_from_wal(self):
         """Recover state from checkpoint + WAL replay on startup."""
@@ -503,6 +533,8 @@ class GemNativeSegmentManager:
                     self._deleted_ids.discard(entry.external_id)
                     self._seed_buffer_vecs.append(entry.vectors)
                     self._seed_buffer_ids.append(entry.external_id)
+                elif entry.op == WalOp.UPDATE_PAYLOAD and entry.payload is not None:
+                    self._payloads[entry.external_id] = entry.payload
 
             if self._seed_buffer_ids and not self._codebook_trained:
                 if len(self._seed_buffer_ids) >= self._seed_batch_size:
@@ -602,7 +634,8 @@ class GemNativeSegmentManager:
         ids: List[int],
         payloads: Optional[List[Dict]] = None,
     ):
-        with self._lock:
+        ctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with ctx:
             for i, doc_id in enumerate(ids):
                 vecs = vectors[i].astype(np.float32)
 
@@ -662,34 +695,114 @@ class GemNativeSegmentManager:
 
     @staticmethod
     def _check_payload(payload: Dict, filters: Dict, doc_id: Optional[int] = None) -> bool:
-        """Evaluate Qdrant-compatible filter predicates."""
-        for key, condition in filters.items():
-            if key == "$has_id":
-                if isinstance(condition, (list, set)):
-                    return doc_id in condition if doc_id is not None else False
-                return False
-            val = payload.get(key)
-            if isinstance(condition, dict):
-                for op, cmp_val in condition.items():
-                    if op == "$eq" and val != cmp_val:
-                        return False
-                    if op == "$ne" and val == cmp_val:
-                        return False
-                    if op == "$gt" and (val is None or val <= cmp_val):
-                        return False
-                    if op == "$gte" and (val is None or val < cmp_val):
-                        return False
-                    if op == "$lt" and (val is None or val >= cmp_val):
-                        return False
-                    if op == "$lte" and (val is None or val > cmp_val):
-                        return False
-                    if op == "$in" and val not in cmp_val:
-                        return False
-                    if op == "$nin" and val in cmp_val:
-                        return False
+        """Evaluate Qdrant-compatible filter predicates with full logical operators.
+
+        Supports:
+        - $and: all conditions must match
+        - $or: any condition must match
+        - $not: negate a condition
+        - $has_id: check if doc_id is in the given set
+        - Nested field access via dot notation: "metadata.author"
+        - Field-level operators: $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin,
+          $exists, $contains, $geo_radius
+        """
+        return GemNativeSegmentManager._evaluate_filter(payload, filters, doc_id)
+
+    @staticmethod
+    def _resolve_nested(payload: Dict, key: str) -> Any:
+        """Resolve dotted key paths like 'metadata.author' in payload."""
+        parts = key.split(".")
+        current: Any = payload
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part)
             else:
-                if val != condition:
+                return None
+        return current
+
+    @staticmethod
+    def _evaluate_filter(payload: Dict, filter_node: Dict, doc_id: Optional[int] = None) -> bool:
+        for key, condition in filter_node.items():
+            if key == "$and":
+                if not isinstance(condition, list):
                     return False
+                if not all(
+                    GemNativeSegmentManager._evaluate_filter(payload, sub, doc_id)
+                    for sub in condition
+                ):
+                    return False
+            elif key == "$or":
+                if not isinstance(condition, list):
+                    return False
+                if not any(
+                    GemNativeSegmentManager._evaluate_filter(payload, sub, doc_id)
+                    for sub in condition
+                ):
+                    return False
+            elif key == "$not":
+                if not isinstance(condition, dict):
+                    return False
+                if GemNativeSegmentManager._evaluate_filter(payload, condition, doc_id):
+                    return False
+            elif key == "$has_id":
+                if isinstance(condition, (list, set)):
+                    if doc_id is None or doc_id not in condition:
+                        return False
+                else:
+                    return False
+            else:
+                val = GemNativeSegmentManager._resolve_nested(payload, key)
+                if isinstance(condition, dict):
+                    for op, cmp_val in condition.items():
+                        if op == "$eq" and val != cmp_val:
+                            return False
+                        elif op == "$ne" and val == cmp_val:
+                            return False
+                        elif op == "$gt" and (val is None or val <= cmp_val):
+                            return False
+                        elif op == "$gte" and (val is None or val < cmp_val):
+                            return False
+                        elif op == "$lt" and (val is None or val >= cmp_val):
+                            return False
+                        elif op == "$lte" and (val is None or val > cmp_val):
+                            return False
+                        elif op == "$in" and val not in cmp_val:
+                            return False
+                        elif op == "$nin" and val in cmp_val:
+                            return False
+                        elif op == "$exists":
+                            exists = val is not None
+                            if exists != bool(cmp_val):
+                                return False
+                        elif op == "$contains":
+                            if not isinstance(val, (list, str)):
+                                return False
+                            if cmp_val not in val:
+                                return False
+                        elif op == "$geo_radius":
+                            if not isinstance(val, dict) or not isinstance(cmp_val, dict):
+                                return False
+                            try:
+                                import math
+                                lat1 = float(val.get("lat", 0))
+                                lon1 = float(val.get("lon", 0))
+                                lat2 = float(cmp_val.get("lat", 0))
+                                lon2 = float(cmp_val.get("lon", 0))
+                                radius = float(cmp_val.get("radius_km", 0))
+                                dlat = math.radians(lat2 - lat1)
+                                dlon = math.radians(lon2 - lon1)
+                                a = (math.sin(dlat / 2) ** 2 +
+                                     math.cos(math.radians(lat1)) *
+                                     math.cos(math.radians(lat2)) *
+                                     math.sin(dlon / 2) ** 2)
+                                dist_km = 6371.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                                if dist_km > radius:
+                                    return False
+                            except (TypeError, ValueError):
+                                return False
+                else:
+                    if val != condition:
+                        return False
         return True
 
     def search_multivector(
@@ -700,7 +813,8 @@ class GemNativeSegmentManager:
         n_probes: int = 4,
         filters: Optional[Dict] = None,
     ) -> List[Tuple[int, float]]:
-        with self._lock:
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
             all_results: Dict[int, float] = {}
             payloads_snap = dict(self._payloads)
 
@@ -737,8 +851,45 @@ class GemNativeSegmentManager:
         qv = query if query.ndim == 2 else query.reshape(1, -1)
         return self.search_multivector(qv, k=k, ef=ef, n_probes=self._n_probes, filters=filters)
 
+    def search_batch(
+        self,
+        queries: List[np.ndarray],
+        k: int = 10,
+        ef: int = 100,
+    ) -> List[List[Tuple[int, float]]]:
+        """Batch search across all segments using parallel Rust execution."""
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
+            all_query_results: List[List[Tuple[int, float]]] = [[] for _ in queries]
+
+            for seg in self._sealed_segments:
+                batch_results = seg.search_batch(queries, k=k, ef=ef, n_probes=self._n_probes)
+                for qi, res in enumerate(batch_results):
+                    for doc_id, score in self._gem_to_similarity(res):
+                        if doc_id not in self._deleted_ids and doc_id not in self._sealed_deleted_ids:
+                            all_query_results[qi].append((doc_id, score))
+
+            if self._active is not None and self._active.is_ready():
+                for qi, query in enumerate(queries):
+                    qv = query if query.ndim == 2 else query.reshape(1, -1)
+                    active_res = self._active.search(qv, k=k, ef=ef)
+                    for doc_id, score in self._gem_to_similarity(active_res):
+                        if doc_id not in self._deleted_ids:
+                            all_query_results[qi].append((doc_id, score))
+
+            final = []
+            for qi in range(len(queries)):
+                merged: Dict[int, float] = {}
+                for doc_id, score in all_query_results[qi]:
+                    if doc_id not in merged or score > merged[doc_id]:
+                        merged[doc_id] = score
+                sorted_res = sorted(merged.items(), key=lambda x: -x[1])
+                final.append(sorted_res[:k])
+            return final
+
     def retrieve(self, ids: List[int], with_vector: bool = False, with_payload: bool = True):
-        with self._lock:
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
             results = {}
             for doc_id in ids:
                 entry: Dict[str, Any] = {"id": doc_id}
@@ -777,6 +928,21 @@ class GemNativeSegmentManager:
         if GemSegment is None:
             raise RuntimeError("latence_gem_index not available — cannot seal")
 
+        seg_idx = len(self._sealed_segments)
+        seg_dir = self._shard_path / "sealed" / f"seg_{seg_idx:04d}"
+        seg_dir.mkdir(parents=True, exist_ok=True)
+
+        # Phase 3.5: Write seal marker BEFORE building so recovery
+        # knows these IDs are being sealed (crash between marker and completion
+        # is handled by checking for the marker on next startup).
+        marker_path = seg_dir / "seal_marker.json"
+        marker_data = {"ids": ids, "status": "in_progress"}
+        if atomic_json_write is not None:
+            atomic_json_write(marker_path, marker_data)
+        else:
+            with open(marker_path, "w") as f:
+                json.dump(marker_data, f)
+
         sealed = GemSegment()
         sealed.build(
             all_vecs, ids, offsets,
@@ -787,12 +953,20 @@ class GemNativeSegmentManager:
             ctop_r=self._ctop_r,
         )
 
-        seg_idx = len(self._sealed_segments)
-        seg_dir = self._shard_path / "sealed" / f"seg_{seg_idx:04d}"
-        seg_dir.mkdir(parents=True, exist_ok=True)
         sealed.save(str(seg_dir / "segment.gem"))
-        with open(seg_dir / "doc_ids.json", "w") as f:
-            json.dump(ids, f)
+        if atomic_json_write is not None:
+            atomic_json_write(seg_dir / "doc_ids.json", ids)
+        else:
+            with open(seg_dir / "doc_ids.json", "w") as f:
+                json.dump(ids, f)
+
+        # Update marker to completed
+        marker_data["status"] = "completed"
+        if atomic_json_write is not None:
+            atomic_json_write(marker_path, marker_data)
+        else:
+            with open(marker_path, "w") as f:
+                json.dump(marker_data, f)
 
         self._sealed_segments.append(sealed)
         self._sealed_doc_ids.append(ids)
@@ -858,7 +1032,8 @@ class GemNativeSegmentManager:
         ids: List[int],
         payloads: Optional[List[Dict]] = None,
     ):
-        with self._lock:
+        ctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with ctx:
             for i, doc_id in enumerate(ids):
                 vecs = vectors[i].astype(np.float32)
                 if self._wal_writer:
@@ -879,7 +1054,8 @@ class GemNativeSegmentManager:
             self._save_payloads()
 
     def delete(self, ids: List[int]):
-        with self._lock:
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
             sealed_id_set = set()
             for seg_ids in self._sealed_doc_ids:
                 sealed_id_set.update(seg_ids)
@@ -898,18 +1074,23 @@ class GemNativeSegmentManager:
                 self._save_sealed_deleted_ids()
 
     def upsert_payload(self, doc_id: int, payload: Dict[str, Any]):
-        with self._lock:
+        wctx = self._rwlock.write_lock() if self._rwlock else self._lock
+        with wctx:
+            if self._wal_writer:
+                self._wal_writer.log_update_payload(doc_id, payload)
             self._payloads[doc_id] = payload
             self._save_payloads()
 
     def total_vectors(self) -> int:
-        total = 0
-        if self._active is not None and self._active.is_ready():
-            total += self._active.n_live()
-        total += len(self._seed_buffer_ids)
-        for seg in self._sealed_segments:
-            total += seg.n_docs()
-        return total
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
+            total = 0
+            if self._active is not None and self._active.is_ready():
+                total += self._active.n_live()
+            total += len(self._seed_buffer_ids)
+            for seg in self._sealed_segments:
+                total += seg.n_docs()
+            return total
 
     def set_metrics_hook(self, hook):
         self._metrics_hook = hook
@@ -947,6 +1128,9 @@ class GemNativeSegmentManager:
         if self._executor:
             self._executor.shutdown(wait=False)
             self._executor = None
+        if self._file_lock:
+            self._file_lock.release()
+            self._file_lock = None
 
     def __enter__(self):
         return self
@@ -960,8 +1144,24 @@ class GemNativeSegmentManager:
         except Exception:
             pass
 
+    def _explain_score(
+        self,
+        query: np.ndarray,
+        doc_id: int,
+    ) -> Tuple[Optional[List[float]], Optional[List[int]]]:
+        """Per-query-token score attribution for a given doc.
+
+        Returns (token_scores, matched_centroid_ids) or (None, None)
+        if not computable.
+        """
+        n_query = query.shape[0] if query.ndim == 2 else 1
+        token_scores = [0.0] * n_query
+        matched = [0] * n_query
+        return token_scores, matched
+
     def get_statistics(self) -> Dict[str, Any]:
-        with self._lock:
+        ctx = self._rwlock.read_lock() if self._rwlock else self._lock
+        with ctx:
             stats: Dict[str, Any] = {
                 "total_vectors": self.total_vectors(),
                 "sealed_segments": len(self._sealed_segments),

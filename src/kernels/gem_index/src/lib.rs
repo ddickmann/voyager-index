@@ -5,6 +5,7 @@ pub mod graph;
 pub mod search;
 pub mod persistence;
 pub mod mutable;
+pub mod score_cache;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -54,9 +55,11 @@ impl GemSegment {
     ///   ef_construction: beam width during graph construction
     ///   max_kmeans_iter: k-means iteration limit
     ///   ctop_r: number of top coarse clusters per document
-    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3))]
+    ///   payload_clusters: optional per-doc cluster IDs for payload-aware construction
+    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, payload_clusters = None))]
     fn build(
         &mut self,
+        py: Python<'_>,
         all_vectors: PyReadonlyArray2<f32>,
         doc_ids: Vec<u64>,
         doc_offsets: Vec<(usize, usize)>,
@@ -66,12 +69,13 @@ impl GemSegment {
         ef_construction: usize,
         max_kmeans_iter: usize,
         ctop_r: usize,
+        payload_clusters: Option<Vec<u32>>,
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
         let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
-        let flat = arr.as_slice().ok_or_else(|| {
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
         let n_docs = doc_ids.len();
         if n_docs != doc_offsets.len() {
@@ -97,55 +101,62 @@ impl GemSegment {
             )));
         }
 
-        // Build codebook
-        let mut codebook = TwoStageCodebook::build(
-            flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
-        );
-        let all_assignments = codebook.assign_vectors(flat, n_vectors);
+        let sealed = py.allow_threads(move || {
+            let mut codebook = TwoStageCodebook::build(
+                &flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
+            );
+            let all_assignments = codebook.assign_vectors(&flat, n_vectors);
 
-        let mut doc_centroid_sets = Vec::with_capacity(n_docs);
-        for &(start, end) in &doc_offsets {
-            doc_centroid_sets.push(all_assignments[start..end].to_vec());
-        }
-        codebook.update_idf(&doc_centroid_sets);
+            let mut doc_centroid_sets = Vec::with_capacity(n_docs);
+            for &(start, end) in &doc_offsets {
+                doc_centroid_sets.push(all_assignments[start..end].to_vec());
+            }
+            codebook.update_idf(&doc_centroid_sets);
 
-        let mut doc_profiles = Vec::with_capacity(n_docs);
-        let mut flat_codes = FlatDocCodes::new();
-        let mut postings = ClusterPostings::new(n_coarse);
-        for (doc_idx, cids) in doc_centroid_sets.into_iter().enumerate() {
-            let ctop = compute_ctop(&codebook, &cids, ctop_r);
-            postings.add_doc(doc_idx as u32, &ctop);
-            flat_codes.add_doc(&cids);
-            doc_profiles.push(DocProfile {
-                centroid_ids: cids,
-                ctop,
-            });
-        }
+            // Phase 5.4: IDF-weighted codebook refinement — refine centroids
+            // by weighting rare centroids higher, improving tail-token discrimination.
+            let idf_refine_iters = 3;
+            codebook.refine_centroids_idf(&flat, n_vectors, idf_refine_iters);
+            // Re-assign after refinement
+            let all_assignments = codebook.assign_vectors(&flat, n_vectors);
+            let mut doc_centroid_sets = Vec::with_capacity(n_docs);
+            for &(start, end) in &doc_offsets {
+                doc_centroid_sets.push(all_assignments[start..end].to_vec());
+            }
+            codebook.update_idf(&doc_centroid_sets);
 
-        // Build graph
-        let gem_graph = graph::build_graph(
-            flat,
-            dim,
-            &doc_offsets,
-            &codebook,
-            &flat_codes,
-            &doc_profiles,
-            &postings,
-            max_degree,
-            ef_construction,
-        );
+            let mut doc_profiles = Vec::with_capacity(n_docs);
+            let mut flat_codes = FlatDocCodes::new();
+            let mut postings = ClusterPostings::new(n_coarse);
+            for (doc_idx, cids) in doc_centroid_sets.into_iter().enumerate() {
+                let ctop = compute_ctop(&codebook, &cids, ctop_r);
+                postings.add_doc(doc_idx as u32, &ctop);
+                flat_codes.add_doc(&cids);
+                doc_profiles.push(DocProfile {
+                    centroid_ids: cids,
+                    ctop,
+                });
+            }
 
-        self.inner = Some(SealedInner {
-            graph: gem_graph,
-            codebook,
-            flat_codes,
-            doc_ids,
-            doc_profiles,
-            postings,
-            ctop_r,
-            dim,
+            let gem_graph = graph::build_graph_with_payload(
+                &flat, dim, &doc_offsets, &codebook, &flat_codes,
+                &doc_profiles, &postings, max_degree, ef_construction,
+                payload_clusters.as_deref(),
+            );
+
+            SealedInner {
+                graph: gem_graph,
+                codebook,
+                flat_codes,
+                doc_ids,
+                doc_profiles,
+                postings,
+                ctop_r,
+                dim,
+            }
         });
 
+        self.inner = Some(sealed);
         Ok(())
     }
 
@@ -155,6 +166,7 @@ impl GemSegment {
     #[pyo3(signature = (query_vectors, k = 10, ef = 100, n_probes = 4, enable_shortcuts = false))]
     fn search(
         &self,
+        py: Python<'_>,
         query_vectors: PyReadonlyArray2<f32>,
         k: usize,
         ef: usize,
@@ -164,6 +176,13 @@ impl GemSegment {
         let inner = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("segment not built; call build() or load() first")
         })?;
+        if inner.graph.levels.is_empty() {
+            return Ok(Vec::new());
+        }
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let ef = ef.max(k);
 
         let arr = query_vectors.as_array();
         let (n_query, dim) = (arr.shape()[0], arr.shape()[1]);
@@ -172,80 +191,117 @@ impl GemSegment {
                 "dimension mismatch: expected {}, got {}", inner.dim, dim
             )));
         }
-        let flat = arr.as_slice().ok_or_else(|| {
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
-        let query_scores = inner.codebook.compute_query_centroid_scores(flat, n_query);
-        let n_fine = inner.codebook.n_fine;
+        let codebook = &inner.codebook;
+        let flat_codes = &inner.flat_codes;
+        let postings = &inner.postings;
+        let graph = &inner.graph;
+        let doc_ids = &inner.doc_ids;
+        let inner_ctop_r = inner.ctop_r;
 
-        // Get entry points from cluster representatives
-        let query_cids = inner.codebook.assign_vectors(flat, n_query);
-        let query_ctop = compute_ctop(&inner.codebook, &query_cids, n_probes.max(inner.ctop_r));
-        let mut entries: Vec<u32> = inner.postings
-            .representatives_for_clusters(&query_ctop);
-        if entries.is_empty() {
-            entries.push(0);
-        }
+        let graph_entry = inner.graph.entry_point;
 
-        let results = beam_search(
-            &inner.graph.adjacency,
-            Some(&inner.graph.shortcuts),
-            &entries,
-            &query_scores,
-            n_query,
-            &inner.flat_codes,
-            n_fine,
-            ef,
-            None,
-            enable_shortcuts,
-        );
+        let out = py.allow_threads(|| {
+            let query_scores = codebook.compute_query_centroid_scores(&flat, n_query);
+            let n_fine = codebook.n_fine;
 
-        let out: Vec<(u64, f32)> = results
-            .into_iter()
-            .take(k)
-            .filter_map(|(int_idx, score)| {
-                inner.doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
-            })
-            .collect();
+            // Multi-level search: greedy descend through upper layers
+            let mut cur_entry = graph_entry;
+            let n_levels = graph.levels.len();
+            for level in (1..n_levels).rev() {
+                let cands = beam_search(
+                    &graph.levels[level], None, &[cur_entry],
+                    &query_scores, n_query, flat_codes, n_fine,
+                    1, None, false,
+                );
+                if let Some(&(best, _)) = cands.first() {
+                    cur_entry = best;
+                }
+            }
+
+            // Bottom layer: full beam search with cluster-guided entry points
+            let query_cids = codebook.assign_vectors(&flat, n_query);
+            let query_ctop = compute_ctop(codebook, &query_cids, n_probes.max(inner_ctop_r));
+            let mut entries: Vec<u32> = postings.representatives_for_clusters(&query_ctop);
+            entries.push(cur_entry);
+            entries.dedup();
+
+            let results = beam_search(
+                &graph.levels[0],
+                Some(&graph.shortcuts),
+                &entries,
+                &query_scores,
+                n_query,
+                flat_codes,
+                n_fine,
+                ef,
+                None,
+                enable_shortcuts,
+            );
+
+            results
+                .into_iter()
+                .take(k)
+                .filter_map(|(int_idx, score)| {
+                    doc_ids.get(int_idx as usize).map(|&doc_id| (doc_id, score))
+                })
+                .collect::<Vec<(u64, f32)>>()
+        });
 
         Ok(out)
     }
 
     /// Save sealed segment to disk.
     #[pyo3(signature = (path))]
-    fn save(&self, path: String) -> PyResult<()> {
+    fn save(&self, py: Python<'_>, path: String) -> PyResult<()> {
         let inner = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("no segment to save")
         })?;
 
-        let data = SegmentData {
-            dim: inner.dim,
-            max_degree: inner.graph.max_degree,
-            adjacency: inner.graph.adjacency.clone(),
-            shortcuts: inner.graph.shortcuts.clone(),
-            codebook: inner.codebook.clone(),
-            doc_profiles: inner.doc_profiles.clone(),
-            doc_ids: inner.doc_ids.clone(),
-            flat_codes: inner.flat_codes.clone(),
-            postings: inner.postings.clone(),
-            ctop_r: inner.ctop_r,
-        };
+        let graph = &inner.graph;
+        let codebook = &inner.codebook;
+        let doc_profiles = &inner.doc_profiles;
+        let doc_ids = &inner.doc_ids;
+        let flat_codes = &inner.flat_codes;
+        let postings = &inner.postings;
+        let dim = inner.dim;
+        let ctop_r = inner.ctop_r;
 
-        save_segment(&data, &std::path::PathBuf::from(path))
-            .map_err(|e| PyValueError::new_err(format!("save failed: {e}")))
+        py.allow_threads(move || {
+            let data = SegmentData {
+                dim,
+                max_degree: graph.max_degree,
+                levels: graph.levels.clone(),
+                shortcuts: graph.shortcuts.clone(),
+                node_levels: graph.node_levels.clone(),
+                entry_point: graph.entry_point,
+                codebook: codebook.clone(),
+                doc_profiles: doc_profiles.clone(),
+                doc_ids: doc_ids.clone(),
+                flat_codes: flat_codes.clone(),
+                postings: postings.clone(),
+                ctop_r,
+            };
+            save_segment(&data, &std::path::PathBuf::from(path))
+        }).map_err(|e| PyValueError::new_err(format!("save failed: {e}")))
     }
 
     /// Load sealed segment from disk.
     #[pyo3(signature = (path))]
-    fn load(&mut self, path: String) -> PyResult<()> {
-        let data = load_segment(&std::path::PathBuf::from(path))
-            .map_err(|e| PyValueError::new_err(format!("load failed: {e}")))?;
+    fn load(&mut self, py: Python<'_>, path: String) -> PyResult<()> {
+        let data = py.allow_threads(move || {
+            load_segment(&std::path::PathBuf::from(path))
+        }).map_err(|e| PyValueError::new_err(format!("load failed: {e}")))?;
 
         self.inner = Some(SealedInner {
             graph: GemGraph {
-                adjacency: data.adjacency,
+                levels: data.levels,
                 shortcuts: data.shortcuts,
+                node_levels: data.node_levels,
+                entry_point: data.entry_point,
                 max_degree: data.max_degree,
             },
             codebook: data.codebook,
@@ -265,6 +321,7 @@ impl GemSegment {
     #[pyo3(signature = (training_pairs, max_shortcuts_per_node = 4))]
     fn inject_shortcuts(
         &mut self,
+        py: Python<'_>,
         training_pairs: Vec<(Vec<f32>, u32)>,
         max_shortcuts_per_node: usize,
     ) -> PyResult<()> {
@@ -289,15 +346,111 @@ impl GemSegment {
             }
         }
 
-        inner.graph.inject_shortcuts(
-            &training_pairs,
-            max_shortcuts_per_node,
-            &inner.codebook,
-            &inner.flat_codes,
-            inner.dim,
-        );
+        let graph = &mut inner.graph;
+        let codebook = &inner.codebook;
+        let flat_codes = &inner.flat_codes;
+        let dim = inner.dim;
+
+        py.allow_threads(|| {
+            graph.inject_shortcuts(
+                &training_pairs, max_shortcuts_per_node,
+                codebook, flat_codes, dim,
+            );
+        });
 
         Ok(())
+    }
+
+    /// Batch search: process multiple queries in parallel via rayon.
+    #[pyo3(signature = (queries, k = 10, ef = 100, n_probes = 4, enable_shortcuts = false))]
+    fn search_batch(
+        &self,
+        py: Python<'_>,
+        queries: Vec<PyReadonlyArray2<f32>>,
+        k: usize,
+        ef: usize,
+        n_probes: usize,
+        enable_shortcuts: bool,
+    ) -> PyResult<Vec<Vec<(u64, f32)>>> {
+        let inner = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built")
+        })?;
+        if queries.is_empty() || k == 0 || inner.graph.levels.is_empty() {
+            return Ok(vec![Vec::new(); queries.len()]);
+        }
+        let ef = ef.max(k);
+
+        let mut query_data: Vec<(Vec<f32>, usize)> = Vec::with_capacity(queries.len());
+        for q in &queries {
+            let arr = q.as_array();
+            let (n_q, dim) = (arr.shape()[0], arr.shape()[1]);
+            if dim != inner.dim {
+                return Err(PyValueError::new_err(format!(
+                    "dimension mismatch: expected {}, got {}", inner.dim, dim
+                )));
+            }
+            let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
+                PyValueError::new_err("array must be C-contiguous")
+            })?.to_vec();
+            query_data.push((flat, n_q));
+        }
+
+        let codebook = &inner.codebook;
+        let flat_codes = &inner.flat_codes;
+        let postings = &inner.postings;
+        let graph = &inner.graph;
+        let doc_ids = &inner.doc_ids;
+        let ctop_r = inner.ctop_r;
+
+        let results = py.allow_threads(|| {
+            use rayon::prelude::*;
+            query_data.par_iter().map(|(flat, n_query)| {
+                let n_query = *n_query;
+                let query_scores = codebook.compute_query_centroid_scores(flat, n_query);
+                let n_fine = codebook.n_fine;
+
+                // Multi-level descent
+                let mut cur_entry = graph.entry_point;
+                for level in (1..graph.levels.len()).rev() {
+                    let cands = beam_search(
+                        &graph.levels[level], None, &[cur_entry],
+                        &query_scores, n_query, flat_codes, n_fine,
+                        1, None, false,
+                    );
+                    if let Some(&(best, _)) = cands.first() {
+                        cur_entry = best;
+                    }
+                }
+
+                let query_cids = codebook.assign_vectors(flat, n_query);
+                let query_ctop = compute_ctop(codebook, &query_cids, n_probes.max(ctop_r));
+                let mut entries: Vec<u32> = postings.representatives_for_clusters(&query_ctop);
+                entries.push(cur_entry);
+                entries.dedup();
+
+                let hits = beam_search(
+                    &graph.levels[0],
+                    Some(&graph.shortcuts),
+                    &entries,
+                    &query_scores,
+                    n_query,
+                    flat_codes,
+                    n_fine,
+                    ef,
+                    None,
+                    enable_shortcuts,
+                );
+
+                hits.into_iter()
+                    .take(k)
+                    .filter_map(|(int_idx, score)| {
+                        doc_ids.get(int_idx as usize).map(|&did| (did, score))
+                    })
+                    .collect::<Vec<(u64, f32)>>()
+            }).collect()
+        });
+
+        Ok(results)
     }
 
     fn n_docs(&self) -> usize {
@@ -342,6 +495,7 @@ impl PyMutableGemSegment {
     #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 256, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 30, ctop_r = 3, n_probes = 4))]
     fn build(
         &mut self,
+        py: Python<'_>,
         all_vectors: PyReadonlyArray2<f32>,
         doc_ids: Vec<u64>,
         doc_offsets: Vec<(usize, usize)>,
@@ -354,25 +508,38 @@ impl PyMutableGemSegment {
         n_probes: usize,
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
-        let (_n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
-        let flat = arr.as_slice().ok_or_else(|| {
+        let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
+        if dim == 0 {
+            return Err(PyValueError::new_err("dim must be > 0"));
+        }
+        let n_docs = doc_ids.len();
+        if n_docs != doc_offsets.len() {
+            return Err(PyValueError::new_err(format!(
+                "doc_ids length ({}) != doc_offsets length ({})",
+                n_docs, doc_offsets.len()
+            )));
+        }
+        for (i, &(start, end)) in doc_offsets.iter().enumerate() {
+            if start > end || end > n_vectors {
+                return Err(PyValueError::new_err(format!(
+                    "doc_offsets[{}] = ({}, {}) out of range for {} vectors",
+                    i, start, end, n_vectors
+                )));
+            }
+        }
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
-        self.inner = Some(MutableGemSegment::build(
-            flat,
-            dim,
-            &doc_ids,
-            &doc_offsets,
-            n_fine,
-            n_coarse,
-            max_degree,
-            ef_construction,
-            max_kmeans_iter,
-            ctop_r,
-            n_probes,
-        ));
+        let seg = py.allow_threads(move || {
+            MutableGemSegment::build(
+                &flat, dim, &doc_ids, &doc_offsets,
+                n_fine, n_coarse, max_degree, ef_construction,
+                max_kmeans_iter, ctop_r, n_probes,
+            )
+        });
 
+        self.inner = Some(seg);
         Ok(())
     }
 
@@ -380,6 +547,7 @@ impl PyMutableGemSegment {
     #[pyo3(signature = (query_vectors, k = 10, ef = 100, _n_probes = 4))]
     fn search(
         &self,
+        py: Python<'_>,
         query_vectors: PyReadonlyArray2<f32>,
         k: usize,
         ef: usize,
@@ -396,18 +564,23 @@ impl PyMutableGemSegment {
                 "dimension mismatch: expected {}, got {}", seg.dim, dim
             )));
         }
-        let flat = arr.as_slice().ok_or_else(|| {
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
-        let query_scores = seg.codebook.compute_query_centroid_scores(flat, n_query);
-        Ok(seg.search(&query_scores, n_query, k, ef))
+        let out = py.allow_threads(|| {
+            let query_scores = seg.codebook.compute_query_centroid_scores(&flat, n_query);
+            seg.search(&query_scores, n_query, k, ef)
+        });
+
+        Ok(out)
     }
 
     /// Insert a single document (multi-vector) into the mutable graph.
     #[pyo3(signature = (vectors, doc_id))]
     fn insert(
         &mut self,
+        py: Python<'_>,
         vectors: PyReadonlyArray2<f32>,
         doc_id: u64,
     ) -> PyResult<()> {
@@ -422,11 +595,13 @@ impl PyMutableGemSegment {
                 "dimension mismatch: expected {}, got {}", seg.dim, dim
             )));
         }
-        let flat = arr.as_slice().ok_or_else(|| {
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
-        seg.insert(flat, n_tokens, doc_id);
+        py.allow_threads(|| {
+            seg.insert(&flat, n_tokens, doc_id);
+        });
         Ok(())
     }
 
@@ -434,6 +609,7 @@ impl PyMutableGemSegment {
     #[pyo3(signature = (vectors_list, doc_ids))]
     fn insert_batch(
         &mut self,
+        py: Python<'_>,
         vectors_list: Vec<PyReadonlyArray2<f32>>,
         doc_ids: Vec<u64>,
     ) -> PyResult<()> {
@@ -448,7 +624,8 @@ impl PyMutableGemSegment {
             )));
         }
 
-        for (vecs, doc_id) in vectors_list.iter().zip(doc_ids.iter()) {
+        let mut batch: Vec<(Vec<f32>, usize, u64)> = Vec::with_capacity(vectors_list.len());
+        for (vecs, &doc_id) in vectors_list.iter().zip(doc_ids.iter()) {
             let arr = vecs.as_array();
             let (n_tokens, dim) = (arr.shape()[0], arr.shape()[1]);
             if dim != seg.dim {
@@ -456,11 +633,17 @@ impl PyMutableGemSegment {
                     "dimension mismatch: expected {}, got {}", seg.dim, dim
                 )));
             }
-            let flat = arr.as_slice().ok_or_else(|| {
+            let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
                 PyValueError::new_err("array must be C-contiguous")
-            })?;
-            seg.insert(flat, n_tokens, *doc_id);
+            })?.to_vec();
+            batch.push((flat, n_tokens, doc_id));
         }
+
+        py.allow_threads(|| {
+            for (flat, n_tokens, doc_id) in &batch {
+                seg.insert(flat, *n_tokens, *doc_id);
+            }
+        });
         Ok(())
     }
 
@@ -477,6 +660,7 @@ impl PyMutableGemSegment {
     #[pyo3(signature = (vectors, doc_id))]
     fn upsert(
         &mut self,
+        py: Python<'_>,
         vectors: PyReadonlyArray2<f32>,
         doc_id: u64,
     ) -> PyResult<()> {
@@ -491,20 +675,64 @@ impl PyMutableGemSegment {
                 "dimension mismatch: expected {}, got {}", seg.dim, dim
             )));
         }
-        let flat = arr.as_slice().ok_or_else(|| {
+        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
-        })?;
+        })?.to_vec();
 
-        seg.upsert(flat, n_tokens, doc_id);
+        py.allow_threads(|| {
+            seg.upsert(&flat, n_tokens, doc_id);
+        });
         Ok(())
     }
 
-    fn compact(&mut self) -> PyResult<()> {
+    fn compact(&mut self, py: Python<'_>) -> PyResult<()> {
         let seg = self.inner.as_mut().ok_or_else(|| {
             PyValueError::new_err("segment not built")
         })?;
-        seg.compact();
+        py.allow_threads(|| {
+            seg.compact();
+        });
         Ok(())
+    }
+
+    /// Batch search: process multiple queries in parallel.
+    #[pyo3(signature = (queries, k = 10, ef = 100))]
+    fn search_batch(
+        &self,
+        py: Python<'_>,
+        queries: Vec<PyReadonlyArray2<f32>>,
+        k: usize,
+        ef: usize,
+    ) -> PyResult<Vec<Vec<(u64, f32)>>> {
+        let seg = self.inner.as_ref().ok_or_else(|| {
+            PyValueError::new_err("segment not built")
+        })?;
+
+        let mut query_data: Vec<(Vec<f32>, usize)> = Vec::with_capacity(queries.len());
+        for q in &queries {
+            let arr = q.as_array();
+            let (n_q, dim) = (arr.shape()[0], arr.shape()[1]);
+            if dim != seg.dim {
+                return Err(PyValueError::new_err(format!(
+                    "dimension mismatch: expected {}, got {}", seg.dim, dim
+                )));
+            }
+            let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
+                PyValueError::new_err("array must be C-contiguous")
+            })?.to_vec();
+            query_data.push((flat, n_q));
+        }
+
+        let results = py.allow_threads(|| {
+            use rayon::prelude::*;
+            query_data.par_iter().map(|(flat, n_query)| {
+                let n_query = *n_query;
+                let query_scores = seg.codebook.compute_query_centroid_scores(flat, n_query);
+                seg.search(&query_scores, n_query, k, ef)
+            }).collect()
+        });
+
+        Ok(results)
     }
 
     fn n_nodes(&self) -> usize {

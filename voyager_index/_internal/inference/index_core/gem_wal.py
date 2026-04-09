@@ -50,6 +50,7 @@ class WalOp(IntEnum):
     INSERT = 0
     DELETE = 1
     UPSERT = 2
+    UPDATE_PAYLOAD = 3
 
 
 @dataclass
@@ -57,6 +58,7 @@ class WalEntry:
     op: WalOp
     external_id: int
     vectors: Optional[np.ndarray] = None
+    payload: Optional[dict] = None
 
 
 class WalWriter:
@@ -114,6 +116,22 @@ class WalWriter:
     def log_upsert(self, external_id: int, vectors: np.ndarray):
         self._write_entry(WalOp.UPSERT, external_id, vectors)
 
+    def log_update_payload(self, external_id: int, payload: dict):
+        """WAL-log a payload update so it survives crashes."""
+        if self._fd is None:
+            raise RuntimeError("WAL not open")
+        payload_json = json.dumps(payload).encode("utf-8")
+        buf = struct.pack("<Bq", WalOp.UPDATE_PAYLOAD.value, external_id)
+        buf += struct.pack("<I", len(payload_json))
+        buf += payload_json
+        crc = zlib.crc32(buf) & 0xFFFFFFFF
+        header = struct.pack(HEADER_FMT, WAL_MAGIC, WAL_VERSION, len(buf))
+        self._fd.write(header)
+        self._fd.write(buf)
+        self._fd.write(struct.pack("<I", crc))
+        self._fd.flush()
+        self._n_entries += 1
+
     @property
     def n_entries(self) -> int:
         return self._n_entries
@@ -126,7 +144,12 @@ class WalWriter:
             self._fd = None
 
     def truncate(self):
-        """Atomic clear: write empty file via tmp + rename."""
+        """Atomic clear: close fd, write empty file via tmp + rename, reopen."""
+        if self._fd is not None:
+            self._fd.flush()
+            self._fd.close()
+            self._fd = None
+
         parent = self._path.parent
         fd_num, tmp_path = tempfile.mkstemp(dir=parent, prefix=".wal_trunc_")
         try:
@@ -138,10 +161,9 @@ class WalWriter:
             except OSError:
                 pass
             raise
+
         self._n_entries = 0
-        if self._fd is not None:
-            self._fd.close()
-            self._fd = open(self._path, "ab")
+        self._fd = open(self._path, "ab")
 
 
 class WalReader:
@@ -209,12 +231,23 @@ class WalReader:
 
         op_byte = payload[0]
         external_id = struct.unpack_from("<q", payload, 1)[0]
-        op = WalOp(op_byte)
+        try:
+            op = WalOp(op_byte)
+        except ValueError:
+            return None
 
         vectors = None
+        entry_payload = None
         rest = payload[9:]
 
-        if op != WalOp.DELETE and len(rest) >= 8:
+        if op == WalOp.UPDATE_PAYLOAD and len(rest) >= 4:
+            json_len = struct.unpack_from("<I", rest, 0)[0]
+            json_data = rest[4 : 4 + json_len]
+            try:
+                entry_payload = json.loads(json_data.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+        elif op != WalOp.DELETE and len(rest) >= 8:
             n_vecs, dim = struct.unpack_from("<II", rest, 0)
             expected = n_vecs * dim * 4
             vec_data = rest[8:]
@@ -223,7 +256,7 @@ class WalReader:
                     n_vecs, dim
                 )
 
-        return WalEntry(op=op, external_id=external_id, vectors=vectors)
+        return WalEntry(op=op, external_id=external_id, vectors=vectors, payload=entry_payload)
 
 
 class CheckpointManager:

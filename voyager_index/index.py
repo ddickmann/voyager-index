@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
@@ -25,10 +25,13 @@ class SearchResult:
     doc_id: int
     score: float
     payload: Optional[Dict[str, Any]] = None
+    token_scores: Optional[List[float]] = None
+    matched_tokens: Optional[List[int]] = None
 
     def __repr__(self) -> str:
-        pay = f", payload={self.payload}" if self.payload else ""
-        return f"SearchResult(doc_id={self.doc_id}, score={self.score:.4f}{pay})"
+        pay = f", payload={self.payload}" if self.payload is not None else ""
+        tok = f", token_scores=[{len(self.token_scores)} tokens]" if self.token_scores is not None else ""
+        return f"SearchResult(doc_id={self.doc_id}, score={self.score:.4f}{pay}{tok})"
 
 
 @dataclass
@@ -92,6 +95,8 @@ class Index:
         dim: int,
         *,
         engine: str = "auto",
+        mode: Optional[str] = None,
+        embedding_fn: Optional[Any] = None,
         n_fine: int = 256,
         n_coarse: int = 32,
         max_degree: int = 32,
@@ -100,15 +105,35 @@ class Index:
         enable_wal: bool = True,
         **kwargs,
     ):
+        """
+        Create or open an index.
+
+        Args:
+            path: Directory to store the index.
+            dim: Vector dimensionality.
+            engine: 'gem', 'hnsw', or 'auto' (default: auto-detect).
+            mode: Optional mode hint: 'colbert', 'colpali', or None.
+                  When set, auto-configures engine and parameters for
+                  the specified model family.
+            embedding_fn: Optional callable for auto-embedding.
+                  Must implement embed_documents(texts) -> List[np.ndarray]
+                  and embed_query(text) -> np.ndarray.
+        """
         self._path = Path(path)
         self._path.mkdir(parents=True, exist_ok=True)
         self._dim = dim
+        self._mode = mode
+        self._embedding_fn = embedding_fn
         self._closed = False
         self._lock = threading.RLock()
         self._payloads: Dict[int, Dict[str, Any]] = {}
         self._metrics_hook = None
 
+        # Mode-based engine selection and parameter tuning
         resolved_engine = engine
+        if mode in ("colbert", "colpali"):
+            resolved_engine = "gem"
+            kwargs.setdefault("enable_shortcuts", mode == "colpali")
         if engine == "auto":
             resolved_engine = "gem" if _check_gem_available() else "hnsw"
 
@@ -140,9 +165,43 @@ class Index:
         else:
             raise ValueError(f"Unknown engine: {engine!r}. Use 'gem', 'hnsw', or 'auto'.")
 
+        if hasattr(self._manager, '_payloads'):
+            self._payloads = dict(self._manager._payloads)
+
     def _check_open(self):
         if self._closed:
             raise RuntimeError("Index is closed")
+
+    def add_texts(
+        self,
+        texts: List[str],
+        *,
+        ids: Optional[List[int]] = None,
+        payloads: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """Add documents by text, using the configured embedding_fn."""
+        if self._embedding_fn is None:
+            raise RuntimeError(
+                "No embedding_fn configured. Pass embedding_fn= to Index() "
+                "or use add() with pre-computed vectors."
+            )
+        vecs = self._embedding_fn.embed_documents(texts)
+        self.add(vecs, ids=ids, payloads=payloads)
+
+    def search_text(
+        self,
+        text: str,
+        k: int = 10,
+        *,
+        ef: int = 100,
+        filters: Optional[Dict] = None,
+        explain: bool = False,
+    ) -> List[SearchResult]:
+        """Search by text, using the configured embedding_fn."""
+        if self._embedding_fn is None:
+            raise RuntimeError("No embedding_fn configured.")
+        query = self._embedding_fn.embed_query(text)
+        return self.search(query, k=k, ef=ef, filters=filters, explain=explain)
 
     def add(
         self,
@@ -183,10 +242,14 @@ class Index:
                 raise ValueError(
                     f"ids length ({len(ids)}) != vectors count ({n_docs})"
                 )
+            if payloads is not None and len(payloads) != n_docs:
+                raise ValueError(
+                    f"payloads length ({len(payloads)}) != vectors count ({n_docs})"
+                )
 
             if ids is None:
                 assigned = []
-                for i in range(n_docs):
+                for _ in range(n_docs):
                     doc_id = self._manager._next_doc_id
                     assigned.append(doc_id)
                     self._manager._next_doc_id += 1
@@ -195,10 +258,10 @@ class Index:
             if payloads is None:
                 payloads = [{} for _ in range(n_docs)]
 
+            self._manager.add_multidense(vecs_list, ids, payloads)
+
             for i, doc_id in enumerate(ids):
                 self._payloads[doc_id] = payloads[i]
-
-            self._manager.add_multidense(vecs_list, ids, payloads)
 
     def add_batch(
         self,
@@ -233,6 +296,7 @@ class Index:
         ef: int = 100,
         n_probes: int = 4,
         filters: Optional[Dict] = None,
+        explain: bool = False,
         **search_kwargs,
     ) -> List[SearchResult]:
         """
@@ -244,6 +308,8 @@ class Index:
             ef: search beam width.
             n_probes: number of coarse clusters to probe.
             filters: Qdrant-compatible payload filters.
+            explain: if True, include per-query-token score attribution
+                     in each SearchResult (token_scores, matched_tokens).
 
         Returns:
             List of SearchResult(doc_id, score, payload).
@@ -261,9 +327,68 @@ class Index:
             results = []
             for doc_id, score in raw:
                 payload = payloads_snap.get(doc_id)
-                results.append(SearchResult(doc_id=int(doc_id), score=float(score), payload=payload))
+                tok_scores = None
+                matched = None
+                if explain and hasattr(self._manager, '_explain_score'):
+                    tok_scores, matched = self._manager._explain_score(
+                        query.astype(np.float32, copy=False), doc_id,
+                    )
+                results.append(SearchResult(
+                    doc_id=int(doc_id), score=float(score),
+                    payload=payload,
+                    token_scores=tok_scores, matched_tokens=matched,
+                ))
 
             return results
+
+    def search_batch(
+        self,
+        queries: List[np.ndarray],
+        k: int = 10,
+        *,
+        ef: int = 100,
+        n_probes: int = 4,
+        filters: Optional[Dict] = None,
+    ) -> List[List[SearchResult]]:
+        """
+        Batch search: process multiple queries in parallel (fused SGEMM).
+
+        Args:
+            queries: list of (n_tokens, dim) float32 query arrays.
+            k: number of results per query.
+            ef: search beam width.
+            n_probes: coarse clusters to probe.
+            filters: payload filter applied post-hoc to all queries.
+
+        Returns:
+            List of result lists, one per query.
+        """
+        self._check_open()
+
+        with self._lock:
+            all_results = []
+            payloads_snap = dict(self._payloads)
+            raw_batched = self._manager.search_batch(
+                [q.astype(np.float32, copy=False) for q in queries],
+                k=k, ef=ef,
+            )
+
+            for raw in raw_batched:
+                results = []
+                for doc_id, score in raw:
+                    payload = payloads_snap.get(doc_id)
+                    if filters and hasattr(self._manager, '_evaluate_filter'):
+                        if not self._manager._evaluate_filter(
+                            payload or {}, filters, doc_id=doc_id
+                        ):
+                            continue
+                    results.append(SearchResult(
+                        doc_id=int(doc_id), score=float(score),
+                        payload=payload,
+                    ))
+                all_results.append(results[:k])
+
+            return all_results
 
     def get(self, ids: List[int]) -> List[Optional[Dict[str, Any]]]:
         """Retrieve payloads for the given document IDs."""

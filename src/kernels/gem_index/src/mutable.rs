@@ -1,7 +1,7 @@
-use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop};
+use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop, qch_proxy_score_u16};
 use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes};
 
-use crate::graph::{select_neighbors_heuristic, shrink_neighbors};
+use crate::graph::{select_neighbors_heuristic, shrink_neighbors, VecAdjacency};
 use crate::id_tracker::IdTracker;
 use crate::search::{beam_search, beam_search_construction};
 
@@ -58,6 +58,15 @@ impl MutableGemSegment {
         }
         codebook.update_idf(&doc_centroid_sets);
 
+        // IDF-weighted codebook refinement for better tail-token discrimination
+        codebook.refine_centroids_idf(all_vectors, n_vectors, 3);
+        let all_assignments = codebook.assign_vectors(all_vectors, n_vectors);
+        let mut doc_centroid_sets = Vec::with_capacity(n_docs);
+        for &(start, end) in doc_offsets.iter() {
+            doc_centroid_sets.push(all_assignments[start..end].to_vec());
+        }
+        codebook.update_idf(&doc_centroid_sets);
+
         let mut doc_profiles = Vec::with_capacity(n_docs);
         let mut flat_codes = FlatDocCodes::new();
         let mut postings = ClusterPostings::new(n_coarse);
@@ -89,9 +98,10 @@ impl MutableGemSegment {
         );
 
         let initial_edges = graph.n_edges();
+        let adjacency = graph.levels[0].to_adj_lists();
 
         Self {
-            adjacency: graph.adjacency,
+            adjacency,
             max_degree,
             ef_construction,
             n_probes,
@@ -110,6 +120,11 @@ impl MutableGemSegment {
 
     /// Insert a single document into the mutable graph.
     pub fn insert(&mut self, vectors: &[f32], n_tokens: usize, doc_id: u64) {
+        debug_assert_eq!(
+            vectors.len(), n_tokens * self.dim,
+            "insert: vectors.len() ({}) != n_tokens ({}) * dim ({})",
+            vectors.len(), n_tokens, self.dim,
+        );
         let int_id = self.id_tracker.add(doc_id);
         let idx = int_id as usize;
 
@@ -137,19 +152,28 @@ impl MutableGemSegment {
         for &cluster in &self.doc_profiles[idx].ctop {
             if let Some(reps) = self.postings.cluster_reps.get(cluster as usize) {
                 if let Some(&rep) = reps.as_ref() {
-                    if (rep as usize) < idx && !entries.contains(&rep) {
+                    if (rep as usize) < idx
+                        && !self.id_tracker.is_deleted(rep)
+                        && !entries.contains(&rep)
+                    {
                         entries.push(rep);
                     }
                 }
             }
         }
         if entries.is_empty() && idx > 0 {
-            entries.push(0);
+            for i in (0..idx).rev() {
+                if !self.id_tracker.is_deleted(i as u32) {
+                    entries.push(i as u32);
+                    break;
+                }
+            }
         }
 
         if !entries.is_empty() {
+            let adj = VecAdjacency(&self.adjacency);
             let candidates = beam_search_construction(
-                &self.adjacency,
+                &adj,
                 &entries,
                 &query_scores,
                 n_tokens,
@@ -158,6 +182,7 @@ impl MutableGemSegment {
                 self.ef_construction,
                 idx,
             );
+            drop(adj);
 
             let doc_codes = self.flat_codes.doc_codes(idx);
             let neighbors = select_neighbors_heuristic(
@@ -181,6 +206,63 @@ impl MutableGemSegment {
                         &self.flat_codes,
                     );
                 }
+            }
+        }
+
+        self.incremental_bridge_repair(idx);
+    }
+
+    /// Lightweight bridge repair for a single newly inserted node.
+    /// Ensures the node connects to cluster representatives, maintaining
+    /// cross-cluster connectivity. Evicts weakest edge when at capacity.
+    fn incremental_bridge_repair(&mut self, node_idx: usize) {
+        let ctop: Vec<u32> = self.doc_profiles[node_idx].ctop.clone();
+
+        for &cluster in &ctop {
+            let cluster_id = cluster as usize;
+            match self.postings.lists.get(cluster_id) {
+                Some(m) if m.len() > 1 => {},
+                _ => continue,
+            };
+
+            let rep = match self.postings.cluster_reps.get(cluster_id) {
+                Some(Some(r)) => *r,
+                _ => continue,
+            };
+
+            if self.id_tracker.is_deleted(rep) || rep as usize == node_idx {
+                continue;
+            }
+
+            let rep_usize = rep as usize;
+            let node_u32 = node_idx as u32;
+
+            let connected_to_rep = self.adjacency[node_idx].contains(&rep)
+                || self.adjacency[rep_usize].contains(&node_u32);
+
+            if connected_to_rep {
+                continue;
+            }
+
+            if self.adjacency[node_idx].len() >= self.max_degree {
+                shrink_neighbors(
+                    node_idx,
+                    self.max_degree - 1,
+                    &mut self.adjacency,
+                    &self.codebook,
+                    &self.flat_codes,
+                );
+            }
+            self.adjacency[node_idx].push(rep);
+            self.adjacency[rep_usize].push(node_u32);
+            if self.adjacency[rep_usize].len() > self.max_degree {
+                shrink_neighbors(
+                    rep_usize,
+                    self.max_degree,
+                    &mut self.adjacency,
+                    &self.codebook,
+                    &self.flat_codes,
+                );
             }
         }
     }
@@ -248,7 +330,8 @@ impl MutableGemSegment {
         self.initial_edges = self.n_edges();
     }
 
-    /// Search the mutable segment.
+    /// Search the mutable segment with cluster-guided entry points
+    /// and adaptive ef expansion.
     pub fn search(
         &self,
         query_scores: &[f32],
@@ -260,32 +343,90 @@ impl MutableGemSegment {
             return Vec::new();
         }
 
+        // Cluster-guided entry points (same as sealed search)
+        let n_fine = self.codebook.n_fine;
         let mut entries: Vec<u32> = Vec::new();
-        // Use first live node as entry
-        for i in 0..self.adjacency.len() {
-            if !self.id_tracker.is_deleted(i as u32) {
-                entries.push(i as u32);
-                break;
+
+        // Find query's top clusters and use their representatives
+        for cid in 0..self.postings.lists.len() {
+            if let Some(Some(&rep)) = self.postings.cluster_reps.get(cid).map(|r| r.as_ref()) {
+                if !self.id_tracker.is_deleted(rep) {
+                    entries.push(rep);
+                }
+            }
+        }
+
+        // Rank entry points by score and keep top n_probes
+        if entries.len() > self.n_probes {
+            let mut scored: Vec<(u32, f32)> = entries
+                .iter()
+                .map(|&ep| {
+                    let codes = self.flat_codes.doc_codes(ep as usize);
+                    let s = qch_proxy_score_u16(query_scores, n_query, n_fine, codes);
+                    (ep, s)
+                })
+                .collect();
+            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            entries = scored.into_iter().take(self.n_probes).map(|(e, _)| e).collect();
+        }
+
+        // Fallback to first live node
+        if entries.is_empty() {
+            for i in 0..self.adjacency.len() {
+                if !self.id_tracker.is_deleted(i as u32) {
+                    entries.push(i as u32);
+                    break;
+                }
             }
         }
         if entries.is_empty() {
             return Vec::new();
         }
 
+        let adj = VecAdjacency(&self.adjacency);
+
+        // Dynamic ef: start with requested ef, check if results are tight
+        let mut actual_ef = ef;
         let results = beam_search(
-            &self.adjacency,
+            &adj,
             None,
             &entries,
             query_scores,
             n_query,
             &self.flat_codes,
-            self.codebook.n_fine,
-            ef,
+            n_fine,
+            actual_ef,
             Some(self.id_tracker.deleted_flags()),
             false,
         );
 
-        results
+        // If margin between k-th and (k+1)-th result is tight, re-search with 2x ef
+        let needs_expansion = results.len() > k && k > 0 && {
+            let k_score = results[k - 1].1;
+            let next_score = results[k].1;
+            let margin = (next_score - k_score).abs();
+            margin < k_score.abs() * 0.01
+        };
+
+        let final_results = if needs_expansion {
+            actual_ef = (ef * 2).min(self.adjacency.len());
+            beam_search(
+                &adj,
+                None,
+                &entries,
+                query_scores,
+                n_query,
+                &self.flat_codes,
+                n_fine,
+                actual_ef,
+                Some(self.id_tracker.deleted_flags()),
+                false,
+            )
+        } else {
+            results
+        };
+
+        final_results
             .into_iter()
             .take(k)
             .map(|(int_id, score)| {

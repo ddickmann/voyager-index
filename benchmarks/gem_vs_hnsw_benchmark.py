@@ -164,6 +164,48 @@ def main():
     print(f"  Search p99: {hnsw_results['search_p99_us']:,.0f} us")
     print()
 
+    # Batch search benchmark (GEM only — reuse segment from benchmark_gem)
+    print("Benchmarking GEM batch search...", flush=True)
+    try:
+        from latence_gem_index import GemSegment as _GS
+
+        seg_b = _GS()
+        all_vecs_b = np.vstack(docs)
+        offsets_b = []
+        pos_b = 0
+        for d in docs:
+            n = d.shape[0]
+            offsets_b.append((pos_b, pos_b + n))
+            pos_b += n
+        seg_b.build(all_vecs_b, doc_ids, offsets_b, **GEM_PARAMS)
+
+        batch_size = min(16, N_QUERIES)
+        batch_q = queries[:batch_size]
+
+        seg_b.search_batch(batch_q, k=K, ef=64, n_probes=4)
+
+        t0 = time.perf_counter()
+        seg_b.search_batch(batch_q, k=K, ef=64, n_probes=4)
+        batch_total_us = (time.perf_counter() - t0) * 1e6
+
+        seq_total = 0.0
+        for q in batch_q:
+            t0 = time.perf_counter()
+            seg_b.search(q, k=K, ef=64, n_probes=4)
+            seq_total += (time.perf_counter() - t0) * 1e6
+
+        gem_results["batch_total_us"] = round(batch_total_us, 1)
+        gem_results["batch_per_query_us"] = round(batch_total_us / batch_size, 1)
+        gem_results["sequential_total_us"] = round(seq_total, 1)
+        gem_results["batch_speedup"] = round(seq_total / max(batch_total_us, 0.1), 2)
+        print(f"  Batch ({batch_size} queries): {batch_total_us:,.0f} us total, {batch_total_us / batch_size:,.0f} us/query")
+        print(f"  Sequential ({batch_size} queries): {seq_total:,.0f} us total")
+        print(f"  Batch speedup: {seq_total / max(batch_total_us, 0.1):.1f}x")
+        print()
+    except Exception as e:
+        print(f"  Batch benchmark skipped: {e}")
+        print()
+
     sp50 = hnsw_results["search_p50_us"] / max(gem_results["search_p50_us"], 0.1)
     sp99 = hnsw_results["search_p99_us"] / max(gem_results["search_p99_us"], 0.1)
 

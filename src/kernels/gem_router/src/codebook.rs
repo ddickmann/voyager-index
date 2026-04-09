@@ -107,6 +107,79 @@ impl TwoStageCodebook {
             .collect();
     }
 
+    /// Refine centroids by running weighted k-means iterations.
+    /// Rare centroids (high IDF) get higher weight in the objective,
+    /// improving discrimination for tail tokens.
+    pub fn refine_centroids_idf(
+        &mut self,
+        vectors: &[f32],
+        n_vectors: usize,
+        max_iter: usize,
+    ) {
+        if self.idf.len() != self.n_fine || n_vectors == 0 || self.dim == 0 {
+            return;
+        }
+
+        let data = ArrayView2::from_shape((n_vectors, self.dim), vectors)
+            .expect("vector shape mismatch");
+        let normalized = l2_normalize_rows(&data.to_owned());
+
+        let mut centroids = Array2::from_shape_vec(
+            (self.n_fine, self.dim),
+            self.cquant.clone(),
+        ).expect("centroid reshape");
+
+        for _iter in 0..max_iter {
+            let assignments: Vec<u32> = (0..n_vectors)
+                .into_par_iter()
+                .map(|i| {
+                    let row = normalized.row(i);
+                    nearest_centroid(&row, &centroids.view())
+                })
+                .collect();
+
+            let mut new_centroids = Array2::<f32>::zeros((self.n_fine, self.dim));
+            let mut weights = vec![0.0f32; self.n_fine];
+
+            for (i, &cid) in assignments.iter().enumerate() {
+                let c = cid as usize;
+                if c >= self.n_fine {
+                    continue;
+                }
+                let w = self.idf[c];
+                for d in 0..self.dim {
+                    new_centroids[(c, d)] += normalized[(i, d)] * w;
+                }
+                weights[c] += w;
+            }
+
+            for c in 0..self.n_fine {
+                if weights[c] > 0.0 {
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] /= weights[c];
+                    }
+                    let norm: f32 = (0..self.dim)
+                        .map(|d| new_centroids[(c, d)] * new_centroids[(c, d)])
+                        .sum::<f32>()
+                        .sqrt()
+                        .max(1e-10);
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] /= norm;
+                    }
+                } else {
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] = centroids[(c, d)];
+                    }
+                }
+            }
+
+            centroids = new_centroids;
+        }
+
+        self.cquant = centroids.as_slice().unwrap().to_vec();
+        self.centroid_dists = pairwise_l2_flat(&centroids.view());
+    }
+
     /// Compute query-centroid dot product matrix using matrixmultiply sgemm.
     ///
     /// Computes scores = query_vecs @ cquant^T, shape (n_query, n_fine).

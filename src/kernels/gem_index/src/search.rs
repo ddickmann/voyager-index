@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use latence_gem_router::codebook::qch_proxy_score_u16;
 use latence_gem_router::router::FlatDocCodes;
 
+use crate::graph::Adjacency;
 use crate::visited::with_visited;
 
 #[derive(Clone, Copy)]
@@ -56,12 +57,28 @@ impl Ord for MaxCand {
     }
 }
 
-/// HNSW-style beam search on the GEM graph.
+#[inline(always)]
+fn prefetch_doc_codes(flat_codes: &FlatDocCodes, node: usize) {
+    if node < flat_codes.offsets.len() {
+        let off = flat_codes.offsets[node] as usize;
+        let ptr = unsafe { flat_codes.codes.as_ptr().add(off) };
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::aarch64::_prefetch(ptr as *const i8, std::arch::aarch64::_PREFETCH_READ, std::arch::aarch64::_PREFETCH_LOCALITY3);
+        }
+    }
+}
+
+/// HNSW-style beam search on the GEM graph. Generic over adjacency format
+/// (CSR for sealed segments, Vec<Vec<u32>> for mutable segments).
 ///
 /// Returns candidates sorted ascending by score (best-first).
-/// `shortcuts` is `None` when searching a mutable segment (avoids allocation).
-pub fn beam_search(
-    adjacency: &[Vec<u32>],
+pub fn beam_search<A: Adjacency>(
+    adjacency: &A,
     shortcuts: Option<&[Vec<u32>]>,
     entry_points: &[u32],
     query_scores: &[f32],
@@ -72,7 +89,7 @@ pub fn beam_search(
     deleted: Option<&[bool]>,
     enable_shortcuts: bool,
 ) -> Vec<(u32, f32)> {
-    let n_nodes = adjacency.len();
+    let n_nodes = adjacency.n_nodes();
     if n_nodes == 0 || entry_points.is_empty() {
         return Vec::new();
     }
@@ -108,24 +125,19 @@ pub fn beam_search(
             }
 
             let c_usize = c_node as usize;
+            let neighbors = adjacency.neighbors(c_usize);
 
-            #[inline(always)]
-            fn process_neighbor(
-                nbr: u32,
-                n_nodes: usize,
-                visited: &mut crate::visited::VisitedSet,
-                flat_codes: &FlatDocCodes,
-                query_scores: &[f32],
-                n_query: usize,
-                n_fine: usize,
-                ef: usize,
-                deleted: Option<&[bool]>,
-                candidates: &mut BinaryHeap<MinCand>,
-                results: &mut BinaryHeap<MaxCand>,
-            ) {
+            for (i, &nbr) in neighbors.iter().enumerate() {
+                if i + 1 < neighbors.len() {
+                    let next_nbr = neighbors[i + 1] as usize;
+                    if next_nbr < n_nodes && !visited.contains(next_nbr) {
+                        prefetch_doc_codes(flat_codes, next_nbr);
+                    }
+                }
+
                 let nbr_usize = nbr as usize;
                 if nbr_usize >= n_nodes || visited.contains(nbr_usize) {
-                    return;
+                    continue;
                 }
                 visited.set(nbr_usize);
 
@@ -148,21 +160,41 @@ pub fn beam_search(
                 }
             }
 
-            for &nbr in &adjacency[c_usize] {
-                process_neighbor(
-                    nbr, n_nodes, visited, flat_codes, query_scores,
-                    n_query, n_fine, ef, deleted, &mut candidates, &mut results,
-                );
-            }
-
             if enable_shortcuts {
                 if let Some(sc) = shortcuts {
                     if c_usize < sc.len() {
-                        for &nbr in &sc[c_usize] {
-                            process_neighbor(
-                                nbr, n_nodes, visited, flat_codes, query_scores,
-                                n_query, n_fine, ef, deleted, &mut candidates, &mut results,
-                            );
+                        let sc_neighbors = &sc[c_usize];
+                        for (i, &nbr) in sc_neighbors.iter().enumerate() {
+                            if i + 1 < sc_neighbors.len() {
+                                let next_nbr = sc_neighbors[i + 1] as usize;
+                                if next_nbr < n_nodes && !visited.contains(next_nbr) {
+                                    prefetch_doc_codes(flat_codes, next_nbr);
+                                }
+                            }
+
+                            let nbr_usize = nbr as usize;
+                            if nbr_usize >= n_nodes || visited.contains(nbr_usize) {
+                                continue;
+                            }
+                            visited.set(nbr_usize);
+
+                            let doc_codes = flat_codes.doc_codes(nbr_usize);
+                            let dist = qch_proxy_score_u16(query_scores, n_query, n_fine, doc_codes);
+
+                            let should_add = results.len() < ef || {
+                                results.peek().map_or(true, |w| dist < w.score)
+                            };
+
+                            if should_add {
+                                candidates.push(MinCand { score: dist, idx: nbr });
+                                let is_del = deleted.map_or(false, |d| nbr_usize < d.len() && d[nbr_usize]);
+                                if !is_del {
+                                    results.push(MaxCand { score: dist, idx: nbr });
+                                    if results.len() > ef {
+                                        results.pop();
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -179,8 +211,8 @@ pub fn beam_search(
 }
 
 /// Beam search for graph construction (no delete mask, no shortcuts).
-pub fn beam_search_construction(
-    adjacency: &[Vec<u32>],
+pub fn beam_search_construction<A: Adjacency>(
+    adjacency: &A,
     entry_points: &[u32],
     query_scores: &[f32],
     n_query: usize,
@@ -220,7 +252,16 @@ pub fn beam_search_construction(
             }
 
             let c_usize = c_node as usize;
-            for &nbr in &adjacency[c_usize] {
+            let neighbors = adjacency.neighbors(c_usize);
+
+            for (i, &nbr) in neighbors.iter().enumerate() {
+                if i + 1 < neighbors.len() {
+                    let next_nbr = neighbors[i + 1] as usize;
+                    if next_nbr < n_built && !visited.contains(next_nbr) {
+                        prefetch_doc_codes(flat_codes, next_nbr);
+                    }
+                }
+
                 let nbr_usize = nbr as usize;
                 if nbr_usize >= n_built || visited.contains(nbr_usize) {
                     continue;
