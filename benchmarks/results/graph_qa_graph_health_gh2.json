@@ -1,7 +1,7 @@
 {
   "n_components": 1,
   "giant_component_frac": 1.0,
-  "cross_cluster_edge_ratio": 0.8056569343065694,
+  "cross_cluster_edge_ratio": 0.8082275890298813,
   "threshold": 0.1,
   "passed": true
 }

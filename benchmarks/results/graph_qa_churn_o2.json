@@ -1,34 +1,34 @@
 {
-  "n_deleted": 100,
+  "n_deleted": 250,
   "pre": {
     "metrics": [
       0.0,
-      11.165,
+      9.942,
       0.0,
       0.0
     ],
     "connectivity": [
       1,
       1.0,
-      0.8007165248544559
+      0.8036612351639509
     ]
   },
   "post_delete": {
-    "n_components": 3
+    "n_components": 16
   },
   "post_heal": {
     "metrics": [
       0.0,
-      6.24,
+      6.168,
       0.0,
-      0.10344827586206896
+      0.07142857142857142
     ],
     "connectivity": [
-      1,
-      1.0,
-      0.8221153846153846
+      12,
+      0.956,
+      0.8274967574578469
     ],
-    "components_reduced": 2
+    "components_reduced": 4
   },
   "passed": true
 }

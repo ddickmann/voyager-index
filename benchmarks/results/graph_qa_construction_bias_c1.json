@@ -5,13 +5,13 @@
     "delta": 0.0
   },
   "c1_2_recall": {
-    "ref_recall": 1.0,
-    "prod_recall": 1.0,
-    "delta": 0.0
+    "ref_recall": 0.6372881355932203,
+    "prod_recall": 0.6367231638418079,
+    "delta": 0.0005649717514123465
   },
   "c1_3_cross_cluster": {
-    "ref_cross_ratio": 0.7401189227002448,
-    "prod_cross_ratio": 0.8098976109215017
+    "ref_cross_ratio": 0.7624229710239937,
+    "prod_cross_ratio": 0.8177275118358759
   },
   "n_hard_queries": 354,
   "passed": true

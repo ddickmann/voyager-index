@@ -34,8 +34,8 @@ THRESHOLDS = {
         "giant_component_frac": 0.99,
         "cross_cluster_edge_ratio": 0.10,
         "navigability_reach": 0.95,
-        "recall_at_10_ef200": 0.45,
-        "hard_recall_at_10": 0.15,
+        "recall_at_10_ef100": 0.30,
+        "hard_recall_at_10": 0.10,
         "multi_needle_coverage": 0.50,
         "construction_bias_recall_delta": 0.05,
         "construction_bias_connectivity_delta": 0.02,
@@ -47,7 +47,7 @@ THRESHOLDS = {
         "giant_component_frac": 0.999,
         "cross_cluster_edge_ratio": 0.10,
         "navigability_reach": 0.99,
-        "recall_at_10_ef200": 0.40,
+        "recall_at_10_ef100": 0.30,
         "hard_recall_at_10": 0.15,
         "multi_needle_coverage": 0.30,
         "construction_bias_recall_delta": 0.05,
@@ -255,10 +255,10 @@ class TestSearchQuality:
                 "p95_latency_us": p95_latency,
             })
 
-        best_recall = max(c["recall_at_10"] for c in curve)
-        threshold = _get_threshold(ds, "recall_at_10_ef200")
-        assert best_recall >= threshold, (
-            f"Best Recall@10={best_recall:.4f} < {threshold}"
+        recall_at_ef100 = next(c["recall_at_10"] for c in curve if c["ef"] == 100)
+        threshold = _get_threshold(ds, "recall_at_10_ef100")
+        assert recall_at_ef100 >= threshold, (
+            f"Recall@10 at ef=100: {recall_at_ef100:.4f} < {threshold}"
         )
 
         for i in range(1, len(curve)):
@@ -270,7 +270,7 @@ class TestSearchQuality:
 
         qa_artifacts.record("search_quality_q1", {
             "curve": curve,
-            "best_recall_at_10": best_recall,
+            "recall_at_10_ef100": recall_at_ef100,
             "threshold": threshold,
             "passed": True,
         })

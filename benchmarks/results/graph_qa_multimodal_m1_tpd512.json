@@ -1,7 +1,7 @@
 {
   "tpd": 512,
   "n_docs": 50,
-  "build_time_s": 0.5565821677446365,
-  "p99_latency_us": 4893.224369734526,
+  "build_time_s": 0.5739769525825977,
+  "p99_latency_us": 4872.983898967504,
   "passed": true
 }

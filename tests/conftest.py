@@ -37,8 +37,8 @@ def msmarco_dataset() -> MSMARCODataset:
 
 @pytest.fixture(scope="session")
 def msmarco_subset_500(msmarco_dataset: MSMARCODataset) -> MSMARCODataset:
-    """200-doc random subset for quick CI (named '500' for compat, real data has 162 vecs/doc)."""
-    return msmarco_dataset.subset(200, seed=42)
+    """500-doc random subset for quick CI."""
+    return msmarco_dataset.subset(500, seed=42)
 
 
 def _make_synthetic(

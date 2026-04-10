@@ -1,5 +1,5 @@
 {
-  "mean_recall_mutable": 0.7120000000000001,
+  "mean_recall_mutable": 0.3499999999999999,
   "mean_recall_sealed": 1.0,
   "n_eval_queries": 50,
   "passed": true
