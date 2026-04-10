@@ -122,6 +122,84 @@ impl TwoStageCodebook {
         }
     }
 
+    /// Build codebook from already-L2-normalized vectors (avoids the 6.8 GB copy).
+    pub fn build_prenorm(
+        norm_vectors: &[f32],
+        n_vectors: usize,
+        dim: usize,
+        n_fine: usize,
+        n_coarse: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> Self {
+        if n_vectors == 0 || dim == 0 {
+            return Self {
+                cquant: Vec::new(), n_fine: 0, dim,
+                cindex_labels: Vec::new(), n_coarse: 0,
+                centroid_dists: Vec::new(), idf: Vec::new(),
+            };
+        }
+
+        let n_fine = n_fine.min(n_vectors).max(2);
+        let n_coarse = n_coarse.min(n_fine / 2).max(2);
+
+        let normalized = ArrayView2::from_shape((n_vectors, dim), norm_vectors)
+            .expect("vector shape mismatch");
+
+        let (_coarse_centroids, coarse_labels) =
+            kmeans(&normalized.view(), n_coarse, max_iter, seed);
+
+        let mut coarse_groups: Vec<Vec<usize>> = vec![Vec::new(); n_coarse];
+        for (i, &label) in coarse_labels.iter().enumerate() {
+            coarse_groups[label].push(i);
+        }
+
+        let n_nonempty = coarse_groups.iter().filter(|g| !g.is_empty()).count().max(1);
+        let base_per = n_fine / n_nonempty;
+        let extra = n_fine % n_nonempty;
+        let mut extra_idx = 0usize;
+        let fine_per_coarse: Vec<usize> = (0..n_coarse)
+            .map(|c| {
+                if coarse_groups[c].is_empty() { return 0; }
+                let bonus = if extra_idx < extra { extra_idx += 1; 1 } else { 0 };
+                (base_per + bonus).min(coarse_groups[c].len()).max(1)
+            })
+            .collect();
+
+        let mut all_fine_centroids = Array2::<f32>::zeros((fine_per_coarse.iter().sum(), dim));
+        let mut cindex_labels: Vec<u32> = Vec::new();
+        let mut offset = 0usize;
+
+        for (c, group) in coarse_groups.iter().enumerate() {
+            let k_local = fine_per_coarse[c];
+            if group.is_empty() || k_local == 0 { continue; }
+            let mut local_data = Array2::<f32>::zeros((group.len(), dim));
+            for (li, &gi) in group.iter().enumerate() {
+                local_data.row_mut(li).assign(&normalized.row(gi));
+            }
+            let (local_centroids, _) =
+                kmeans(&local_data.view(), k_local, max_iter, seed + 2 + c as u64);
+            for fi in 0..local_centroids.nrows() {
+                all_fine_centroids.row_mut(offset + fi)
+                    .assign(&local_centroids.row(fi));
+                cindex_labels.push(c as u32);
+            }
+            offset += local_centroids.nrows();
+        }
+
+        let actual_n_fine = offset;
+        let centroids = all_fine_centroids.slice(ndarray::s![..actual_n_fine, ..]).to_owned();
+        let cindex_labels = cindex_labels[..actual_n_fine].to_vec();
+        let centroid_dists = pairwise_l2_flat(&centroids.view());
+        let cquant_flat: Vec<f32> = centroids.as_slice().unwrap().to_vec();
+
+        Self {
+            cquant: cquant_flat, n_fine: actual_n_fine, dim,
+            cindex_labels, n_coarse, centroid_dists,
+            idf: vec![1.0f32; actual_n_fine],
+        }
+    }
+
     pub fn cquant_matrix(&self) -> ArrayView2<'_, f32> {
         ArrayView2::from_shape((self.n_fine, self.dim), &self.cquant)
             .expect("codebook shape mismatch")
@@ -129,9 +207,25 @@ impl TwoStageCodebook {
 
     pub fn assign_vectors(&self, vectors: &[f32], n_vectors: usize) -> Vec<u32> {
         let cquant = self.cquant_matrix();
-        let data = ArrayView2::from_shape((n_vectors, self.dim), vectors)
+        let mut norm_buf = vectors.to_vec();
+        l2_normalize_rows_inplace(&mut norm_buf, n_vectors, self.dim);
+        let normalized = ArrayView2::from_shape((n_vectors, self.dim), &norm_buf)
             .expect("vector shape mismatch");
-        let normalized = l2_normalize_rows(&data.to_owned());
+
+        (0..n_vectors)
+            .into_par_iter()
+            .map(|i| {
+                let row = normalized.row(i);
+                nearest_centroid(&row, &cquant)
+            })
+            .collect()
+    }
+
+    /// Assign pre-normalized vectors to nearest centroids (no copy/renormalization).
+    pub fn assign_vectors_prenorm(&self, norm_vectors: &[f32], n_vectors: usize) -> Vec<u32> {
+        let cquant = self.cquant_matrix();
+        let normalized = ArrayView2::from_shape((n_vectors, self.dim), norm_vectors)
+            .expect("vector shape mismatch");
 
         (0..n_vectors)
             .into_par_iter()
@@ -236,6 +330,73 @@ impl TwoStageCodebook {
                 }
             }
 
+            centroids = new_centroids;
+        }
+
+        self.cquant = centroids.as_slice().unwrap().to_vec();
+        self.centroid_dists = pairwise_l2_flat(&centroids.view());
+    }
+
+    /// Refine centroids from pre-normalized vectors (avoids the 6.8 GB copy).
+    pub fn refine_centroids_idf_prenorm(
+        &mut self,
+        norm_vectors: &[f32],
+        n_vectors: usize,
+        max_iter: usize,
+    ) {
+        if self.idf.len() != self.n_fine || n_vectors == 0 || self.dim == 0 {
+            return;
+        }
+
+        let normalized = ArrayView2::from_shape((n_vectors, self.dim), norm_vectors)
+            .expect("vector shape mismatch");
+
+        let mut centroids = Array2::from_shape_vec(
+            (self.n_fine, self.dim),
+            self.cquant.clone(),
+        ).expect("centroid reshape");
+
+        for _iter in 0..max_iter {
+            let assignments: Vec<u32> = (0..n_vectors)
+                .into_par_iter()
+                .map(|i| {
+                    let row = normalized.row(i);
+                    nearest_centroid(&row, &centroids.view())
+                })
+                .collect();
+
+            let mut new_centroids = Array2::<f32>::zeros((self.n_fine, self.dim));
+            let mut weights = vec![0.0f32; self.n_fine];
+
+            for (i, &cid) in assignments.iter().enumerate() {
+                let c = cid as usize;
+                if c >= self.n_fine { continue; }
+                let w = self.idf[c];
+                for d in 0..self.dim {
+                    new_centroids[(c, d)] += normalized[(i, d)] * w;
+                }
+                weights[c] += w;
+            }
+
+            for c in 0..self.n_fine {
+                if weights[c] > 0.0 {
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] /= weights[c];
+                    }
+                    let norm: f32 = (0..self.dim)
+                        .map(|d| new_centroids[(c, d)] * new_centroids[(c, d)])
+                        .sum::<f32>()
+                        .sqrt()
+                        .max(1e-10);
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] /= norm;
+                    }
+                } else {
+                    for d in 0..self.dim {
+                        new_centroids[(c, d)] = centroids[(c, d)];
+                    }
+                }
+            }
             centroids = new_centroids;
         }
 
@@ -612,6 +773,19 @@ fn l2_normalize_rows(a: &Array2<f32>) -> Array2<f32> {
         row /= *norm;
     }
     out
+}
+
+/// L2-normalize a flat row-major [n_vectors × dim] buffer in-place (no allocation).
+pub fn l2_normalize_rows_inplace(buf: &mut [f32], n_vectors: usize, dim: usize) {
+    for i in 0..n_vectors {
+        let start = i * dim;
+        let row = &mut buf[start..start + dim];
+        let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-8);
+        let inv = 1.0 / norm;
+        for v in row.iter_mut() {
+            *v *= inv;
+        }
+    }
 }
 
 fn nearest_centroid(vec: &ArrayView1<f32>, centroids: &ArrayView2<f32>) -> u32 {

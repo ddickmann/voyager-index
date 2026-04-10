@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use numpy::{PyReadonlyArray2, PyArray1, PyArray2};
 
-use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop, compute_ctop_adaptive};
+use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop, compute_ctop_adaptive, l2_normalize_rows_inplace};
 use latence_gem_router::adaptive_cutoff::CutoffTree;
 use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes, FilterIndex};
 
@@ -150,7 +150,7 @@ impl GemSegment {
     ) -> PyResult<()> {
         let arr = all_vectors.as_array();
         let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
-        let flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
+        let mut flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
             PyValueError::new_err("array must be C-contiguous")
         })?.to_vec();
 
@@ -198,10 +198,16 @@ impl GemSegment {
                 );
             }
 
-            let mut codebook = TwoStageCodebook::build(
+            // L2-normalize vectors in-place ONCE to avoid repeated 6.8 GB copies
+            // inside codebook build/assign/refine (critical for 23 GB container).
+            // qCH proxy scoring uses centroid codes + centroid_dists, not raw vectors,
+            // so normalization preserves ranking for both codebook training and graph construction.
+            l2_normalize_rows_inplace(&mut flat, n_vectors, dim);
+
+            let mut codebook = TwoStageCodebook::build_prenorm(
                 &flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
             );
-            let all_assignments = codebook.assign_vectors(&flat, n_vectors);
+            let all_assignments = codebook.assign_vectors_prenorm(&flat, n_vectors);
 
             let mut doc_centroid_sets = Vec::with_capacity(n_docs);
             for &(start, end) in &doc_offsets {
@@ -209,9 +215,8 @@ impl GemSegment {
             }
             codebook.update_idf(&doc_centroid_sets);
 
-            codebook.refine_centroids_idf(&flat, n_vectors, 1);
-            // Re-assign after refinement
-            let all_assignments = codebook.assign_vectors(&flat, n_vectors);
+            codebook.refine_centroids_idf_prenorm(&flat, n_vectors, 1);
+            let all_assignments = codebook.assign_vectors_prenorm(&flat, n_vectors);
             let mut doc_centroid_sets = Vec::with_capacity(n_docs);
             for &(start, end) in &doc_offsets {
                 doc_centroid_sets.push(all_assignments[start..end].to_vec());
