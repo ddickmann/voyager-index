@@ -185,9 +185,9 @@ impl GemSegment {
         }
 
         let sealed = py.allow_threads(move || {
-            // Auto-tune n_fine: sqrt(n_vectors) clamped to [64, 1024]
+            // Auto-tune n_fine: sqrt(n_vectors) clamped to [64, 2048]
             let n_fine = if n_fine == 0 {
-                ((n_vectors as f64).sqrt() as usize).clamp(64, 1024)
+                ((n_vectors as f64).sqrt() as usize).clamp(64, 2048)
             } else {
                 n_fine
             };

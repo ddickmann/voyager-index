@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 HF_REPO = "latence-ai/voyager-msmarco-doc-2k5-colbert-zero"
 NPZ_FILENAME = "msmarco_doc_2k5.npz"
 CQADUPSTACK_NPZ = "cqadupstack_english.npz"
+BEIR_100K_NPZ = "beir_100k.npz"
 CACHE_DIR = Path(os.environ.get("VOYAGER_QA_CACHE", Path.home() / ".cache" / "voyager-qa"))
 
 
@@ -291,6 +292,24 @@ def load_cqadupstack_dataset() -> Optional[MSMARCODataset]:
         log.info("Loading CQADupStack from %s", cached)
         return _load_from_npz(cached)
     return None
+
+
+def load_beir_100k_dataset() -> MSMARCODataset:
+    """Load the 100K BeIR dataset (CQADupStack + FiQA + MS MARCO).
+
+    Falls back to the 7.5K combined dataset if the 100K NPZ is not found.
+    Run `python -m benchmarks.data.prepare_beir_100k` to create it.
+    """
+    cached = CACHE_DIR / BEIR_100K_NPZ
+    if cached.exists():
+        log.info("Loading BeIR 100K dataset from %s", cached)
+        return _load_from_npz(cached)
+    log.warning(
+        "BeIR 100K dataset not found at %s — falling back to combined 7.5K dataset. "
+        "Run: python -m benchmarks.data.prepare_beir_100k",
+        cached,
+    )
+    return load_combined_dataset()
 
 
 def load_combined_dataset() -> MSMARCODataset:
