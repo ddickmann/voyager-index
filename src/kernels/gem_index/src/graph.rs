@@ -1019,35 +1019,43 @@ pub fn build_graph_dual(
     }
 
     // Repair isolated nodes (degree 0): connect to nearest neighbor by brute-force.
-    for doc_idx in 0..n_docs {
-        if !adjacency[doc_idx].is_empty() {
-            continue;
-        }
-        let doc_codes = flat_codes.doc_codes(doc_idx);
-        if doc_codes.is_empty() {
-            continue;
-        }
-        let mut best_nbr = u32::MAX;
-        let mut best_dist = f32::MAX;
-        #[allow(clippy::needless_range_loop)]
-        for other in 0..n_docs {
-            if other == doc_idx || adjacency[other].is_empty() {
+    let isolated_count = adjacency.iter().filter(|a| a.is_empty()).count();
+    if isolated_count > 0 {
+        log::info!("Repairing {} isolated nodes (brute-force scan over {} docs)...",
+                   isolated_count, n_docs);
+        let mut repaired = 0usize;
+        for doc_idx in 0..n_docs {
+            if !adjacency[doc_idx].is_empty() {
                 continue;
             }
-            let other_codes = flat_codes.doc_codes(other);
-            let d = construction_distance(codebook, doc_codes, other_codes, use_emd);
-            if d < best_dist {
-                best_dist = d;
-                best_nbr = other as u32;
+            let doc_codes = flat_codes.doc_codes(doc_idx);
+            if doc_codes.is_empty() {
+                continue;
+            }
+            let mut best_nbr = u32::MAX;
+            let mut best_dist = f32::MAX;
+            #[allow(clippy::needless_range_loop)]
+            for other in 0..n_docs {
+                if other == doc_idx || adjacency[other].is_empty() {
+                    continue;
+                }
+                let other_codes = flat_codes.doc_codes(other);
+                let d = construction_distance(codebook, doc_codes, other_codes, use_emd);
+                if d < best_dist {
+                    best_dist = d;
+                    best_nbr = other as u32;
+                }
+            }
+            if best_nbr != u32::MAX {
+                adjacency[doc_idx].push(best_nbr);
+                adjacency[best_nbr as usize].push(doc_idx as u32);
+                if adjacency[best_nbr as usize].len() > max_degree {
+                    shrink_neighbors_emd_cached(best_nbr as usize, max_degree, &mut adjacency, codebook, flat_codes, use_emd, Some(&mut score_cache));
+                }
+                repaired += 1;
             }
         }
-        if best_nbr != u32::MAX {
-            adjacency[doc_idx].push(best_nbr);
-            adjacency[best_nbr as usize].push(doc_idx as u32);
-            if adjacency[best_nbr as usize].len() > max_degree {
-                shrink_neighbors_emd_cached(best_nbr as usize, max_degree, &mut adjacency, codebook, flat_codes, use_emd, Some(&mut score_cache));
-            }
-        }
+        log::info!("Isolated node repair done: {}/{} repaired", repaired, isolated_count);
     }
 
     // Safety net: bridge repair for any remaining disconnected components

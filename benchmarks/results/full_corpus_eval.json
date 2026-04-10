@@ -1,0 +1,102 @@
+{
+  "dataset": {
+    "n_docs": 7500,
+    "n_queries": 1770,
+    "total_vectors": 911804,
+    "dim": 128,
+    "n_qrels": 1700
+  },
+  "graph_health": {
+    "n_docs": 7500,
+    "n_nodes": 7500,
+    "n_edges": 118296,
+    "mean_degree": 31.5456,
+    "n_components": 1,
+    "giant_component_frac": 1.0,
+    "cross_cluster_edge_ratio": 0.6452289172922161
+  },
+  "recall_curve": {
+    "16": {
+      "ef": 16,
+      "n_probes": 4,
+      "recall_at_10": 0.04644067796610169,
+      "recall_at_100": 0.03842937853107345,
+      "qps": 296.26792711872986,
+      "p50_latency_us": 3079.731948673725,
+      "p95_latency_us": 4880.094435065985,
+      "p99_latency_us": 5202.758200466633,
+      "mean_nodes_visited": 651.4559322033898,
+      "p95_nodes_visited": 738.0
+    },
+    "32": {
+      "ef": 32,
+      "n_probes": 4,
+      "recall_at_10": 0.04644067796610169,
+      "recall_at_100": 0.03842937853107345,
+      "qps": 289.3241357763592,
+      "p50_latency_us": 3166.7817384004593,
+      "p95_latency_us": 5024.501960724592,
+      "p99_latency_us": 5512.958616018292,
+      "mean_nodes_visited": 651.4559322033898,
+      "p95_nodes_visited": 738.0
+    },
+    "64": {
+      "ef": 64,
+      "n_probes": 4,
+      "recall_at_10": 0.04644067796610169,
+      "recall_at_100": 0.03842937853107345,
+      "qps": 296.12745380092497,
+      "p50_latency_us": 3057.471476495266,
+      "p95_latency_us": 4950.846452265978,
+      "p99_latency_us": 5777.570735663175,
+      "mean_nodes_visited": 651.4559322033898,
+      "p95_nodes_visited": 738.0
+    },
+    "100": {
+      "ef": 100,
+      "n_probes": 4,
+      "recall_at_10": 0.04644067796610169,
+      "recall_at_100": 0.03842937853107345,
+      "qps": 302.1349658492616,
+      "p50_latency_us": 3010.9770596027374,
+      "p95_latency_us": 5003.087501972914,
+      "p99_latency_us": 5650.226902216672,
+      "mean_nodes_visited": 651.4559322033898,
+      "p95_nodes_visited": 738.0
+    },
+    "200": {
+      "ef": 200,
+      "n_probes": 4,
+      "recall_at_10": 0.08824858757062146,
+      "recall_at_100": 0.07593785310734465,
+      "qps": 177.41605592228964,
+      "p50_latency_us": 5127.7391612529755,
+      "p95_latency_us": 8654.997311532497,
+      "p99_latency_us": 9124.231040477747,
+      "mean_nodes_visited": 1017.580790960452,
+      "p95_nodes_visited": 1076.55
+    },
+    "400": {
+      "ef": 400,
+      "n_probes": 4,
+      "recall_at_10": 0.1765536723163842,
+      "recall_at_100": 0.1533502824858757,
+      "qps": 86.20640355226266,
+      "p50_latency_us": 10598.928667604923,
+      "p95_latency_us": 17928.57851833105,
+      "p99_latency_us": 19159.3406163156,
+      "mean_nodes_visited": 1566.9497175141244,
+      "p95_nodes_visited": 1656.55
+    }
+  },
+  "hard_queries": {
+    "n_hard": 354,
+    "recall_at_10": 0.07372881355932204,
+    "p99_latency_us": 9964.048545807576
+  },
+  "qrel_evaluation": {
+    "n_queries_with_qrels": 1700,
+    "mrr_at_10": 0.08045238095238096,
+    "recall_at_10": 0.06273944398462244
+  }
+}

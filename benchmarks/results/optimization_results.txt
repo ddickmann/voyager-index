@@ -1,0 +1,63 @@
+
+======================================================================
+  GEM Optimization Benchmark
+  ROQ v2 Kernel + qEMD f32 Sinkhorn + Rayon + ScoreCache
+======================================================================
+  Device:     cuda
+  Docs:       300
+  Dim:        128
+  Tokens/doc: 24
+  Queries:    30
+  k:          10
+  ef:         64
+  FP32 MaxSim: True
+  ROQ Triton:  True
+======================================================================
+
+[1/8] Generating synthetic data...
+[2/8] Computing brute-force ground truth...
+
+[3/8] Measuring qCH build time...
+       qCH build: 0.225s
+[4/8] Measuring qEMD build time (f32 Sinkhorn + rayon + cache)...
+       qEMD build: 24.031s  (ratio: 106.62x)
+
+[5/8] Building: Proxy only (qCH)...
+       Built in 0.32s
+
+[5/8] Building: FP32 MaxSim...
+       Built in 0.29s
+
+[5/8] Building: ROQ 4-bit...
+       Built in 6.38s
+
+[6/8] Running searches...
+[7/8] Measuring latencies...
+
+======================================================================
+  RESULTS
+======================================================================
+
+  --- Build Speed ---
+  qCH dual-graph:   0.225s
+  qEMD dual-graph:  24.031s  (106.62x slower)
+
+  --- Recall@k ---
+                        R@1    R@5    R@10 
+  Proxy only (qCH)      0.300  0.173  0.237
+  FP32 MaxSim           0.300  0.173  0.237
+  ROQ 4-bit             0.267  0.167  0.237
+
+  --- Latency (ms/query) ---
+                           p50     p95    mean
+  Proxy only (qCH)        0.26    0.32    0.27
+  FP32 MaxSim             3.03    3.16    3.72
+  ROQ 4-bit               7.31   92.47   40.10
+
+  --- Memory (rerank vectors) ---
+  FP32:  3.52 MB  (512.0 bytes/token)
+  ROQ4:  0.55 MB  (80.0 bytes/token)
+  Ratio: 6.4x compression
+
+======================================================================
+

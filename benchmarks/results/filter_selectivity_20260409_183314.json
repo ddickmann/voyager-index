@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-04-09T18:33:14.255260+00:00",
+  "config": {
+    "n_docs": 1000,
+    "dim": 128,
+    "vecs_per_doc": 16,
+    "n_queries": 50,
+    "ef": 128,
+    "n_probes": 4,
+    "k": 10
+  },
+  "sweep": [
+    {
+      "selectivity": 0.1,
+      "n_matching_docs": 100,
+      "filtered_p50_us": 293.9,
+      "filtered_p95_us": 341.9,
+      "unfiltered_p50_us": 188.8,
+      "avg_recall_within_filter": 1.0,
+      "overhead_ratio": 1.56
+    },
+    {
+      "selectivity": 0.2,
+      "n_matching_docs": 200,
+      "filtered_p50_us": 280.6,
+      "filtered_p95_us": 302.6,
+      "unfiltered_p50_us": 187.2,
+      "avg_recall_within_filter": 1.0,
+      "overhead_ratio": 1.5
+    },
+    {
+      "selectivity": 0.3,
+      "n_matching_docs": 300,
+      "filtered_p50_us": 265.6,
+      "filtered_p95_us": 276.7,
+      "unfiltered_p50_us": 191.2,
+      "avg_recall_within_filter": 1.0,
+      "overhead_ratio": 1.39
+    },
+    {
+      "selectivity": 0.5,
+      "n_matching_docs": 500,
+      "filtered_p50_us": 260.3,
+      "filtered_p95_us": 270.0,
+      "unfiltered_p50_us": 188.7,
+      "avg_recall_within_filter": 1.0,
+      "overhead_ratio": 1.38
+    },
+    {
+      "selectivity": 0.7,
+      "n_matching_docs": 700,
+      "filtered_p50_us": 262.7,
+      "filtered_p95_us": 298.4,
+      "unfiltered_p50_us": 193.9,
+      "avg_recall_within_filter": 0.987,
+      "overhead_ratio": 1.35
+    },
+    {
+      "selectivity": 0.9,
+      "n_matching_docs": 900,
+      "filtered_p50_us": 264.3,
+      "filtered_p95_us": 274.0,
+      "unfiltered_p50_us": 190.4,
+      "avg_recall_within_filter": 0.9816,
+      "overhead_ratio": 1.39
+    }
+  ]
+}
