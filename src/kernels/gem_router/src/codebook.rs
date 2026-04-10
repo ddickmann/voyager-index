@@ -81,19 +81,26 @@ impl TwoStageCodebook {
         let mut cindex_labels: Vec<u32> = Vec::with_capacity(actual_n_fine);
         let mut offset = 0usize;
 
+        let max_group_size = coarse_groups.iter().map(|g| g.len()).max().unwrap_or(0);
+        let norm_slice = normalized.as_slice().unwrap_or(&[]);
+        let mut local_buf = vec![0.0f32; max_group_size * dim];
+
         for (c, group) in coarse_groups.iter().enumerate() {
             let k_local = fine_per_coarse[c];
             if group.is_empty() || k_local == 0 {
                 continue;
             }
 
-            let mut local_data = Array2::<f32>::zeros((group.len(), dim));
+            let n_local = group.len();
             for (li, &gi) in group.iter().enumerate() {
-                local_data.row_mut(li).assign(&normalized.row(gi));
+                let src_start = gi * dim;
+                local_buf[li * dim..(li + 1) * dim]
+                    .copy_from_slice(&norm_slice[src_start..src_start + dim]);
             }
-
+            let local_view = ArrayView2::from_shape((n_local, dim), &local_buf[..n_local * dim])
+                .expect("local_data shape mismatch");
             let (local_centroids, _) =
-                kmeans(&local_data.view(), k_local, max_iter, seed + 2 + c as u64);
+                kmeans(&local_view, k_local, max_iter, seed + 2 + c as u64);
 
             for fi in 0..local_centroids.nrows() {
                 all_fine_centroids.row_mut(offset + fi)
@@ -102,6 +109,7 @@ impl TwoStageCodebook {
             }
             offset += local_centroids.nrows();
         }
+        drop(local_buf);
 
         let actual_n_fine = offset;
         let centroids = all_fine_centroids.slice(ndarray::s![..actual_n_fine, ..]).to_owned();
@@ -170,15 +178,25 @@ impl TwoStageCodebook {
         let mut cindex_labels: Vec<u32> = Vec::new();
         let mut offset = 0usize;
 
+        // Pre-allocate a single reusable buffer for the largest coarse cluster.
+        // Without this, 128 sequential Array2 allocs accumulate ~N_vectors*dim*4
+        // bytes of RSS that glibc never returns to the OS.
+        let max_group_size = coarse_groups.iter().map(|g| g.len()).max().unwrap_or(0);
+        let mut local_buf = vec![0.0f32; max_group_size * dim];
+
         for (c, group) in coarse_groups.iter().enumerate() {
             let k_local = fine_per_coarse[c];
             if group.is_empty() || k_local == 0 { continue; }
-            let mut local_data = Array2::<f32>::zeros((group.len(), dim));
+            let n_local = group.len();
             for (li, &gi) in group.iter().enumerate() {
-                local_data.row_mut(li).assign(&normalized.row(gi));
+                let src_start = gi * dim;
+                local_buf[li * dim..(li + 1) * dim]
+                    .copy_from_slice(&norm_vectors[src_start..src_start + dim]);
             }
+            let local_view = ArrayView2::from_shape((n_local, dim), &local_buf[..n_local * dim])
+                .expect("local_data shape mismatch");
             let (local_centroids, _) =
-                kmeans(&local_data.view(), k_local, max_iter, seed + 2 + c as u64);
+                kmeans(&local_view, k_local, max_iter, seed + 2 + c as u64);
             for fi in 0..local_centroids.nrows() {
                 all_fine_centroids.row_mut(offset + fi)
                     .assign(&local_centroids.row(fi));
@@ -186,6 +204,7 @@ impl TwoStageCodebook {
             }
             offset += local_centroids.nrows();
         }
+        drop(local_buf);
 
         let actual_n_fine = offset;
         let centroids = all_fine_centroids.slice(ndarray::s![..actual_n_fine, ..]).to_owned();
