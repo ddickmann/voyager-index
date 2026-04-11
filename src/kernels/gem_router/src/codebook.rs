@@ -1,3 +1,25 @@
+use std::time::Instant;
+
+fn _progress_write_cb(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("/tmp/gem_build_progress.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+    let bytes = format!("{}\n", msg);
+    unsafe {
+        libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len());
+    }
+}
+
+macro_rules! progress {
+    ($($arg:tt)*) => {{
+        _progress_write_cb(&format!($($arg)*));
+    }};
+}
+
 use ndarray::{Array2, ArrayView1, ArrayView2, Axis};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -151,11 +173,17 @@ impl TwoStageCodebook {
         let n_fine = n_fine.min(n_vectors).max(2);
         let n_coarse = n_coarse.min(n_fine / 2).max(2);
 
+        progress!("[codebook] build_prenorm: {} vectors, dim={}, n_fine={}, n_coarse={}, max_iter={}",
+            n_vectors, dim, n_fine, n_coarse, max_iter);
+
         let normalized = ArrayView2::from_shape((n_vectors, dim), norm_vectors)
             .expect("vector shape mismatch");
 
+        let coarse_start = Instant::now();
+        progress!("[codebook] starting coarse k-means ({} clusters)...", n_coarse);
         let (_coarse_centroids, coarse_labels) =
             kmeans(&normalized.view(), n_coarse, max_iter, seed);
+        progress!("[codebook] coarse k-means done in {:.1}s", coarse_start.elapsed().as_secs_f64());
 
         let mut coarse_groups: Vec<Vec<usize>> = vec![Vec::new(); n_coarse];
         for (i, &label) in coarse_labels.iter().enumerate() {
@@ -184,10 +212,15 @@ impl TwoStageCodebook {
         let max_group_size = coarse_groups.iter().map(|g| g.len()).max().unwrap_or(0);
         let mut local_buf = vec![0.0f32; max_group_size * dim];
 
+        let fine_start = Instant::now();
+        progress!("[codebook] starting fine k-means ({} total fine centroids across {} non-empty coarse clusters, max_group={})...",
+            n_fine, n_nonempty, max_group_size);
+
         for (c, group) in coarse_groups.iter().enumerate() {
             let k_local = fine_per_coarse[c];
             if group.is_empty() || k_local == 0 { continue; }
             let n_local = group.len();
+            let cluster_start = Instant::now();
             for (li, &gi) in group.iter().enumerate() {
                 let src_start = gi * dim;
                 local_buf[li * dim..(li + 1) * dim]
@@ -203,8 +236,17 @@ impl TwoStageCodebook {
                 cindex_labels.push(c as u32);
             }
             offset += local_centroids.nrows();
+            if (c + 1) % 8 == 0 || c + 1 == n_coarse {
+                let elapsed = fine_start.elapsed().as_secs_f64();
+                let done = coarse_groups[..=c].iter().filter(|g| !g.is_empty()).count();
+                let frac = done as f64 / n_nonempty as f64;
+                let eta = if frac > 0.0 { elapsed / frac - elapsed } else { 0.0 };
+                progress!("[codebook] fine k-means: coarse {}/{} (n_local={}, k_local={}, {:.1}s) — {:.1}s elapsed, ETA {:.0}s",
+                    c + 1, n_coarse, n_local, k_local, cluster_start.elapsed().as_secs_f64(), elapsed, eta);
+            }
         }
         drop(local_buf);
+        progress!("[codebook] fine k-means complete in {:.1}s, {} fine centroids", fine_start.elapsed().as_secs_f64(), offset);
 
         let actual_n_fine = offset;
         let centroids = all_fine_centroids.slice(ndarray::s![..actual_n_fine, ..]).to_owned();
@@ -241,16 +283,85 @@ impl TwoStageCodebook {
     }
 
     /// Assign pre-normalized vectors to nearest centroids (no copy/renormalization).
+    ///
+    /// Uses two-stage lookup: first find top-p nearest coarse clusters,
+    /// then only compare fine centroids within those clusters.
+    /// Reduces from O(n_fine) to O(n_coarse + p * fine_per_coarse) per vector.
     pub fn assign_vectors_prenorm(&self, norm_vectors: &[f32], n_vectors: usize) -> Vec<u32> {
-        let cquant = self.cquant_matrix();
-        let normalized = ArrayView2::from_shape((n_vectors, self.dim), norm_vectors)
-            .expect("vector shape mismatch");
+        let dim = self.dim;
+        let n_fine = self.n_fine;
+        let n_coarse = self.n_coarse;
+
+        // Build coarse cluster means from fine centroids
+        let mut coarse_sums = vec![0.0f32; n_coarse * dim];
+        let mut coarse_counts = vec![0usize; n_coarse];
+        for (fi, &ci) in self.cindex_labels.iter().enumerate() {
+            let c = ci as usize;
+            coarse_counts[c] += 1;
+            let src = fi * dim;
+            for d in 0..dim {
+                coarse_sums[c * dim + d] += self.cquant[src + d];
+            }
+        }
+        let mut coarse_means = vec![0.0f32; n_coarse * dim];
+        for c in 0..n_coarse {
+            if coarse_counts[c] > 0 {
+                let inv = 1.0 / coarse_counts[c] as f32;
+                for d in 0..dim {
+                    coarse_means[c * dim + d] = coarse_sums[c * dim + d] * inv;
+                }
+            }
+        }
+
+        // Build per-coarse-cluster fine centroid index lists
+        let mut coarse_to_fine: Vec<Vec<usize>> = vec![Vec::new(); n_coarse];
+        for (fi, &ci) in self.cindex_labels.iter().enumerate() {
+            coarse_to_fine[ci as usize].push(fi);
+        }
+
+        let n_probes = 3usize.min(n_coarse);
+        let coarse_means_ref = &coarse_means;
+        let coarse_to_fine_ref = &coarse_to_fine;
+        let cquant = &self.cquant;
 
         (0..n_vectors)
             .into_par_iter()
             .map(|i| {
-                let row = normalized.row(i);
-                nearest_centroid(&row, &cquant)
+                let vec_start = i * dim;
+                let vec_slice = &norm_vectors[vec_start..vec_start + dim];
+
+                // Find top-p nearest coarse clusters
+                let mut coarse_dists: Vec<(f32, usize)> = (0..n_coarse)
+                    .map(|c| {
+                        let mut d = 0.0f32;
+                        let cs = c * dim;
+                        for dd in 0..dim {
+                            let diff = vec_slice[dd] - coarse_means_ref[cs + dd];
+                            d += diff * diff;
+                        }
+                        (d, c)
+                    })
+                    .collect();
+                coarse_dists.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                // Search fine centroids in top-p coarse clusters
+                let mut best_idx = 0u32;
+                let mut best_dist = f32::MAX;
+                for &(_, c) in coarse_dists.iter().take(n_probes) {
+                    for &fi in &coarse_to_fine_ref[c] {
+                        let cs = fi * dim;
+                        let mut d = 0.0f32;
+                        for dd in 0..dim {
+                            let diff = vec_slice[dd] - cquant[cs + dd];
+                            d += diff * diff;
+                        }
+                        if d < best_dist {
+                            best_dist = d;
+                            best_idx = fi as u32;
+                        }
+                    }
+                }
+                best_idx
             })
             .collect()
     }
@@ -854,7 +965,10 @@ fn kmeans(
     }
 
     let mut labels = vec![0usize; n];
-    for _ in 0..max_iter {
+    let km_start = Instant::now();
+    let show_progress = n > 50_000;
+    for iter in 0..max_iter {
+        let iter_start = Instant::now();
         let new_labels: Vec<usize> = (0..n)
             .into_par_iter()
             .map(|i| {
@@ -864,6 +978,10 @@ fn kmeans(
             .collect();
 
         if new_labels == labels {
+            if show_progress {
+                progress!("[kmeans] converged at iter {} (n={}, k={}) in {:.1}s",
+                    iter, n, k, km_start.elapsed().as_secs_f64());
+            }
             break;
         }
         labels = new_labels;
@@ -884,6 +1002,12 @@ fn kmeans(
                     centroids[[c, d]] = sums[[c, d]] / cnt;
                 }
             }
+        }
+        if show_progress {
+            progress!("[kmeans] iter {}/{} (n={}, k={}) — {:.1}s iter, {:.1}s total",
+                iter + 1, max_iter, n, k,
+                iter_start.elapsed().as_secs_f64(),
+                km_start.elapsed().as_secs_f64());
         }
     }
 

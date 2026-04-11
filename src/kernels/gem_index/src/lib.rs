@@ -1,5 +1,7 @@
 #![allow(clippy::useless_conversion, clippy::too_many_arguments)]
 
+extern crate libc;
+
 pub mod visited;
 pub mod id_tracker;
 pub mod emd;
@@ -11,9 +13,31 @@ pub mod mutable;
 pub mod score_cache;
 pub mod ensemble;
 
+use std::io::Write;
+use std::time::Instant;
+
+fn _progress_write(msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("/tmp/gem_build_progress.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+    let bytes = format!("{}\n", msg);
+    unsafe {
+        libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len());
+    }
+}
+
+macro_rules! progress {
+    ($($arg:tt)*) => {{
+        _progress_write(&format!($($arg)*));
+    }};
+}
+
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use numpy::{PyReadonlyArray2, PyArray1, PyArray2};
+use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyArray1, PyArray2, PyUntypedArrayMethods};
 
 use latence_gem_router::codebook::{TwoStageCodebook, compute_ctop, compute_ctop_adaptive, l2_normalize_rows_inplace};
 use latence_gem_router::adaptive_cutoff::CutoffTree;
@@ -21,6 +45,7 @@ use latence_gem_router::router::{ClusterPostings, DocProfile, FlatDocCodes, Filt
 
 use graph::{Adjacency, GemGraph};
 use persistence::{SegmentData, save_segment, load_segment};
+
 use search::{beam_search, beam_search_with_stats};
 use mutable::MutableGemSegment;
 
@@ -130,11 +155,11 @@ impl GemSegment {
     ///   payload_clusters: optional per-doc cluster IDs for payload-aware construction
     ///   use_emd: use qEMD (Earth Mover's Distance) for graph construction instead of qCH
     ///   dual_graph: use per-cluster dual-graph construction (GEM paper Algorithm 1)
-    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 0, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 15, ctop_r = 3, payload_clusters = None, use_emd = true, dual_graph = true, store_raw_vectors = true))]
+    #[pyo3(signature = (all_vectors, doc_ids, doc_offsets, n_fine = 0, n_coarse = 32, max_degree = 32, ef_construction = 200, max_kmeans_iter = 15, ctop_r = 3, payload_clusters = None, use_emd = true, dual_graph = true, store_raw_vectors = true, refine_graph = false))]
     fn build(
         &mut self,
         py: Python<'_>,
-        all_vectors: PyReadonlyArray2<f32>,
+        mut all_vectors: PyReadwriteArray2<f32>,
         doc_ids: Vec<u64>,
         doc_offsets: Vec<(usize, usize)>,
         n_fine: usize,
@@ -147,12 +172,12 @@ impl GemSegment {
         use_emd: bool,
         dual_graph: bool,
         store_raw_vectors: bool,
+        refine_graph: bool,
     ) -> PyResult<()> {
-        let arr = all_vectors.as_array();
-        let (n_vectors, dim) = (arr.shape()[0], arr.shape()[1]);
-        let mut flat: Vec<f32> = arr.as_slice().ok_or_else(|| {
-            PyValueError::new_err("array must be C-contiguous")
-        })?.to_vec();
+        let (n_vectors, dim) = {
+            let shape = all_vectors.shape();
+            (shape[0], shape[1])
+        };
 
         let n_docs = doc_ids.len();
         if n_docs != doc_offsets.len() {
@@ -184,8 +209,31 @@ impl GemSegment {
             ));
         }
 
+        // Phase 1: L2-normalize in-place directly on the numpy array (GIL held).
+        // This avoids a 6 GB .to_vec() copy — the numpy buffer IS the working buffer.
+        {
+            let flat_mut = all_vectors.as_slice_mut().map_err(|_| {
+                PyValueError::new_err("array must be C-contiguous")
+            })?;
+            l2_normalize_rows_inplace(flat_mut, n_vectors, dim);
+        }
+
+        // Extract raw pointer before releasing GIL. The numpy array stays alive
+        // for the duration of allow_threads because Python can't GC it while we
+        // hold a reference (the &mut borrow ends, but Python keeps the object).
+        let flat_addr = all_vectors.as_slice().map_err(|_| {
+            PyValueError::new_err("array must be C-contiguous")
+        })?.as_ptr() as usize;
+        let flat_len = n_vectors * dim;
+
         let sealed = py.allow_threads(move || {
-            // Auto-tune n_fine: sqrt(n_vectors) clamped to [64, 2048]
+            // SAFETY: The numpy array backing this pointer is kept alive by the
+            // Python interpreter for the duration of this call. We only read from
+            // it after normalization is complete. The pointer is valid and aligned
+            // because it came from a C-contiguous numpy float32 array.
+            let flat: &[f32] = unsafe { std::slice::from_raw_parts(flat_addr as *const f32, flat_len) };
+
+            let build_start = Instant::now();
             let n_fine = if n_fine == 0 {
                 ((n_vectors as f64).sqrt() as usize).clamp(64, 2048)
             } else {
@@ -198,16 +246,26 @@ impl GemSegment {
                 );
             }
 
-            // L2-normalize vectors in-place ONCE to avoid repeated 6.8 GB copies
-            // inside codebook build/assign/refine (critical for 23 GB container).
-            // qCH proxy scoring uses centroid codes + centroid_dists, not raw vectors,
-            // so normalization preserves ranking for both codebook training and graph construction.
-            l2_normalize_rows_inplace(&mut flat, n_vectors, dim);
+            progress!("[GEM build] ══════════════════════════════════════════════════");
+            progress!("[GEM build] {} docs, {} vectors, dim={}", n_docs, n_vectors, dim);
+            progress!("[GEM build] n_fine={}, n_coarse={}, max_degree={}, ef_construction={}",
+                n_fine, n_coarse, max_degree, ef_construction);
+            progress!("[GEM build] use_emd={}, dual_graph={}, store_raw={}", use_emd, dual_graph, store_raw_vectors);
+            progress!("[GEM build] zero-copy vectors (no .to_vec() copy)");
+            progress!("[GEM build] ══════════════════════════════════════════════════");
 
+            progress!("[GEM build] Phase 1/5: L2-normalization already done (zero-copy)");
+
+            progress!("[GEM build] Phase 2/5: Building two-stage codebook...");
+            let t = Instant::now();
             let mut codebook = TwoStageCodebook::build_prenorm(
-                &flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
+                flat, n_vectors, dim, n_fine, n_coarse, max_kmeans_iter, 42,
             );
-            let all_assignments = codebook.assign_vectors_prenorm(&flat, n_vectors);
+            progress!("[GEM build] Phase 2/5 done in {:.1}s", t.elapsed().as_secs_f64());
+
+            progress!("[GEM build] Phase 3/5: Assigning vectors + IDF refinement...");
+            let t = Instant::now();
+            let all_assignments = codebook.assign_vectors_prenorm(flat, n_vectors);
 
             let mut doc_centroid_sets = Vec::with_capacity(n_docs);
             for &(start, end) in &doc_offsets {
@@ -215,14 +273,17 @@ impl GemSegment {
             }
             codebook.update_idf(&doc_centroid_sets);
 
-            codebook.refine_centroids_idf_prenorm(&flat, n_vectors, 1);
-            let all_assignments = codebook.assign_vectors_prenorm(&flat, n_vectors);
+            codebook.refine_centroids_idf_prenorm(flat, n_vectors, 1);
+            let all_assignments = codebook.assign_vectors_prenorm(flat, n_vectors);
             let mut doc_centroid_sets = Vec::with_capacity(n_docs);
             for &(start, end) in &doc_offsets {
                 doc_centroid_sets.push(all_assignments[start..end].to_vec());
             }
             codebook.update_idf(&doc_centroid_sets);
+            progress!("[GEM build] Phase 3/5 done in {:.1}s", t.elapsed().as_secs_f64());
 
+            progress!("[GEM build] Phase 4/5: Building doc profiles + postings...");
+            let t = Instant::now();
             let mut doc_profiles = Vec::with_capacity(n_docs);
             let mut flat_codes = FlatDocCodes::new();
             let mut postings = ClusterPostings::new(n_coarse);
@@ -237,19 +298,41 @@ impl GemSegment {
             }
 
             postings.compute_medoids(&codebook, &flat_codes);
+            progress!("[GEM build] Phase 4/5 done in {:.1}s", t.elapsed().as_secs_f64());
 
+            progress!("[GEM build] Phase 5/5: Graph construction ({})...",
+                if dual_graph { "nndescent" } else { "payload-graph" });
+            let t = Instant::now();
             let gem_graph = if dual_graph {
-                graph::build_graph_dual(
-                    &flat, dim, &doc_offsets, &codebook, &flat_codes,
-                    &doc_profiles, &postings, max_degree, ef_construction,
-                    use_emd,
+                let refine = if refine_graph {
+                    Some((flat, dim, &doc_offsets[..], ef_construction))
+                } else {
+                    None
+                };
+                graph::build_graph_nndescent(
+                    n_docs, &codebook, &flat_codes,
+                    &doc_profiles, &postings, max_degree, use_emd, refine,
                 )
             } else {
                 graph::build_graph_with_payload(
-                    &flat, dim, &doc_offsets, &codebook, &flat_codes,
+                    flat, dim, &doc_offsets, &codebook, &flat_codes,
                     &doc_profiles, &postings, max_degree, ef_construction,
                     payload_clusters.as_deref(), use_emd,
                 )
+            };
+            progress!("[GEM build] Phase 5/5 done in {:.1}s", t.elapsed().as_secs_f64());
+            progress!("[GEM build] ══════════════════════════════════════════════════");
+            progress!("[GEM build] TOTAL BUILD TIME: {:.1}s ({:.1} min)",
+                build_start.elapsed().as_secs_f64(), build_start.elapsed().as_secs_f64() / 60.0);
+            progress!("[GEM build] ══════════════════════════════════════════════════");
+
+            // Only copy vectors into the segment if raw storage is requested.
+            // This is the segment's permanent storage — unavoidable copy, but
+            // it happens AFTER all the heavy codebook/graph work is done.
+            let raw_vectors = if store_raw_vectors {
+                Some(flat.to_vec())
+            } else {
+                None
             };
 
             SealedInner {
@@ -263,7 +346,7 @@ impl GemSegment {
                 dim,
                 cutoff_tree: None,
                 filter_index: None,
-                raw_vectors: if store_raw_vectors { Some(flat) } else { None },
+                raw_vectors,
                 doc_offsets,
             }
         });

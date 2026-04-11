@@ -1,3 +1,25 @@
+use std::time::Instant;
+
+fn _progress_write_graph(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("/tmp/gem_build_progress.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+    let bytes = format!("{}\n", msg);
+    unsafe {
+        libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len());
+    }
+}
+
+macro_rules! progress {
+    ($($arg:tt)*) => {{
+        _progress_write_graph(&format!($($arg)*));
+    }};
+}
+
 use serde::{Deserialize, Serialize};
 
 use latence_gem_router::codebook::TwoStageCodebook;
@@ -876,6 +898,95 @@ pub fn global_bridge_repair(
     }
 }
 
+/// Cached variant of global_bridge_repair — reuses pairwise distance cache
+/// across rounds, avoiding redundant recomputation when the same
+/// small_node × giant_node pair appears in successive BFS rounds.
+pub fn global_bridge_repair_cached(
+    adjacency: &mut [Vec<u32>],
+    max_degree: usize,
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    use_emd: bool,
+    cache: &mut ScoreCache,
+) {
+    let n = adjacency.len();
+    if n <= 1 {
+        return;
+    }
+
+    const MAX_ROUNDS: usize = 10;
+    for round in 0..MAX_ROUNDS {
+        let components = bfs_components(adjacency);
+        if components.len() <= 1 {
+            return;
+        }
+
+        let giant_idx = components
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, c)| c.len())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let giant_entry = components[giant_idx][0];
+        let giant_comp = &components[giant_idx];
+
+        let small_comps: Vec<&Vec<usize>> = components.iter().enumerate()
+            .filter(|&(ci, c)| ci != giant_idx && !c.is_empty())
+            .map(|(_, c)| c)
+            .collect();
+
+        // Sequential bridge search with cache (cache is &mut, can't use par_iter)
+        let mut bridge_pairs: Vec<(usize, usize)> = Vec::with_capacity(small_comps.len());
+        for comp in &small_comps {
+            let mut best_pair: Option<(usize, usize, f32)> = None;
+            for &small_node in comp.iter() {
+                let small_codes = flat_codes.doc_codes(small_node);
+                if small_codes.is_empty() {
+                    continue;
+                }
+                let small_u32 = small_node as u32;
+                for &giant_node in giant_comp {
+                    let d = if let Some(cached) = cache.get(small_u32, giant_node as u32) {
+                        cached
+                    } else {
+                        let giant_codes = flat_codes.doc_codes(giant_node);
+                        let d = construction_distance(codebook, small_codes, giant_codes, use_emd);
+                        cache.insert(small_u32, giant_node as u32, d);
+                        d
+                    };
+                    if best_pair.is_none() || d < best_pair.unwrap().2 {
+                        best_pair = Some((small_node, giant_node, d));
+                    }
+                }
+            }
+            match best_pair {
+                Some((s, g, _)) => bridge_pairs.push((s, g)),
+                None => bridge_pairs.push((comp[0], giant_entry)),
+            }
+        }
+
+        if bridge_pairs.is_empty() {
+            break;
+        }
+
+        for (bridge_small, bridge_giant) in bridge_pairs {
+            add_bridge_edge(adjacency, bridge_small, bridge_giant, max_degree, codebook, flat_codes, use_emd);
+        }
+
+        let remaining = bfs_components(adjacency).len();
+        if remaining <= 1 {
+            return;
+        }
+        if round == MAX_ROUNDS - 1 {
+            log::warn!(
+                "global_bridge_repair_cached: {} components remain after {} rounds (expected 1)",
+                remaining, MAX_ROUNDS,
+            );
+        }
+    }
+}
+
 fn evict_worst_neighbor_emd(
     node: usize,
     max_degree: usize,
@@ -950,6 +1061,19 @@ pub fn build_graph_dual(
     let mut score_cache = ScoreCache::new(n_docs * 16);
 
     let n_clusters = postings.lists.len();
+    let graph_start = Instant::now();
+    let mut total_inserted: usize = 0;
+    let mut total_bridged: usize = 0;
+
+    // Pre-allocate reusable scores buffer for bridge updates (Opt 1).
+    // For first insertions, scores are batch-computed via rayon (Opt 3).
+    let max_tokens = doc_offsets.iter().map(|&(s, e)| e - s).max().unwrap_or(0);
+    let mut scores_buf: Vec<f32> = vec![0.0f32; max_tokens * n_fine];
+
+    progress!("[GEM graph] dual-graph construction: {} docs, {} clusters, max_degree={}, ef_construction={}, use_emd={}",
+        n_docs, n_clusters, max_degree, ef_construction, use_emd);
+    progress!("[GEM graph] max_tokens_per_doc={}, scores_buf={:.1} MB",
+        max_tokens, (max_tokens * n_fine * 4) as f64 / 1e6);
 
     // Process each cluster's member documents (Algorithm 1)
     for cluster_id in 0..n_clusters {
@@ -957,6 +1081,7 @@ pub fn build_graph_dual(
         if members.is_empty() {
             continue;
         }
+        let cluster_start = Instant::now();
 
         // Collect already-inserted members as potential entry points for this cluster
         let cluster_entries: Vec<u32> = members
@@ -965,57 +1090,135 @@ pub fn build_graph_dual(
             .filter(|&m| inserted[m as usize])
             .collect();
 
+        // Partition members into new (need first insertion) and bridge (already inserted)
+        let mut new_members: Vec<u32> = Vec::new();
+        let mut bridge_members: Vec<u32> = Vec::new();
         for &doc_u32 in members {
             let doc_idx = doc_u32 as usize;
-            if doc_idx >= n_docs {
-                continue;
-            }
-
-            if !inserted[doc_idx] {
-                // First insertion: connect to existing cluster members
-                build_cluster_local(
-                    doc_idx,
-                    &cluster_entries,
-                    &mut adjacency,
-                    all_vectors,
-                    dim,
-                    doc_offsets,
-                    codebook,
-                    flat_codes,
-                    n_fine,
-                    max_degree,
-                    ef_construction,
-                    use_emd,
-                    &mut score_cache,
-                );
-                inserted[doc_idx] = true;
+            if doc_idx >= n_docs { continue; }
+            if inserted[doc_idx] {
+                bridge_members.push(doc_u32);
             } else {
-                // Already inserted from another cluster: update bridges
-                let new_neighbors = find_new_cluster_neighbors(
-                    doc_idx,
-                    &cluster_entries,
-                    &adjacency,
-                    all_vectors,
-                    dim,
-                    doc_offsets,
-                    codebook,
-                    flat_codes,
-                    n_fine,
-                    ef_construction,
-                );
-                update_bridges_cached(
-                    doc_idx,
-                    &new_neighbors,
-                    &mut adjacency,
-                    doc_profiles,
-                    max_degree,
-                    codebook,
-                    flat_codes,
-                    use_emd,
-                    Some(&mut score_cache),
-                );
+                new_members.push(doc_u32);
             }
         }
+
+        // --- Opt 3: Batch-parallel GEMM for all new members ---
+        // Compute query_centroid_scores for all new members in parallel using rayon,
+        // then do sequential beam search + neighbor selection with precomputed scores.
+        let precomputed_scores: Vec<(u32, Vec<f32>)> = if !new_members.is_empty() && !cluster_entries.is_empty() {
+            new_members.par_iter().map(|&doc_u32| {
+                let doc_idx = doc_u32 as usize;
+                let (start, end) = doc_offsets[doc_idx];
+                let n_tokens = end - start;
+                if n_tokens == 0 || dim == 0 {
+                    return (doc_u32, Vec::new());
+                }
+                let doc_vecs = &all_vectors[start * dim..end * dim];
+                let scores = codebook.compute_query_centroid_scores(doc_vecs, n_tokens);
+                (doc_u32, scores)
+            }).collect()
+        } else {
+            new_members.iter().map(|&d| (d, Vec::new())).collect()
+        };
+
+        // Sequential: beam search + neighbor insertion using precomputed scores
+        let cluster_inserts = precomputed_scores.len();
+        for (doc_u32, query_scores) in precomputed_scores {
+            let doc_idx = doc_u32 as usize;
+            if query_scores.is_empty() || cluster_entries.is_empty() {
+                inserted[doc_idx] = true;
+                continue;
+            }
+            let (start, end) = doc_offsets[doc_idx];
+            let n_tokens = end - start;
+
+            let adj = VecAdjacency(&adjacency);
+            let candidates = beam_search_construction(
+                &adj,
+                &cluster_entries,
+                &query_scores,
+                n_tokens,
+                flat_codes,
+                n_fine,
+                ef_construction,
+                doc_idx,
+            );
+
+            let doc_codes = flat_codes.doc_codes(doc_idx);
+            let neighbors = select_neighbors_heuristic_cached(
+                &candidates,
+                doc_codes,
+                max_degree,
+                codebook,
+                flat_codes,
+                Some(&mut score_cache),
+                use_emd,
+            );
+
+            for &(nbr_idx, _) in &neighbors {
+                adjacency[doc_idx].push(nbr_idx);
+                adjacency[nbr_idx as usize].push(doc_idx as u32);
+                if adjacency[nbr_idx as usize].len() > max_degree {
+                    shrink_neighbors_emd_cached(
+                        nbr_idx as usize, max_degree, &mut adjacency, codebook, flat_codes, use_emd,
+                        Some(&mut score_cache),
+                    );
+                }
+            }
+            inserted[doc_idx] = true;
+        }
+
+        // Bridge updates for already-inserted members (reuse scores_buf — Opt 1)
+        let cluster_bridges = bridge_members.len();
+        for &doc_u32 in &bridge_members {
+            let doc_idx = doc_u32 as usize;
+            let (start, end) = doc_offsets[doc_idx];
+            let n_tokens = end - start;
+            if n_tokens == 0 || dim == 0 || cluster_entries.is_empty() {
+                continue;
+            }
+            let doc_vecs = &all_vectors[start * dim..end * dim];
+            let needed = n_tokens * n_fine;
+            if scores_buf.len() < needed {
+                scores_buf.resize(needed, 0.0);
+            }
+            codebook.compute_query_centroid_scores_into(doc_vecs, n_tokens, &mut scores_buf);
+
+            let adj = VecAdjacency(&adjacency);
+            let new_neighbors = beam_search_construction(
+                &adj,
+                &cluster_entries,
+                &scores_buf[..needed],
+                n_tokens,
+                flat_codes,
+                n_fine,
+                ef_construction,
+                doc_idx,
+            );
+            update_bridges_cached(
+                doc_idx,
+                &new_neighbors,
+                &mut adjacency,
+                doc_profiles,
+                max_degree,
+                codebook,
+                flat_codes,
+                use_emd,
+                Some(&mut score_cache),
+            );
+        }
+
+        total_inserted += cluster_inserts;
+        total_bridged += cluster_bridges;
+        let elapsed = graph_start.elapsed().as_secs_f64();
+        let frac = (cluster_id + 1) as f64 / n_clusters as f64;
+        let eta = if frac > 0.0 { elapsed / frac - elapsed } else { 0.0 };
+        progress!(
+            "[GEM graph] cluster {}/{} done ({} members, {} new inserts, {} bridges) — {:.1}s elapsed, {:.0}s cluster, ETA {:.0}s | total inserted {}/{}",
+            cluster_id + 1, n_clusters, members.len(), cluster_inserts, cluster_bridges,
+            elapsed, cluster_start.elapsed().as_secs_f64(), eta, total_inserted, n_docs,
+        );
     }
 
     // Repair isolated nodes (degree 0): connect to nearest neighbor by brute-force.
@@ -1058,11 +1261,21 @@ pub fn build_graph_dual(
         log::info!("Isolated node repair done: {}/{} repaired", repaired, isolated_count);
     }
 
+    progress!("[GEM graph] cluster loop complete in {:.1}s — {} inserts, {} bridges",
+        graph_start.elapsed().as_secs_f64(), total_inserted, total_bridged);
+
     // Safety net: bridge repair for any remaining disconnected components
+    let repair_start = Instant::now();
+    progress!("[GEM graph] running bridge repair...");
     bridge_repair_emd(&mut adjacency, max_degree, postings, codebook, flat_codes, use_emd);
+    progress!("[GEM graph] bridge repair done in {:.1}s, running global bridge repair...",
+        repair_start.elapsed().as_secs_f64());
+    let global_start = Instant::now();
     global_bridge_repair(&mut adjacency, max_degree, codebook, flat_codes, use_emd);
+    progress!("[GEM graph] global bridge repair done in {:.1}s", global_start.elapsed().as_secs_f64());
 
     // Build single-level graph (dual-graph uses flat structure, not multi-level HNSW)
+    progress!("[GEM graph] building CSR adjacency...");
     let csr = CsrAdjacency::from_adj_lists(&adjacency);
 
     // Entry point: the node with the most connections (hub-like)
@@ -1083,6 +1296,7 @@ pub fn build_graph_dual(
 /// First insertion of a document into the graph via a specific cluster.
 /// Beam-searches among already-connected cluster members to find candidates,
 /// then selects neighbors via the diversity heuristic.
+#[allow(dead_code)]
 fn build_cluster_local(
     doc_idx: usize,
     cluster_entries: &[u32],
@@ -1147,6 +1361,7 @@ fn build_cluster_local(
 }
 
 /// Find new candidate neighbors for a doc when encountering it in a second cluster.
+#[allow(dead_code)]
 fn find_new_cluster_neighbors(
     doc_idx: usize,
     cluster_entries: &[u32],
@@ -1335,6 +1550,601 @@ pub fn update_bridges_cached(
     }
 }
 
+// ---------------------------------------------------------------------------
+// NN-Descent Graph Construction (Dong et al. 2011 + Parallel Clusters)
+//
+// Faithful implementation of "Efficient K-Nearest Neighbor Graph Construction
+// for Generic Similarity Measures" with the following SOTA optimizations:
+//
+// 1. New/Old flag tracking: only join pairs where ≥1 neighbor is "new" (i.e.
+//    inserted in the previous iteration). Old-old pairs are NEVER re-examined.
+//    This yields exponentially decreasing work per iteration.
+// 2. Reverse neighbor lists: precomputed in O(n*k) instead of O(n²) scan.
+//    Ensures bidirectional discovery: if u is in v's list, v's neighbors
+//    are candidates for u even if u isn't in v's list.
+// 3. Global pair deduplication: all (new×new) and (new×old) pairs across all
+//    nodes are collected, sorted, and deduped before distance computation.
+//    A single distance(u1, u2) updates BOTH u1's and u2's lists.
+// 4. Parallel distance computation: deduplicated pairs are evaluated in
+//    parallel via rayon.
+// 5. Parallel initialization: random k-NN init is embarrassingly parallel.
+// 6. Binary-search insertion: O(k) shift instead of O(k log k) re-sort.
+// ---------------------------------------------------------------------------
+
+/// Try to insert `neighbor` at distance `dist` into a sorted k-NN list.
+/// Uses binary search for position, O(k) shift. Returns true on success.
+/// `nn_flag` tracks the new/old status per entry (true = "new").
+#[inline]
+fn nn_try_insert(
+    nn_idx: &mut Vec<u32>,
+    nn_dist: &mut Vec<f32>,
+    nn_flag: &mut Vec<bool>,
+    neighbor: u32,
+    dist: f32,
+    k: usize,
+) -> bool {
+    if nn_idx.iter().any(|&i| i == neighbor) {
+        return false;
+    }
+    if nn_idx.len() >= k {
+        if let Some(&worst) = nn_dist.last() {
+            if dist >= worst {
+                return false;
+            }
+        }
+        nn_idx.pop();
+        nn_dist.pop();
+        nn_flag.pop();
+    }
+    let pos = nn_dist.partition_point(|&d| d < dist);
+    nn_idx.insert(pos, neighbor);
+    nn_dist.insert(pos, dist);
+    nn_flag.insert(pos, true);
+    true
+}
+
+/// NN-Descent (Dong et al. 2011): build approximate k-NN graph via iterative
+/// local joins with new/old tracking and reverse neighbor propagation.
+///
+/// Operates on a subset of documents (identified by `doc_ids` which are global
+/// indices into `flat_codes`). Internally uses local indices 0..n, converting
+/// back to global IDs in the output.
+fn nn_descent(
+    doc_ids: &[u32],
+    k: usize,
+    n_iters: usize,
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    use_emd: bool,
+    seed: u64,
+) -> Vec<Vec<(u32, f32)>> {
+    use rand::seq::SliceRandom;
+
+    let n = doc_ids.len();
+    if n <= 1 {
+        return vec![Vec::new(); n];
+    }
+    let k = k.min(n - 1);
+    let local_to_global: Vec<u32> = doc_ids.to_vec();
+
+    // ── Parallel random initialization ──────────────────────────────────
+    let init_data: Vec<(Vec<u32>, Vec<f32>)> = (0..n).into_par_iter().map(|i| {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.wrapping_add(i as u64));
+        let mut candidates: Vec<usize> = (0..n).filter(|&j| j != i).collect();
+        candidates.shuffle(&mut rng);
+        candidates.truncate(k);
+
+        let gi = local_to_global[i] as usize;
+        let codes_i = flat_codes.doc_codes(gi);
+
+        let mut scored: Vec<(u32, f32)> = candidates.iter().map(|&j| {
+            let gj = local_to_global[j] as usize;
+            let codes_j = flat_codes.doc_codes(gj);
+            let d = construction_distance(codebook, codes_i, codes_j, use_emd);
+            (j as u32, d)
+        }).collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+        let idx_vec: Vec<u32> = scored.iter().map(|&(i, _)| i).collect();
+        let dist_vec: Vec<f32> = scored.iter().map(|&(_, d)| d).collect();
+        (idx_vec, dist_vec)
+    }).collect();
+
+    let mut nn_idx: Vec<Vec<u32>> = Vec::with_capacity(n);
+    let mut nn_dist: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut nn_flag: Vec<Vec<bool>> = Vec::with_capacity(n);
+    for (idx_vec, dist_vec) in init_data {
+        let flags = vec![true; idx_vec.len()];
+        nn_idx.push(idx_vec);
+        nn_dist.push(dist_vec);
+        nn_flag.push(flags);
+    }
+
+    let convergence_threshold = ((0.001 * n as f64 * k as f64) as usize).max(1);
+
+    // ── Main loop ───────────────────────────────────────────────────────
+    for iter in 0..n_iters {
+        // Step 1: Build reverse neighbor lists in O(n*k)
+        let mut new_rev: Vec<Vec<u32>> = vec![Vec::new(); n];
+        let mut old_rev: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for v in 0..n {
+            for (pos, &nbr) in nn_idx[v].iter().enumerate() {
+                let nbr_usize = nbr as usize;
+                if nbr_usize >= n { continue; }
+                if nn_flag[v][pos] {
+                    new_rev[nbr_usize].push(v as u32);
+                } else {
+                    old_rev[nbr_usize].push(v as u32);
+                }
+            }
+        }
+
+        // Step 2: Build per-node new/old candidate sets (forward ∪ reverse)
+        let new_cands: Vec<Vec<u32>> = (0..n).map(|v| {
+            let mut c: Vec<u32> = nn_idx[v].iter().enumerate()
+                .filter(|&(pos, _)| nn_flag[v][pos])
+                .map(|(_, &idx)| idx)
+                .collect();
+            c.extend_from_slice(&new_rev[v]);
+            c.sort_unstable();
+            c.dedup();
+            c
+        }).collect();
+
+        let old_cands: Vec<Vec<u32>> = (0..n).map(|v| {
+            let mut c: Vec<u32> = nn_idx[v].iter().enumerate()
+                .filter(|&(pos, _)| !nn_flag[v][pos])
+                .map(|(_, &idx)| idx)
+                .collect();
+            c.extend_from_slice(&old_rev[v]);
+            c.sort_unstable();
+            c.dedup();
+            c
+        }).collect();
+
+        // Step 3: Mark all current "new" as "old" for next iteration
+        for flags in &mut nn_flag {
+            flags.iter_mut().for_each(|f| *f = false);
+        }
+
+        // Step 4: Collect unique pairs to evaluate (parallel per node, global dedup)
+        // Paper's local join: for each node v, join new[v] × (new[v] ∪ old[v]).
+        // Canonicalize pairs as (min, max) for global deduplication.
+        let pairs_per_node: Vec<Vec<(u32, u32)>> = (0..n).into_par_iter().map(|v| {
+            let new_v = &new_cands[v];
+            let old_v = &old_cands[v];
+            let mut pairs: Vec<(u32, u32)> = Vec::new();
+
+            // new × new (upper triangle: avoid (a,b) and (b,a))
+            for i in 0..new_v.len() {
+                for j in (i + 1)..new_v.len() {
+                    let (a, b) = (new_v[i].min(new_v[j]), new_v[i].max(new_v[j]));
+                    pairs.push((a, b));
+                }
+            }
+            // new × old
+            for &u1 in new_v {
+                for &u2 in old_v {
+                    if u1 == u2 { continue; }
+                    pairs.push((u1.min(u2), u1.max(u2)));
+                }
+            }
+            pairs
+        }).collect();
+
+        let mut all_pairs: Vec<(u32, u32)> = pairs_per_node.into_iter().flatten().collect();
+        all_pairs.sort_unstable();
+        all_pairs.dedup();
+
+        if all_pairs.is_empty() {
+            progress!("[NN-Descent] iter {}/{}: 0 pairs — converged (no new neighbors)", iter + 1, n_iters);
+            break;
+        }
+
+        // Step 5: Compute distances in parallel (one distance per unique pair)
+        let distances: Vec<(u32, u32, f32)> = all_pairs.par_iter().map(|&(a, b)| {
+            let ga = local_to_global[a as usize] as usize;
+            let gb = local_to_global[b as usize] as usize;
+            let ca = flat_codes.doc_codes(ga);
+            let cb = flat_codes.doc_codes(gb);
+            let d = construction_distance(codebook, ca, cb, use_emd);
+            (a, b, d)
+        }).collect();
+
+        // Step 6: Apply symmetrized updates (each distance updates BOTH lists)
+        let mut total_updates = 0usize;
+        for &(a, b, d) in &distances {
+            if nn_try_insert(&mut nn_idx[a as usize], &mut nn_dist[a as usize],
+                             &mut nn_flag[a as usize], b, d, k) {
+                total_updates += 1;
+            }
+            if nn_try_insert(&mut nn_idx[b as usize], &mut nn_dist[b as usize],
+                             &mut nn_flag[b as usize], a, d, k) {
+                total_updates += 1;
+            }
+        }
+
+        progress!("[NN-Descent] iter {}/{}: {} unique pairs, {} updates (threshold={})",
+            iter + 1, n_iters, all_pairs.len(), total_updates, convergence_threshold);
+
+        if total_updates <= convergence_threshold {
+            progress!("[NN-Descent] converged at iter {}", iter + 1);
+            break;
+        }
+    }
+
+    // Map local indices → global doc IDs
+    nn_idx.iter().zip(&nn_dist).map(|(idx, dist)| {
+        idx.iter().zip(dist).map(|(&local, &d)| {
+            (local_to_global[local as usize], d)
+        }).collect()
+    }).collect()
+}
+
+/// Build GEM graph using NN-Descent + Parallel Cluster Subgraphs.
+///
+/// Phase 1: Parallel cluster-local NN-Descent (all clusters run concurrently)
+/// Phase 2: Merge per-doc neighbors from all clusters + diversity prune (parallel)
+/// Phase 2b (optional): Beam search refinement — discovers navigable long-range
+///   edges by simulating search on the NN-Descent graph. Off by default; useful
+///   at 100K+ docs where cross-cluster navigability becomes critical.
+/// Phase 3: Repair (bridge repair + global connectivity guarantee)
+///
+/// `refine_with_beam_search`: if Some((all_vectors, dim, doc_offsets, ef_construction)),
+///   runs Phase 2b beam search refinement after the NN-Descent merge.
+pub fn build_graph_nndescent(
+    n_docs: usize,
+    codebook: &TwoStageCodebook,
+    flat_codes: &FlatDocCodes,
+    doc_profiles: &[DocProfile],
+    postings: &ClusterPostings,
+    max_degree: usize,
+    use_emd: bool,
+    refine_with_beam_search: Option<(&[f32], usize, &[(usize, usize)], usize)>,
+) -> GemGraph {
+    if n_docs == 0 {
+        return GemGraph {
+            levels: vec![CsrAdjacency::empty(0)],
+            shortcuts: Vec::new(),
+            shortcut_generations: Vec::new(),
+            node_levels: Vec::new(),
+            entry_point: 0,
+            max_degree,
+        };
+    }
+
+    let graph_start = Instant::now();
+    let n_clusters = postings.lists.len();
+    let nn_k = (max_degree * 2).min(96);
+    let nn_iters = 12;
+
+    progress!("[GEM nndescent] ══════════════════════════════════════════════════");
+    progress!("[GEM nndescent] {} docs, {} clusters, max_degree={}, nn_k={}, nn_iters={}",
+        n_docs, n_clusters, max_degree, nn_k, nn_iters);
+    progress!("[GEM nndescent] use_emd={}", use_emd);
+
+    // ── Phase 1: Parallel cluster-local NN-Descent ──────────────────────
+    progress!("[GEM nndescent] Phase 1: Parallel cluster-local NN-Descent...");
+    let phase1_start = Instant::now();
+
+    let cluster_results: Vec<Vec<(u32, Vec<(u32, f32)>)>> = (0..n_clusters)
+        .into_par_iter()
+        .filter_map(|cluster_id| {
+            let members = &postings.lists[cluster_id];
+            if members.len() <= 1 {
+                return None;
+            }
+            let k_local = nn_k.min(members.len() - 1);
+            if k_local == 0 {
+                return None;
+            }
+
+            let nn_lists = nn_descent(
+                members, k_local, nn_iters,
+                codebook, flat_codes, use_emd,
+                42u64.wrapping_add(cluster_id as u64),
+            );
+
+            let result: Vec<(u32, Vec<(u32, f32)>)> = members.iter()
+                .enumerate()
+                .map(|(local_idx, &global_id)| (global_id, nn_lists[local_idx].clone()))
+                .collect();
+            Some(result)
+        })
+        .collect();
+
+    progress!("[GEM nndescent] Phase 1 done in {:.1}s — {} clusters produced neighbor lists",
+        phase1_start.elapsed().as_secs_f64(), cluster_results.len());
+
+    // ── Phase 2: Merge + Diversity Prune ────────────────────────────────
+    progress!("[GEM nndescent] Phase 2: Merge + diversity prune...");
+    let phase2_start = Instant::now();
+
+    // Accumulate per-doc candidate lists from all clusters
+    let mut per_doc_candidates: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n_docs];
+    for cluster_nn in &cluster_results {
+        for &(global_id, ref nn_list) in cluster_nn {
+            let doc_idx = global_id as usize;
+            if doc_idx < n_docs {
+                per_doc_candidates[doc_idx].extend_from_slice(nn_list);
+            }
+        }
+    }
+    drop(cluster_results);
+
+    // Parallel: dedup, diversity-prune, enforce cross-cluster bridges
+    let pruned_neighbors: Vec<Vec<u32>> = per_doc_candidates.into_par_iter()
+        .enumerate()
+        .map(|(doc_idx, mut cands)| {
+            if cands.is_empty() {
+                return Vec::new();
+            }
+
+            // Dedup: sort by neighbor ID, keep best distance per neighbor
+            cands.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            cands.dedup_by_key(|c| c.0);
+            cands.retain(|&(nbr, _)| nbr as usize != doc_idx);
+            cands.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+            let doc_codes = flat_codes.doc_codes(doc_idx);
+            if doc_codes.is_empty() {
+                return cands.iter().take(max_degree).map(|&(id, _)| id).collect();
+            }
+
+            let selected = select_neighbors_heuristic(
+                &cands, doc_codes, max_degree, codebook, flat_codes,
+            );
+
+            let mut result: Vec<u32> = selected.iter().map(|&(id, _)| id).collect();
+
+            // Cross-cluster bridge constraint
+            if doc_idx < doc_profiles.len() {
+                let ctop = &doc_profiles[doc_idx].ctop;
+                for &cluster_id in ctop {
+                    let covered = result.iter().any(|&nbr| {
+                        let ni = nbr as usize;
+                        ni < doc_profiles.len()
+                            && doc_profiles[ni].ctop.contains(&cluster_id)
+                    });
+                    if !covered {
+                        if let Some(&(bridge_nbr, _)) = cands.iter().find(|&&(nbr, _)| {
+                            let ni = nbr as usize;
+                            ni != doc_idx
+                                && ni < doc_profiles.len()
+                                && doc_profiles[ni].ctop.contains(&cluster_id)
+                        }) {
+                            if result.len() >= max_degree {
+                                result.pop();
+                            }
+                            if !result.contains(&bridge_nbr) {
+                                result.push(bridge_nbr);
+                            }
+                        }
+                    }
+                }
+            }
+
+            result
+        })
+        .collect();
+
+    // Build bidirectional adjacency via edge collection (avoids O(k) contains)
+    let total_directed: usize = pruned_neighbors.iter().map(|n| n.len()).sum();
+    let mut all_edges: Vec<(u32, u32)> = Vec::with_capacity(total_directed * 2);
+    for (doc_idx, nbrs) in pruned_neighbors.iter().enumerate() {
+        let d = doc_idx as u32;
+        for &nbr in nbrs {
+            all_edges.push((d, nbr));
+            all_edges.push((nbr, d));
+        }
+    }
+    all_edges.sort_unstable();
+
+    let mut adjacency: Vec<Vec<u32>> = (0..n_docs).into_par_iter().map(|i| {
+        let i_u32 = i as u32;
+        let start = all_edges.partition_point(|e| e.0 < i_u32);
+        let end = all_edges.partition_point(|e| e.0 <= i_u32);
+        let mut nbrs: Vec<u32> = all_edges[start..end].iter().map(|&(_, t)| t).collect();
+        nbrs.sort_unstable();
+        nbrs.dedup();
+        nbrs.retain(|&n| n as usize != i);
+        nbrs
+    }).collect();
+    drop(all_edges);
+
+    // Shared score cache for Phase 2 trim, Phase 2b, and Phase 3 repair
+    let mut score_cache = ScoreCache::new(n_docs * 8);
+
+    // Trim over-degree nodes
+    for doc_idx in 0..n_docs {
+        if adjacency[doc_idx].len() > max_degree {
+            shrink_neighbors_emd_cached(doc_idx, max_degree, &mut adjacency, codebook, flat_codes, use_emd, Some(&mut score_cache));
+        }
+    }
+
+    progress!("[GEM nndescent] Phase 2 done in {:.1}s", phase2_start.elapsed().as_secs_f64());
+
+    // ── Phase 2b (optional): Beam search refinement ─────────────────────
+    // At small scale (<10K) NN-Descent quality already matches beam search
+    // construction. At large scale (100K+), cross-cluster navigability
+    // becomes critical and this pass discovers long-range highway edges
+    // that NN-Descent's local search cannot find.
+    if let Some((all_vectors, dim, doc_offsets, ef_construction)) = refine_with_beam_search {
+        progress!("[GEM nndescent] Phase 2b: Beam search refinement (ef={})...", ef_construction);
+        let phase2b_start = Instant::now();
+        let n_fine = codebook.n_fine;
+
+        let all_scores: Vec<(usize, Vec<f32>)> = (0..n_docs).into_par_iter().map(|doc_idx| {
+            let (start, end) = doc_offsets[doc_idx];
+            let n_tokens = end - start;
+            if n_tokens == 0 || dim == 0 {
+                return (doc_idx, Vec::new());
+            }
+            let doc_vecs = &all_vectors[start * dim..end * dim];
+            let scores = codebook.compute_query_centroid_scores(doc_vecs, n_tokens);
+            (doc_idx, scores)
+        }).collect();
+
+        let mut refined = 0usize;
+        for (doc_idx, query_scores) in &all_scores {
+            let doc_idx = *doc_idx;
+            if query_scores.is_empty() {
+                continue;
+            }
+            let (start, end) = doc_offsets[doc_idx];
+            let n_tokens = end - start;
+
+            let mut entries: Vec<u32> = Vec::new();
+            if doc_idx < doc_profiles.len() {
+                for &cid in &doc_profiles[doc_idx].ctop {
+                    if let Some(Some(rep)) = postings.cluster_reps.get(cid as usize) {
+                        if (*rep as usize) != doc_idx && !entries.contains(rep) {
+                            entries.push(*rep);
+                        }
+                    }
+                }
+            }
+            for &nbr in &adjacency[doc_idx] {
+                if !entries.contains(&nbr) {
+                    entries.push(nbr);
+                }
+                if entries.len() >= 8 { break; }
+            }
+            if entries.is_empty() {
+                continue;
+            }
+
+            let adj = VecAdjacency(&adjacency);
+            let candidates = beam_search_construction(
+                &adj, &entries, query_scores, n_tokens,
+                flat_codes, n_fine, ef_construction, n_docs,
+            );
+
+            if candidates.is_empty() {
+                continue;
+            }
+
+            let doc_codes = flat_codes.doc_codes(doc_idx);
+            let old_neighbors: Vec<u32> = adjacency[doc_idx].clone();
+
+            let mut all_cands: Vec<(u32, f32)> = Vec::with_capacity(old_neighbors.len() + candidates.len());
+            for &nbr in &old_neighbors {
+                let nbr_codes = flat_codes.doc_codes(nbr as usize);
+                let dist = construction_distance(codebook, doc_codes, nbr_codes, use_emd);
+                all_cands.push((nbr, dist));
+            }
+            for &(cand, score) in &candidates {
+                if cand as usize != doc_idx && !old_neighbors.contains(&cand) {
+                    all_cands.push((cand, score));
+                }
+            }
+            all_cands.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            all_cands.dedup_by_key(|c| c.0);
+
+            let new_neighbors = select_neighbors_heuristic_cached(
+                &all_cands, doc_codes, max_degree, codebook, flat_codes,
+                Some(&mut score_cache), use_emd,
+            );
+
+            for &old_nbr in &old_neighbors {
+                adjacency[old_nbr as usize].retain(|&x| x != doc_idx as u32);
+            }
+            adjacency[doc_idx] = new_neighbors.iter().map(|&(id, _)| id).collect();
+            for &(nbr, _) in &new_neighbors {
+                if !adjacency[nbr as usize].contains(&(doc_idx as u32)) {
+                    adjacency[nbr as usize].push(doc_idx as u32);
+                    if adjacency[nbr as usize].len() > max_degree {
+                        shrink_neighbors_emd_cached(
+                            nbr as usize, max_degree, &mut adjacency, codebook, flat_codes,
+                            use_emd, Some(&mut score_cache),
+                        );
+                    }
+                }
+            }
+            refined += 1;
+        }
+        drop(all_scores);
+
+        progress!("[GEM nndescent] Phase 2b done in {:.1}s — {} nodes refined",
+            phase2b_start.elapsed().as_secs_f64(), refined);
+    }
+
+    // ── Phase 3: Repair ─────────────────────────────────────────────────
+    progress!("[GEM nndescent] Phase 3: Repair...");
+    let phase3_start = Instant::now();
+
+    let isolated_count = adjacency.iter().filter(|a| a.is_empty()).count();
+    if isolated_count > 0 {
+        progress!("[GEM nndescent] Repairing {} isolated nodes...", isolated_count);
+        let mut repaired = 0usize;
+        for doc_idx in 0..n_docs {
+            if !adjacency[doc_idx].is_empty() {
+                continue;
+            }
+            let doc_codes = flat_codes.doc_codes(doc_idx);
+            if doc_codes.is_empty() {
+                continue;
+            }
+            let doc_u32 = doc_idx as u32;
+            let mut best_nbr = u32::MAX;
+            let mut best_dist = f32::MAX;
+            #[allow(clippy::needless_range_loop)]
+            for other in 0..n_docs {
+                if other == doc_idx || adjacency[other].is_empty() {
+                    continue;
+                }
+                let d = if let Some(cached) = score_cache.get(doc_u32, other as u32) {
+                    cached
+                } else {
+                    let other_codes = flat_codes.doc_codes(other);
+                    let d = construction_distance(codebook, doc_codes, other_codes, use_emd);
+                    score_cache.insert(doc_u32, other as u32, d);
+                    d
+                };
+                if d < best_dist {
+                    best_dist = d;
+                    best_nbr = other as u32;
+                }
+            }
+            if best_nbr != u32::MAX {
+                adjacency[doc_idx].push(best_nbr);
+                adjacency[best_nbr as usize].push(doc_idx as u32);
+                repaired += 1;
+            }
+        }
+        progress!("[GEM nndescent] Repaired {} isolated nodes", repaired);
+    }
+
+    bridge_repair_emd(&mut adjacency, max_degree, postings, codebook, flat_codes, use_emd);
+    progress!("[GEM nndescent] bridge repair done in {:.1}s", phase3_start.elapsed().as_secs_f64());
+
+    let global_start = Instant::now();
+    global_bridge_repair_cached(&mut adjacency, max_degree, codebook, flat_codes, use_emd, &mut score_cache);
+    progress!("[GEM nndescent] global bridge repair done in {:.1}s", global_start.elapsed().as_secs_f64());
+    progress!("[GEM nndescent] score cache: {} entries, {:.1}% hit rate",
+        score_cache.len(), score_cache.hit_rate() * 100.0);
+
+    let csr = CsrAdjacency::from_adj_lists(&adjacency);
+
+    let entry_point = (0..n_docs)
+        .max_by_key(|&i| adjacency[i].len())
+        .unwrap_or(0) as u32;
+
+    progress!("[GEM nndescent] ══════════════════════════════════════════════════");
+    progress!("[GEM nndescent] TOTAL BUILD TIME: {:.1}s ({:.1} min)",
+        graph_start.elapsed().as_secs_f64(), graph_start.elapsed().as_secs_f64() / 60.0);
+    progress!("[GEM nndescent] ══════════════════════════════════════════════════");
+
+    GemGraph {
+        levels: vec![csr],
+        shortcuts: vec![Vec::new(); n_docs],
+        shortcut_generations: vec![Vec::new(); n_docs],
+        node_levels: vec![0; n_docs],
+        entry_point,
+        max_degree,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1475,6 +2285,31 @@ mod tests {
             adjacency[0].len() <= max_degree,
             "node 0 has {} neighbors > max_degree {}", adjacency[0].len(), max_degree
         );
+    }
+
+    #[test]
+    fn test_build_graph_nndescent_basic() {
+        let (_vecs, _dim, _offsets, cb, fc, dp, post, _) = setup_test_data(20, 5);
+        let graph = build_graph_nndescent(
+            20, &cb, &fc, &dp, &post, 8, false, None,
+        );
+        assert_eq!(graph.n_nodes(), 20);
+        assert!(graph.n_edges() > 0, "nndescent graph should have edges");
+        let (n_comp, giant_frac) = graph.connectivity_report();
+        assert_eq!(n_comp, 1, "nndescent graph should be fully connected, got {} components", n_comp);
+        assert!((giant_frac - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_build_graph_nndescent_with_emd() {
+        let (_vecs, _dim, _offsets, cb, fc, dp, post, _) = setup_test_data(10, 4);
+        let graph = build_graph_nndescent(
+            10, &cb, &fc, &dp, &post, 6, true, None,
+        );
+        assert_eq!(graph.n_nodes(), 10);
+        assert!(graph.n_edges() > 0);
+        let (n_comp, _) = graph.connectivity_report();
+        assert_eq!(n_comp, 1, "nndescent qEMD graph should be fully connected");
     }
 
     #[test]

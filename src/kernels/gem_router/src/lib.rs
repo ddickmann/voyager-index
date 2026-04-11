@@ -1,5 +1,7 @@
 #![allow(clippy::useless_conversion, clippy::too_many_arguments)]
 
+extern crate libc;
+
 pub mod codebook;
 pub mod router;
 pub mod persistence;

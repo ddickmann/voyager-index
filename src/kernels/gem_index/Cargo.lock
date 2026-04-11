@@ -218,6 +218,7 @@ dependencies = [
  "byteorder",
  "crc32fast",
  "latence-gem-router",
+ "libc",
  "log",
  "matrixmultiply",
  "memmap2",
@@ -238,6 +239,7 @@ version = "0.1.1"
 dependencies = [
  "bincode",
  "crc32fast",
+ "libc",
  "matrixmultiply",
  "ndarray",
  "numpy",
