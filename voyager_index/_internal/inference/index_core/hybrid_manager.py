@@ -68,30 +68,46 @@ class HybridSearchManager:
         distance_metric: str = "cosine",
         m: int = 16,
         ef_construct: int = 100,
+        dense_engine: str = "hnsw",
+        dense_engine_config: Optional[Any] = None,
     ):
-        if HnswSegmentManager is None:
-            raise ImportError(
-                "HybridSearchManager requires HnswSegmentManager. "
-                "Install the native HNSW support or use a build that includes it."
-            )
         self.shard_path = Path(shard_path)
         self.shard_path.mkdir(parents=True, exist_ok=True)
         self.roq_bits = roq_bits
         self.distance_metric = distance_metric
         self.m = m
         self.ef_construct = ef_construct
+        self._dense_engine_type = dense_engine
 
         # Dense Index
-        self.hnsw = HnswSegmentManager(
-            self.shard_path / "hnsw",
-            dim=dim,
-            distance_metric=distance_metric,
-            m=m,
-            ef_construct=ef_construct,
-            on_disk=on_disk,
-            multivector_comparator=multivector_comparator,
-            roq_bits=roq_bits
-        )
+        if dense_engine == "shard":
+            from voyager_index._internal.inference.shard_engine.manager import (
+                ShardSegmentManager,
+                ShardEngineConfig,
+            )
+            shard_config = dense_engine_config or ShardEngineConfig(dim=dim)
+            device = getattr(shard_config, "device", "cuda") if dense_engine_config else "cuda"
+            self.hnsw = ShardSegmentManager(
+                path=self.shard_path / "shard_dense",
+                config=shard_config,
+                device=device,
+            )
+        else:
+            if HnswSegmentManager is None:
+                raise ImportError(
+                    "HybridSearchManager requires HnswSegmentManager. "
+                    "Install the native HNSW support or use a build that includes it."
+                )
+            self.hnsw = HnswSegmentManager(
+                self.shard_path / "hnsw",
+                dim=dim,
+                distance_metric=distance_metric,
+                m=m,
+                ef_construct=ef_construct,
+                on_disk=on_disk,
+                multivector_comparator=multivector_comparator,
+                roq_bits=roq_bits
+            )
 
         # Sparse Index
         self.bm25_path = self.shard_path / "bm25"

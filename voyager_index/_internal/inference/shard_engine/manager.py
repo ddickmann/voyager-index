@@ -457,7 +457,24 @@ class ShardSegmentManager:
             return list(range(start, start + n))
 
     def upsert_payload(self, doc_id: int, payload: Dict[str, Any]) -> None:
-        raise NotImplementedError("Payload upsert will be added in Chunk 3")
+        raise NotImplementedError("Payload upsert not yet implemented for shard engine")
+
+    def retrieve(self, ids: List[int], with_vector: bool = False,
+                 with_payload: bool = True) -> list:
+        """Retrieve documents by ID. Returns list of dicts with id, payload, vector."""
+        results = []
+        for did in ids:
+            entry: Dict[str, Any] = {"id": did}
+            if with_payload and self._memtable:
+                _, payloads, _ = self._memtable.snapshot()
+                entry["payload"] = payloads.get(did, {})
+            else:
+                entry["payload"] = {}
+            if with_vector and self._memtable:
+                docs, _, _ = self._memtable.snapshot()
+                entry["vector"] = docs.get(did)
+            results.append(entry)
+        return results
 
     def flush(self) -> None:
         """Seal the memtable into a new shard and checkpoint the WAL."""
