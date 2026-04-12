@@ -20,6 +20,14 @@ Install:
 - Runnable examples: `examples/README.md`
 - Notebooks: `notebooks/README.md`
 
+## Engine Guides
+
+- GEM graph index: `docs/guides/gem-native.md`
+- Shard engine (LEMUR-routed): `docs/guides/shard-engine.md`
+- ColBERT late-interaction: `docs/guides/colbert.md`
+- ColPali multimodal: `docs/guides/colpali.md`
+- Scaling and memory: `docs/guides/scaling.md`
+
 ## Public Contracts
 
 - `OSS_FOUNDATION.md`: supported public Python and API contract

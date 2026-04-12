@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "voyager-index"
 version = "0.1.2"
-description = "The first open-source native multi-vector index. GEM graph over document vector sets for ColBERT/ColPali late-interaction retrieval — 52x faster than HNSW, full CRUD+WAL, GPU Triton MaxSim, ROQ 4-bit quantization, filter-aware routing, self-healing graphs."
+description = "The first open-source native multi-vector index. GEM graph index and LEMUR-routed shard engine for ColBERT/ColPali late-interaction retrieval — 52x faster than HNSW, sub-5ms shard search at 100K, full CRUD+WAL, GPU Triton MaxSim, ROQ 4-bit quantization, filters, and self-healing graphs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

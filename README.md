@@ -267,11 +267,61 @@ data once the benchmark completes.
 See [`docs/guides/scaling.md`](docs/guides/scaling.md) for memory formulas,
 hard limits, and the v1.2/v2.0 roadmap.
 
+## Shard Engine — LEMUR-Routed Late Interaction
+
+For corpora that don't require a full graph index, `voyager-index` ships a
+**shard engine** — a brutally simple CPU-backed / GPU-routed architecture
+built on three ideas from recent retrieval research:
+
+1. **LEMUR** (Learned Multi-Vector Retrieval) reduces multi-vector candidate
+   generation to single-vector MIPS in a learned latent space, replacing
+   centroid-based routing with a small MLP + FAISS ANN index.
+2. **Col-Bandit** (Zero-Shot Query-Time Pruning) adaptively prunes query
+   tokens at search time, cutting MaxSim compute without sacrificing recall.
+3. **GPU-resident corpus** — when VRAM allows, the entire corpus lives on
+   GPU as a contiguous FP16 tensor. Candidate scoring becomes a single
+   gather + Triton MaxSim launch with zero CPU→GPU transfer.
+
+The result: **sub-5ms latency at 100K scale** on a single GPU, with full
+CRUD, WAL-based crash recovery, compaction, payload filters, scroll, and
+ROQ 4-bit quantization — all production-wired through the same `Index` API
+and reference HTTP server.
+
+```python
+from voyager_index import Index
+
+idx = Index("shard_index", dim=128, engine="shard")
+idx.add(embeddings, ids=[1, 2, 3], payloads=[{"title": "doc1"}, ...])
+results = idx.search(query_vectors, k=10)
+```
+
+### When to use GEM vs Shard
+
+| | GEM graph | Shard engine |
+|---|---|---|
+| **Architecture** | Rust proximity graph over vector sets | Python + LEMUR router + Triton MaxSim |
+| **Best for** | Complex traversal, 1M+ scale, graph-native features | Simple deployment, <500K, GPU-resident fast path |
+| **Build time** | Slower (graph construction) | Faster (LEMUR MLP + FAISS index) |
+| **Dependencies** | Requires native Rust crate | Pure Python + PyTorch + FAISS |
+| **CRUD** | Full (insert/delete/upsert/compact/heal) | Full (WAL + memtable + compaction) |
+| **Hybrid search** | BM25 + dense + Tabu solver | BM25 + shard-routed + RRF/Tabu |
+
+### Shard Admin (HTTP API)
+
+```
+POST   /collections/{name}/compact       # trigger memtable flush
+GET    /collections/{name}/shards        # list shards with metadata
+GET    /collections/{name}/shards/{id}   # shard detail
+GET    /collections/{name}/wal/status    # WAL entries + memtable state
+POST   /collections/{name}/checkpoint    # force WAL checkpoint
+```
+
 ## Additional Components
 
 - `SearchPipeline` — hybrid dense+sparse (BM25 + vector) retrieval pipeline
 - `ColbertIndex` — late-interaction multivector text retrieval
 - `ColPaliEngine` — multimodal multivector retrieval (PDF/image pages)
+- `ShardSegmentManager` — LEMUR-routed shard engine with GPU MaxSim
 - `latence_solver` — Tabu Search knapsack solver for context packing
 
 ## Documentation
@@ -279,6 +329,7 @@ hard limits, and the v1.2/v2.0 roadmap.
 - **[Quickstart](docs/getting-started/quickstart.md)** — 5-minute install to first search
 - **[API Reference](docs/api/python.md)** — `Index`, `IndexBuilder`, `GemSegment`, GPU scorers
 - **[GEM Guide](docs/guides/gem-native.md)** — production config and hyperparameter tuning
+- **[Shard Engine Guide](docs/guides/shard-engine.md)** — LEMUR-routed retrieval, admin, tuning
 - **[Scaling Guide](docs/guides/scaling.md)** — memory formulas, hard limits, v1.2/v2.0 roadmap
 - **[ColBERT Guide](docs/guides/colbert.md)** — text-only late-interaction retrieval
 - **[ColPali Guide](docs/guides/colpali.md)** — multimodal document retrieval
@@ -323,7 +374,7 @@ voyager-index-server
 # OpenAPI docs: http://127.0.0.1:8080/docs
 ```
 
-Collection types: `dense`, `late_interaction`, `multimodal`
+Collection types: `dense`, `late_interaction`, `multimodal`, `shard`
 
 ## Multimodal Support
 
@@ -387,5 +438,5 @@ Documents (PDF/DOCX/XLSX/images)
 
 Apache-2.0. See `LICENSE`.
 
-Vendored Qdrant code under `src/kernels/vendor/qdrant/` remains Apache-2.0 under
+Vendored Qdrant code under `research/vendor/qdrant/` remains Apache-2.0 under
 its upstream terms. See `THIRD_PARTY_NOTICES.md`.
