@@ -288,6 +288,8 @@ class ShardSegmentManager:
         self,
         query_vectors: np.ndarray,
         k: int = 10,
+        ef: int = 100,
+        n_probes: int = 4,
         filters: Optional[Dict] = None,
     ) -> List[Tuple[int, float]]:
         """Search with a multi-vector query (ColBERT-style token embeddings).
@@ -351,7 +353,10 @@ class ShardSegmentManager:
         ids: List[int],
         payloads: Optional[List[dict]] = None,
     ) -> None:
-        raise NotImplementedError("CRUD operations will be added in Chunk 3")
+        if not self._is_built:
+            self.build(vectors, ids, payloads)
+            return
+        raise NotImplementedError("Incremental add will be implemented in Chunk 3")
 
     def delete(self, ids: List[int]) -> None:
         raise NotImplementedError("CRUD operations will be added in Chunk 3")
@@ -380,6 +385,7 @@ class ShardSegmentManager:
         if self._store and self._store.manifest:
             m = self._store.manifest
             stats.update({
+                "total_vectors": m.num_docs,
                 "num_docs": m.num_docs,
                 "num_shards": m.num_shards,
                 "total_tokens": m.total_tokens,
@@ -394,6 +400,20 @@ class ShardSegmentManager:
         if self._store and self._store.manifest:
             return self._store.manifest.num_docs
         return 0
+
+    def allocate_ids(self, n: int) -> List[int]:
+        """Allocate n new sequential document IDs."""
+        with self._lock:
+            existing = set(self._doc_ids) if self._doc_ids else set()
+            start = max(existing) + 1 if existing else 0
+            return list(range(start, start + n))
+
+    def upsert_payload(self, doc_id: int, payload: Dict[str, Any]) -> None:
+        raise NotImplementedError("Payload upsert will be added in Chunk 3")
+
+    def flush(self) -> None:
+        """Flush pending writes. No-op until CRUD is implemented in Chunk 3."""
+        pass
 
     def save(self) -> None:
         """Persist current state (router already auto-saves during fit)."""

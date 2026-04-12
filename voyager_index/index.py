@@ -74,11 +74,21 @@ def _check_hnsw_available() -> bool:
         return False
 
 
+def _check_shard_available() -> bool:
+    try:
+        from voyager_index._internal.inference.shard_engine.manager import (
+            ShardSegmentManager,
+        )
+        return ShardSegmentManager is not None
+    except ImportError:
+        return False
+
+
 class Index:
     """
     Primary interface for voyager-index.
 
-    Supports both GEM (native multi-vector) and HNSW backends.
+    Supports GEM (native multi-vector), HNSW, and Shard (LEMUR-routed) backends.
     Provides CRUD operations, search, scroll, snapshot, and lifecycle management.
 
     Example::
@@ -173,7 +183,12 @@ class Index:
             resolved_engine = "gem"
             kwargs.setdefault("enable_shortcuts", mode == "colpali")
         if engine == "auto":
-            resolved_engine = "gem" if _check_gem_available() else "hnsw"
+            if _check_gem_available():
+                resolved_engine = "gem"
+            elif _check_shard_available():
+                resolved_engine = "shard"
+            else:
+                resolved_engine = "hnsw"
 
         self._engine = resolved_engine
 
@@ -193,6 +208,27 @@ class Index:
                 n_probes=n_probes,
                 **mgr_kwargs,
             )
+        elif resolved_engine == "shard":
+            from voyager_index._internal.inference.shard_engine.manager import (
+                ShardSegmentManager,
+                ShardEngineConfig,
+            )
+            shard_kwargs = {k: v for k, v in kwargs.items() if k in {
+                "n_shards", "compression", "layout", "router_type",
+                "ann_backend", "lemur_epochs", "k_candidates",
+                "transfer_mode", "pinned_pool_buffers",
+                "pinned_buffer_max_tokens", "use_colbandit",
+                "uniform_shard_tokens", "seed",
+            }}
+            shard_config = kwargs.get("shard_config") or ShardEngineConfig(
+                dim=dim, **shard_kwargs,
+            )
+            device = kwargs.get("device", "cuda")
+            self._manager = ShardSegmentManager(
+                path=self._path / "shard",
+                config=shard_config,
+                device=device,
+            )
         elif resolved_engine == "hnsw":
             from voyager_index._internal.inference.index_core.hnsw_manager import (
                 HnswSegmentManager,
@@ -203,7 +239,7 @@ class Index:
                 **kwargs,
             )
         else:
-            raise ValueError(f"Unknown engine: {engine!r}. Use 'gem', 'hnsw', or 'auto'.")
+            raise ValueError(f"Unknown engine: {engine!r}. Use 'gem', 'hnsw', 'shard', or 'auto'.")
 
         if hasattr(self._manager, '_payloads'):
             self._payloads = dict(self._manager._payloads)
@@ -678,6 +714,16 @@ class IndexBuilder:
     def with_hnsw(self, **kwargs: Any) -> "IndexBuilder":
         """Select the HNSW engine (legacy single-vector backend)."""
         self._engine = "hnsw"
+        self._kwargs.update(kwargs)
+        return self
+
+    def with_shard(self, **kwargs: Any) -> "IndexBuilder":
+        """Select the LEMUR-routed shard engine for scalable late-interaction retrieval.
+
+        Common kwargs: ``n_shards``, ``k_candidates``, ``lemur_epochs``,
+        ``compression``, ``device``.
+        """
+        self._engine = "shard"
         self._kwargs.update(kwargs)
         return self
 
