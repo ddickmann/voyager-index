@@ -20,6 +20,8 @@ from .models import (
     RenderDocumentsResponse,
     SearchRequest,
     SearchResponse,
+    ShardListResponse,
+    WalStatusResponse,
 )
 from .service import SearchService, ServiceError
 
@@ -256,4 +258,67 @@ async def optimize_search(
         status_code=501,
         detail="Use /reference/optimize for the canonical OSS solver API.",
     )
+
+
+# ------------------------------------------------------------------
+# Shard admin endpoints
+# ------------------------------------------------------------------
+
+
+@router.post("/collections/{name}/compact", tags=["Shard Admin"])
+async def compact_collection(
+    name: str,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        result = service.compact_collection(name)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+    return {"status": "ok", **result}
+
+
+@router.get("/collections/{name}/shards", response_model=ShardListResponse, tags=["Shard Admin"])
+async def list_shards(
+    name: str,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        return service.list_shards(name)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+
+
+@router.get("/collections/{name}/shards/{shard_id}", tags=["Shard Admin"])
+async def get_shard_detail(
+    name: str,
+    shard_id: int,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        return service.get_shard_detail(name, shard_id)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+
+
+@router.get("/collections/{name}/wal/status", response_model=WalStatusResponse, tags=["Shard Admin"])
+async def wal_status(
+    name: str,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        return service.wal_status(name)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+
+
+@router.post("/collections/{name}/checkpoint", tags=["Shard Admin"])
+async def checkpoint_collection(
+    name: str,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        result = service.checkpoint_collection(name)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+    return {"status": "ok", **result}
 

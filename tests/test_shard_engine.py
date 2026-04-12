@@ -203,15 +203,13 @@ class TestShardSegmentManager:
         mgr2.close()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-    def test_crud_stubs_raise(self, tmp_index_dir):
+    def test_crud_on_unbuilt_index(self, tmp_index_dir):
+        """add_multidense on unbuilt index delegates to build(); empty corpus raises."""
         config = ShardEngineConfig(dim=64)
         mgr = ShardSegmentManager(tmp_index_dir, config=config, device="cuda")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="empty corpus"):
             mgr.add_multidense([], [])
-        with pytest.raises(NotImplementedError):
-            mgr.delete([1])
-        with pytest.raises(NotImplementedError):
-            mgr.upsert_multidense([], [])
+        mgr.delete([1])
 
     def test_context_manager(self, tmp_index_dir):
         config = ShardEngineConfig(dim=64)

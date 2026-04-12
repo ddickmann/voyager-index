@@ -255,7 +255,9 @@ class LemurRouter:
         q_counts = torch.tensor([q.shape[0]], dtype=torch.int32)
         feats = self._lemur.compute_features((q, q_counts)).detach().cpu().to(torch.float32).contiguous()
         tombstone_headroom = max(64, int(len(self._tombstones) * 1.5))
-        _, row_ids = self._search(feats, k_candidates + tombstone_headroom)
+        index_size = self._weights.shape[0] if self._weights is not None else k_candidates
+        search_k = min(k_candidates + tombstone_headroom, index_size)
+        _, row_ids = self._search(feats, max(search_k, 1))
         doc_ids: List[int] = []
         for row in row_ids[0].tolist() if row_ids.size else []:
             if row < 0 or row >= len(self._row_to_doc_id):

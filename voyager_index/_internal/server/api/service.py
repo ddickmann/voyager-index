@@ -24,6 +24,9 @@ from voyager_index._internal.inference.config import IndexConfig
 from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
 from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
 from voyager_index._internal.inference.index_core.index import ColbertIndex
+from voyager_index._internal.inference.shard_engine import ShardSegmentManager
+from voyager_index._internal.inference.shard_engine.config import Compression
+from voyager_index._internal.inference.shard_engine.manager import ShardEngineConfig
 
 from .models import (
     CollectionInfo,
@@ -342,6 +345,18 @@ class SearchService:
                 create_if_missing=True,
                 storage_mode=meta.get("storage_mode", "sync"),
             )
+        elif kind == CollectionKind.SHARD:
+            shard_cfg = ShardEngineConfig(
+                dim=int(meta["dimension"]),
+                n_shards=int(meta.get("n_shards", 256)),
+                k_candidates=int(meta.get("k_candidates", 2000)),
+                use_colbandit=bool(meta.get("use_colbandit", False)),
+            )
+            engine = ShardSegmentManager(
+                path=collection_dir / "shard",
+                config=shard_cfg,
+                device=self.device,
+            )
         else:
             engine = ColPaliEngine(
                 collection_dir / "colpali",
@@ -386,6 +401,8 @@ class SearchService:
             return int(runtime.engine.hnsw.total_vectors())
         if runtime.kind == CollectionKind.LATE_INTERACTION:
             return int(runtime.engine.get_statistics().num_documents)
+        if runtime.kind == CollectionKind.SHARD:
+            return int(runtime.engine.total_vectors())
         stats = runtime.engine.get_statistics()
         return int(stats.get("num_documents", 0))
 
@@ -519,6 +536,8 @@ class SearchService:
             self._close_runtime_engine(runtime)
             self._copy_into_backup(runtime, backup_root, runtime.path / "hybrid")
             runtime.engine = self._build_engine(runtime.name, runtime.meta)
+        elif runtime.kind == CollectionKind.SHARD:
+            pass
         elif runtime.kind == CollectionKind.LATE_INTERACTION:
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "embeddings.h5")
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "metadata.json")
@@ -639,9 +658,9 @@ class SearchService:
             if safe_name in self.collections:
                 raise ConflictError(f"Collection '{safe_name}' already exists")
 
-            if request.kind != CollectionKind.DENSE:
+            if request.kind not in (CollectionKind.DENSE, CollectionKind.SHARD):
                 if request.distance != DistanceMetric.COSINE:
-                    raise ValidationError("Only dense collections support configurable distance metrics")
+                    raise ValidationError("Only dense and shard collections support configurable distance metrics")
                 if request.m != 16 or request.ef_construction != 200:
                     raise ValidationError("Only dense collections support configurable HNSW parameters")
             if request.kind != CollectionKind.LATE_INTERACTION and request.storage_mode != "sync":
@@ -665,6 +684,10 @@ class SearchService:
                 "next_internal_id": 0,
                 "records": {},
             }
+            if request.kind == CollectionKind.SHARD:
+                meta["n_shards"] = request.n_shards or 256
+                meta["k_candidates"] = request.k_candidates or 2000
+                meta["use_colbandit"] = request.use_colbandit
             try:
                 runtime = CollectionRuntime(
                     name=safe_name,
@@ -732,6 +755,8 @@ class SearchService:
             return
         if runtime.kind == CollectionKind.DENSE:
             runtime.engine.hnsw.delete(internal_ids)
+        elif runtime.kind == CollectionKind.SHARD:
+            runtime.engine.delete(internal_ids)
         elif runtime.kind == CollectionKind.LATE_INTERACTION:
             runtime.engine.delete_documents(internal_ids)
         else:
@@ -832,6 +857,29 @@ class SearchService:
                             max(int(item_id) for item_id in assigned_ids) + 1,
                         )
                     self._refresh_runtime_indexes(runtime)
+                elif runtime.kind == CollectionKind.SHARD:
+                    if any(point.vectors is None for point in points):
+                        raise ValidationError("Shard collections require multi-vectors")
+                    multi_vecs = [
+                        np.asarray(point.vectors, dtype=np.float32) for point in points
+                    ]
+                    if any(v.ndim != 2 or v.shape[1] != int(runtime.meta["dimension"]) for v in multi_vecs):
+                        raise ValidationError("Shard multi-vectors must have shape (tokens, dim)")
+                    ids = [self._next_internal_id(runtime) for _ in points]
+                    runtime.engine.add_multidense(multi_vecs, ids, payloads)
+                    for record_key in record_keys:
+                        runtime.meta["records"].pop(record_key, None)
+                    for record_key, point, payload, text_value, internal_id in zip(
+                        record_keys, points, payloads, corpus, ids,
+                    ):
+                        runtime.meta["records"][record_key] = {
+                            "external_id": point.id,
+                            "internal_id": internal_id,
+                            "payload": payload,
+                            "text": text_value,
+                        }
+                    self._flush_runtime_engine(runtime)
+                    self._refresh_runtime_indexes(runtime)
                 else:
                     if any(point.vectors is None for point in points):
                         raise ValidationError("Multimodal collections require multi-vectors")
@@ -892,6 +940,83 @@ class SearchService:
                 raise
             finally:
                 self._cleanup_journal(backup.backup_root)
+
+    # ------------------------------------------------------------------
+    # Shard admin
+    # ------------------------------------------------------------------
+
+    def _assert_shard_collection(self, name: str) -> tuple:
+        runtime, lock = self._collection_context(name)
+        if runtime.kind != CollectionKind.SHARD:
+            raise ValidationError(f"Collection '{name}' is not a shard collection")
+        return runtime, lock
+
+    def compact_collection(self, name: str) -> Dict[str, Any]:
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            memtable_size = runtime.engine._memtable.size if runtime.engine._memtable else 0
+            runtime.engine.flush()
+            return {"flushed_docs": memtable_size}
+
+    def list_shards(self, name: str) -> Dict[str, Any]:
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            store = runtime.engine._store
+            if not store or not store.manifest:
+                return {"collection": name, "num_shards": 0, "shards": []}
+            shards = []
+            for s in store.manifest.shards:
+                avg = s.total_tokens / max(s.num_docs, 1)
+                shards.append({
+                    "shard_id": s.shard_id,
+                    "num_docs": s.num_docs,
+                    "total_tokens": s.total_tokens,
+                    "avg_tokens": avg,
+                    "p95_tokens": s.p95_tokens,
+                })
+            return {
+                "collection": name,
+                "num_shards": store.manifest.num_shards,
+                "shards": shards,
+            }
+
+    def get_shard_detail(self, name: str, shard_id: int) -> Dict[str, Any]:
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            store = runtime.engine._store
+            if not store or not store.manifest:
+                raise NotFoundError(f"No shards in collection '{name}'")
+            for s in store.manifest.shards:
+                if s.shard_id == shard_id:
+                    return {
+                        "shard_id": s.shard_id,
+                        "num_docs": s.num_docs,
+                        "total_tokens": s.total_tokens,
+                        "avg_tokens": s.total_tokens / max(s.num_docs, 1),
+                        "p95_tokens": s.p95_tokens,
+                    }
+            raise NotFoundError(f"Shard {shard_id} not found in '{name}'")
+
+    def wal_status(self, name: str) -> Dict[str, Any]:
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            wal_entries = 0
+            if runtime.engine._wal_writer:
+                wal_entries = runtime.engine._wal_writer.n_entries
+            mt = runtime.engine._memtable
+            return {
+                "collection": name,
+                "wal_entries": wal_entries,
+                "memtable_docs": mt.size if mt else 0,
+                "memtable_tombstones": mt.tombstone_count if mt else 0,
+            }
+
+    def checkpoint_collection(self, name: str) -> Dict[str, Any]:
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            wal_before = runtime.engine._wal_writer.n_entries if runtime.engine._wal_writer else 0
+            runtime.engine.flush()
+            return {"wal_entries_before": wal_before, "wal_entries_after": 0}
 
     def _dense_query_vector(self, runtime: CollectionRuntime, request: SearchRequest) -> Optional[np.ndarray]:
         if request.vector is not None:
@@ -1577,6 +1702,42 @@ class SearchService:
                         vector_data=vectors_by_id.get(internal_id),
                     )
                     for rank, (internal_id, score) in enumerate(selected_pairs, start=1)
+                ]
+            elif runtime.kind == CollectionKind.SHARD:
+                if request.query_text:
+                    raise ValidationError("Shard collections do not support query_text search")
+                if request.vectors is not None:
+                    query_np = np.asarray(request.vectors, dtype=np.float32)
+                elif request.vector is not None:
+                    query_np = np.asarray([request.vector], dtype=np.float32)
+                else:
+                    raise ValidationError("Shard search requires 'vectors' or 'vector'")
+                if query_np.shape[-1] != int(runtime.meta["dimension"]):
+                    raise ValidationError("Query dimension does not match collection dimension")
+                if not runtime.meta.get("records"):
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    self._record_search_metrics(elapsed_ms)
+                    return SearchResponse(results=[], total=0, time_ms=elapsed_ms)
+
+                shard_results = runtime.engine.search_multivector(
+                    query_np,
+                    k=request.top_k,
+                    filters=request.filter,
+                )
+                selected_pairs = [
+                    (did, sc) for did, sc in shard_results
+                    if did in runtime.record_index
+                    and self._matches_filter(runtime.record_index[did]["payload"], request.filter)
+                ][:request.top_k]
+                results = [
+                    self._build_scored_point(
+                        runtime,
+                        internal_id=did,
+                        score=sc,
+                        rank=rank,
+                        with_payload=request.with_payload,
+                    )
+                    for rank, (did, sc) in enumerate(selected_pairs, start=1)
                 ]
             else:
                 if request.query_text:

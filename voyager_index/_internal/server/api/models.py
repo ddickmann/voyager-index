@@ -18,11 +18,13 @@ class CollectionKind(str, Enum):
     DENSE = "dense"
     LATE_INTERACTION = "late_interaction"
     MULTIMODAL = "multimodal"
+    SHARD = "shard"
 
 
 class SearchStrategy(str, Enum):
     SIMPLE = "simple"
     OPTIMIZED = "optimized"
+    SHARD_ROUTED = "shard_routed"
 
 
 class MultimodalOptimizeMode(str, Enum):
@@ -86,16 +88,21 @@ class CreateCollectionRequest(BaseModel):
     m: int = Field(default=16, description="HNSW M parameter")
     ef_construction: int = Field(default=200, description="HNSW ef_construction")
     storage_mode: str = Field(default="sync", description="Index storage mode for late-interaction collections")
+    n_shards: Optional[int] = Field(default=None, ge=1, description="Number of shards (shard collections)")
+    k_candidates: Optional[int] = Field(default=None, ge=1, description="LEMUR candidate count (shard collections)")
+    use_colbandit: bool = Field(default=False, description="Enable Col-Bandit reranking (shard collections)")
 
     @model_validator(mode="after")
     def validate_kind_specific_options(self) -> "CreateCollectionRequest":
-        if self.kind != CollectionKind.DENSE:
+        if self.kind not in (CollectionKind.DENSE, CollectionKind.SHARD):
             if self.distance != DistanceMetric.COSINE:
-                raise ValueError("Only dense collections support configurable distance metrics")
+                raise ValueError("Only dense and shard collections support configurable distance metrics")
             if self.m != 16 or self.ef_construction != 200:
                 raise ValueError("Only dense collections support configurable HNSW parameters")
         if self.kind != CollectionKind.LATE_INTERACTION and self.storage_mode != "sync":
             raise ValueError("storage_mode is only supported for late-interaction collections")
+        if self.kind != CollectionKind.SHARD and (self.n_shards is not None or self.k_candidates is not None):
+            raise ValueError("n_shards and k_candidates are only for shard collections")
         return self
 
 
@@ -350,6 +357,33 @@ class MetricsResponse(BaseModel):
     voyager_search_latency_seconds_count: int
     voyager_collections_total: int
     voyager_points_total: int
+
+
+class ShardInfo(BaseModel):
+    """Metadata for a single shard."""
+
+    shard_id: int
+    num_docs: int
+    total_tokens: int
+    avg_tokens: float
+    p95_tokens: float
+
+
+class ShardListResponse(BaseModel):
+    """List of shards in a shard collection."""
+
+    collection: str
+    num_shards: int
+    shards: List[ShardInfo]
+
+
+class WalStatusResponse(BaseModel):
+    """WAL status for a shard collection."""
+
+    collection: str
+    wal_entries: int
+    memtable_docs: int
+    memtable_tombstones: int
 
 
 class ErrorResponse(BaseModel):

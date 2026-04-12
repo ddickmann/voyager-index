@@ -347,11 +347,13 @@ class ShardSegmentManager:
         dev = torch.device(self._device if torch.cuda.is_available() else "cpu")
 
         scfg = self._config.to_search_config()
+        n_sealed = len(self._doc_ids) if self._doc_ids else 0
+        effective_k = min(scfg.k_candidates, max(n_sealed, 1))
 
         with Timer(sync_cuda=True) as t_route:
             routed = self._router.route(
                 q,
-                k_candidates=scfg.k_candidates,
+                k_candidates=effective_k,
                 prefetch_doc_cap=scfg.max_docs_exact,
             )
 
