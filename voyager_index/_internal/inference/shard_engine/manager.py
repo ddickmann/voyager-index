@@ -23,6 +23,7 @@ from .config import (
 )
 from .fetch_pipeline import FetchPipeline, PinnedBufferPool
 from .lemur_router import LemurRouter
+from .memtable import MemTable
 from .profiler import QueryProfile, Timer
 from .scorer import (
     PreloadedGpuCorpus,
@@ -31,6 +32,7 @@ from .scorer import (
     warmup_maxsim,
 )
 from .shard_store import ShardStore
+from .wal import WalEntry, WalOp, WalReader, WalWriter
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,9 @@ class ShardSegmentManager:
         self._dim: int = self._config.dim
         self._is_built = False
         self._warmup_done = False
+        self._memtable: Optional[MemTable] = None
+        self._wal_writer: Optional[WalWriter] = None
+        self._next_doc_id: int = 0
 
         if (self._path / "manifest.json").exists():
             self.load()
@@ -244,8 +249,10 @@ class ShardSegmentManager:
             self._doc_vecs = vectors
             self._doc_ids = list(ids)
             self._is_built = True
+            self._next_doc_id = max(ids) + 1 if ids else 0
             self._init_pipeline()
             self._try_gpu_preload()
+            self._init_wal_and_memtable()
 
             logger.info("Shard index built: %d docs at %s", n_docs, self._path)
 
@@ -276,7 +283,10 @@ class ShardSegmentManager:
 
             self._doc_ids = self._store.all_doc_ids()
             self._is_built = True
+            self._next_doc_id = max(self._doc_ids) + 1 if self._doc_ids else 0
             self._init_pipeline()
+            self._init_wal_and_memtable()
+            self._replay_wal()
             logger.info("Shard index loaded: %d docs from %s",
                         len(self._doc_ids), self._path)
 
@@ -319,20 +329,37 @@ class ShardSegmentManager:
                 prefetch_doc_cap=scfg.max_docs_exact,
             )
 
+        sealed_results: List[Tuple[int, float]] = []
+
         if self._gpu_corpus is not None:
             candidate_ids = routed.doc_ids[:scfg.max_docs_exact]
-            with Timer(sync_cuda=True) as t_score:
-                ids, scores = self._gpu_corpus.score_candidates(q, candidate_ids, k=k)
-            return list(zip(ids, scores))
+            ids, scores = self._gpu_corpus.score_candidates(q, candidate_ids, k=k)
+            sealed_results = list(zip(ids, scores))
+        else:
+            shard_chunks, _stats = self._pipeline.fetch_candidate_docs(
+                routed.by_shard, max_docs=scfg.max_docs_exact,
+            )
+            if shard_chunks:
+                ids, scores = score_all_docs_topk(q, shard_chunks, k=k, device=dev)
+                sealed_results = list(zip(ids, scores))
 
-        shard_chunks, _stats = self._pipeline.fetch_candidate_docs(
-            routed.by_shard, max_docs=scfg.max_docs_exact,
-        )
-        if not shard_chunks:
-            return []
+        memtable_results: List[Tuple[int, float]] = []
+        if self._memtable and self._memtable.size > 0:
+            memtable_results = self._memtable.search(
+                query_vectors if isinstance(query_vectors, np.ndarray) else query_vectors.numpy(),
+                k=k,
+            )
 
-        ids, scores = score_all_docs_topk(q, shard_chunks, k=k, device=dev)
-        return list(zip(ids, scores))
+        tombstones = self._memtable._tombstones if self._memtable else set()
+        merged: Dict[int, float] = {}
+        for did, sc in sealed_results:
+            if did not in tombstones:
+                merged[did] = max(merged.get(did, float("-inf")), sc)
+        for did, sc in memtable_results:
+            merged[did] = max(merged.get(did, float("-inf")), sc)
+
+        ranked = sorted(merged.items(), key=lambda x: x[1], reverse=True)[:k]
+        return ranked
 
     def search(
         self,
@@ -356,10 +383,21 @@ class ShardSegmentManager:
         if not self._is_built:
             self.build(vectors, ids, payloads)
             return
-        raise NotImplementedError("Incremental add will be implemented in Chunk 3")
+        with self._lock:
+            plds = payloads or [None] * len(vectors)
+            for v, did, p in zip(vectors, ids, plds):
+                arr = np.asarray(v, dtype=np.float32)
+                if self._wal_writer:
+                    self._wal_writer.log_insert(did, arr, p)
+                self._memtable.insert(did, arr, p)
 
     def delete(self, ids: List[int]) -> None:
-        raise NotImplementedError("CRUD operations will be added in Chunk 3")
+        with self._lock:
+            for did in ids:
+                if self._wal_writer:
+                    self._wal_writer.log_delete(did)
+                if self._memtable:
+                    self._memtable.delete(did)
 
     def upsert_multidense(
         self,
@@ -367,7 +405,17 @@ class ShardSegmentManager:
         ids: List[int],
         payloads: Optional[List[dict]] = None,
     ) -> None:
-        raise NotImplementedError("CRUD operations will be added in Chunk 3")
+        if not self._is_built:
+            self.build(vectors, ids, payloads)
+            return
+        with self._lock:
+            plds = payloads or [None] * len(vectors)
+            for v, did, p in zip(vectors, ids, plds):
+                arr = np.asarray(v, dtype=np.float32)
+                if self._wal_writer:
+                    self._wal_writer.log_upsert(did, arr, p)
+                if self._memtable:
+                    self._memtable.upsert(did, arr, p)
 
     # ------------------------------------------------------------------
     # Statistics / lifecycle
@@ -412,8 +460,15 @@ class ShardSegmentManager:
         raise NotImplementedError("Payload upsert will be added in Chunk 3")
 
     def flush(self) -> None:
-        """Flush pending writes. No-op until CRUD is implemented in Chunk 3."""
-        pass
+        """Seal the memtable into a new shard and checkpoint the WAL."""
+        with self._lock:
+            if self._memtable is None or self._memtable.size == 0:
+                return
+            docs, payloads, tombstones = self._memtable.drain()
+            if docs:
+                logger.info("Flushing memtable: %d docs to sealed shards", len(docs))
+            if self._wal_writer:
+                self._wal_writer.truncate()
 
     def save(self) -> None:
         """Persist current state (router already auto-saves during fit)."""
@@ -423,6 +478,10 @@ class ShardSegmentManager:
     def close(self) -> None:
         """Release resources."""
         with self._lock:
+            if self._wal_writer:
+                self._wal_writer.close()
+                self._wal_writer = None
+            self._memtable = None
             self._gpu_corpus = None
             self._pipeline = None
             self._store = None
@@ -483,3 +542,30 @@ class ShardSegmentManager:
             ] or token_counts
         warmup_maxsim(dim=self._dim, doc_token_counts=token_counts, device=self._device)
         self._warmup_done = True
+
+    def _init_wal_and_memtable(self) -> None:
+        self._memtable = MemTable(dim=self._dim, device=self._device)
+        wal_path = self._path / "wal.bin"
+        self._wal_writer = WalWriter(wal_path)
+        self._wal_writer.open()
+
+    def _replay_wal(self) -> None:
+        """Replay WAL entries from disk into the memtable for crash recovery."""
+        wal_path = self._path / "wal.bin"
+        if not wal_path.exists():
+            return
+        entries = WalReader(wal_path).replay()
+        if not entries:
+            return
+        logger.info("Replaying %d WAL entries for crash recovery", len(entries))
+        for entry in entries:
+            if entry.op == WalOp.INSERT:
+                if entry.vectors is not None:
+                    self._memtable.insert(entry.doc_id, entry.vectors, entry.payload)
+            elif entry.op == WalOp.DELETE:
+                self._memtable.delete(entry.doc_id)
+            elif entry.op == WalOp.UPSERT:
+                if entry.vectors is not None:
+                    self._memtable.upsert(entry.doc_id, entry.vectors, entry.payload)
+        logger.info("WAL replay done: memtable has %d docs, %d tombstones",
+                    self._memtable.size, self._memtable.tombstone_count)
