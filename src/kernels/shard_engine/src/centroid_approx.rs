@@ -59,7 +59,11 @@ pub fn approximate_maxsim_single(
         let row_start = qi * n_centroids;
         let mut max_score = f32::NEG_INFINITY;
         for &code in codes {
-            let score = unsafe { *lookup_table.get_unchecked(row_start + code as usize) };
+            let idx = code as usize;
+            if idx >= n_centroids {
+                continue;
+            }
+            let score = unsafe { *lookup_table.get_unchecked(row_start + idx) };
             if score > max_score {
                 max_score = score;
             }

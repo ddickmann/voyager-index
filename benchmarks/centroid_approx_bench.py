@@ -39,13 +39,27 @@ from voyager_index._internal.inference.shard_engine.config import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-INDEX_DIR = Path("/root/.cache/shard-bench/index_100000_fp16_proxy_grouped_lemur_uniform")
-NPZ_PATH = Path("/root/.cache/voyager-qa/beir_100k.npz")
-GT_CACHE = Path("/root/.cache/shard-bench/gt_100000.npz")
-N_EVAL = 100
-N_WARMUP = 5
-K = 10
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+import argparse
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument("--index-dir", type=str,
+                     default="/root/.cache/shard-bench/index_100000_fp16_proxy_grouped_lemur_uniform")
+_parser.add_argument("--npz", type=str, default="/root/.cache/voyager-qa/beir_100k.npz")
+_parser.add_argument("--gt", type=str, default="/root/.cache/shard-bench/gt_100000.npz")
+_parser.add_argument("--n-eval", type=int, default=100)
+_parser.add_argument("--n-warmup", type=int, default=5)
+_parser.add_argument("--k", type=int, default=10)
+_parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+_parser.add_argument("--n-shards", type=int, default=256)
+_args = _parser.parse_args()
+
+INDEX_DIR = Path(_args.index_dir)
+NPZ_PATH = Path(_args.npz)
+GT_CACHE = Path(_args.gt)
+N_EVAL = _args.n_eval
+N_WARMUP = _args.n_warmup
+K = _args.k
+DEVICE = _args.device
 
 
 def load_queries(n: int = 200) -> List[np.ndarray]:
@@ -134,7 +148,7 @@ def main():
     for n_approx in [1024, 512, 256]:
         cfg = ShardEngineConfig(
             dim=128,
-            n_shards=256,
+            n_shards=_args.n_shards,
             compression=Compression.FP16,
             layout=StorageLayout.PROXY_GROUPED,
             router_type=RouterType.LEMUR,
@@ -161,7 +175,7 @@ def main():
     # Baseline: proxy scoring only (no centroid approx)
     cfg_base = ShardEngineConfig(
         dim=128,
-        n_shards=256,
+        n_shards=_args.n_shards,
         compression=Compression.FP16,
         layout=StorageLayout.PROXY_GROUPED,
         router_type=RouterType.LEMUR,

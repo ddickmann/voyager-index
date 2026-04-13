@@ -177,6 +177,7 @@ class ShardSegmentManager:
         self._doc_means: Optional[torch.Tensor] = None
         self._doc_mean_id_to_idx: Optional[Dict[int, int]] = None
         self._rust_index = None
+        self._rust_tmpdir: Optional[str] = None
         self._checkpoint_mgr = ShardCheckpointManager(self._path)
         self._file_lock: Optional[Any] = None
         if _FileLock is not None:
@@ -368,13 +369,21 @@ class ShardSegmentManager:
 
             self._sealed_payloads = self._load_sealed_payloads()
 
-            self._doc_vecs = self._load_sealed_vectors()
-            self._init_pipeline()
-            self._try_gpu_preload()
             self._init_wal_and_memtable()
             self._replay_wal()
             self._load_doc_means()
             self._init_rust_index()
+
+            if self._rust_index is not None and self._config.n_centroid_approx > 0:
+                logger.info(
+                    "Centroid-approx active (n=%d) — skipping sealed vector preload",
+                    self._config.n_centroid_approx,
+                )
+                self._doc_vecs = None
+            else:
+                self._doc_vecs = self._load_sealed_vectors()
+                self._try_gpu_preload()
+            self._init_pipeline()
             logger.info("Shard index loaded: %d docs from %s",
                         len(self._doc_ids), self._path)
 
@@ -881,6 +890,16 @@ class ShardSegmentManager:
             self._doc_vecs = None
             self._doc_means = None
             self._doc_mean_id_to_idx = None
+            if self._rust_index is not None:
+                try:
+                    self._rust_index.close()
+                except Exception:
+                    pass
+                self._rust_index = None
+            if self._rust_tmpdir:
+                import shutil
+                shutil.rmtree(self._rust_tmpdir, ignore_errors=True)
+                self._rust_tmpdir = None
             self._sealed_payloads = {}
             self._is_built = False
             if self._file_lock is not None:
@@ -1063,8 +1082,11 @@ class ShardSegmentManager:
                 logger.warning("No shard files found — skipping Rust approx scoring")
                 return
 
-            import tempfile, os
+            import tempfile, os, shutil
+            if self._rust_tmpdir and os.path.isdir(self._rust_tmpdir):
+                shutil.rmtree(self._rust_tmpdir, ignore_errors=True)
             tmpdir = tempfile.mkdtemp(prefix="shard_idx_")
+            self._rust_tmpdir = tmpdir
             for i, sf in enumerate(shard_files):
                 os.symlink(str(sf), os.path.join(tmpdir, f"shard_{i}.safetensors"))
             open(os.path.join(tmpdir, "shard.wal"), "wb").close()

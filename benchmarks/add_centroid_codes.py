@@ -23,7 +23,8 @@ from safetensors.numpy import save_file as st_save_np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-INDEX_DIR = Path("/root/.cache/shard-bench/index_100000_fp16_proxy_grouped_lemur_uniform")
+DEFAULT_INDEX = "/root/.cache/shard-bench/index_100000_fp16_proxy_grouped_lemur_uniform"
+INDEX_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(DEFAULT_INDEX)
 SHARD_DIR = INDEX_DIR / "shards"
 N_CENTROIDS = 1024
 MAX_TRAIN_TOKENS = 500_000
@@ -37,19 +38,23 @@ def main():
 
     logger.info("Pass 1: sampling tokens for K-means...")
     all_sample_vecs = []
+    sampled_so_far = 0
     total_tokens = 0
     for sf in shard_files:
         with safe_open(str(sf), framework="numpy") as f:
             emb = f.get_tensor("embeddings")
             n = emb.shape[0]
             total_tokens += n
-            if len(all_sample_vecs) < MAX_TRAIN_TOKENS:
-                need = MAX_TRAIN_TOKENS - sum(v.shape[0] for v in all_sample_vecs)
-                if n <= need:
-                    all_sample_vecs.append(emb.astype(np.float32))
-                else:
-                    idx = np.random.RandomState(42).choice(n, need, replace=False)
-                    all_sample_vecs.append(emb[idx].astype(np.float32))
+            if sampled_so_far >= MAX_TRAIN_TOKENS:
+                continue
+            need = MAX_TRAIN_TOKENS - sampled_so_far
+            if n <= need:
+                all_sample_vecs.append(emb.astype(np.float32))
+                sampled_so_far += n
+            else:
+                idx = np.random.RandomState(42).choice(n, need, replace=False)
+                all_sample_vecs.append(emb[idx].astype(np.float32))
+                sampled_so_far += need
 
     train_data = np.concatenate(all_sample_vecs, axis=0)
     dim = train_data.shape[1]

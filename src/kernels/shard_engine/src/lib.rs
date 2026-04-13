@@ -131,7 +131,7 @@ pub struct ShardIndex {
     writer: Mutex<WriterInner>,
     dim: usize,
     gpu_score_fn: Option<Box<GpuScoreFn>>,
-    centroids: Option<Vec<f32>>,
+    centroids: Option<Arc<Vec<f32>>>,
     n_centroids: usize,
     closed: std::sync::atomic::AtomicBool,
 }
@@ -657,7 +657,8 @@ impl ShardIndex {
                 payload_json: None,
             });
         }
-        let shard_count = snap.shard_count;
+        let max_registered = shard_ids.iter().copied().max().unwrap_or(0);
+        let shard_count = snap.shard_count.max(max_registered + 1);
         let new_state = Self::build_state_from_docs(&new_docs, shard_count);
         self.state.store(new_state);
         Ok(())
@@ -687,7 +688,7 @@ impl ShardIndex {
             .as_slice()
             .map_err(|_| PyValueError::new_err("centroids must be contiguous"))?
             .to_vec();
-        self.centroids = Some(flat);
+        self.centroids = Some(Arc::new(flat));
         self.n_centroids = n_c;
         log::info!("Loaded {} centroids (dim={})", n_c, c_dim);
         Ok(())
@@ -726,12 +727,12 @@ impl ShardIndex {
         let shard_snap = self.load_shards();
         let n_centroids = self.n_centroids;
         let dim = self.dim;
-        let centroids_owned = centroids.clone();
+        let centroids_arc = Arc::clone(centroids);
 
         let (ids, scs) = py.allow_threads(move || {
             let results = centroid_approx::score_candidates_approx(
                 &q_data,
-                &centroids_owned,
+                &centroids_arc,
                 n_centroids,
                 dim,
                 &candidate_ids,
@@ -814,7 +815,7 @@ impl ShardIndex {
     }
 }
 
-/// CPU MaxSim: Σ_i max_j dot(q_i, d_j).
+/// CPU MaxSim: Σ_i max_j dot(q_i, d_j) — uses SIMD-accelerated dot product.
 fn cpu_maxsim(query: &[f32], doc: &[f32], dim: usize, n_q: usize) -> f32 {
     let n_d = doc.len() / dim;
     if n_d == 0 || n_q == 0 || dim == 0 {
@@ -828,7 +829,7 @@ fn cpu_maxsim(query: &[f32], doc: &[f32], dim: usize, n_q: usize) -> f32 {
         for dj in 0..n_d {
             let d_start = dj * dim;
             let d_row = &doc[d_start..d_start + dim];
-            let dot: f32 = q_row.iter().zip(d_row.iter()).map(|(a, b)| a * b).sum();
+            let dot = simd_proxy::dot_product(q_row, d_row);
             if dot > max_dot {
                 max_dot = dot;
             }

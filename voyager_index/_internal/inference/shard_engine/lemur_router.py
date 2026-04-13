@@ -259,6 +259,7 @@ class LemurRouter:
         tombstone_headroom = max(64, int(len(self._tombstones) * 1.5))
         index_size = self._weights.shape[0] if self._weights is not None else k_candidates
         search_k = min(k_candidates + tombstone_headroom, index_size)
+        search_k = min(search_k, 2048)
         saved_nprobe = self._apply_nprobe_override(nprobe_override)
         try:
             _, row_ids = self._search(feats, max(search_k, 1))
