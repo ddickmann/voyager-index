@@ -375,19 +375,66 @@ class ShardSegmentManager:
             self._init_rust_index()
 
             if self._rust_index is not None:
-                logger.info(
-                    "Rust mmap fetch path active — skipping sealed vector preload "
-                    "(%d docs, saves ~%.1f GB CPU RAM)",
-                    len(self._doc_ids),
-                    len(self._doc_ids) * 256 * self._dim * 4 / 1e9,
-                )
-                self._doc_vecs = None
+                # Only preload when both GPU VRAM and CPU staging are safe.
+                doc_index_path = self._path / "doc_index.npz"
+                gpu_preloaded = False
+                if (
+                    doc_index_path.exists()
+                    and torch.cuda.is_available()
+                    and str(self._device).startswith("cuda")
+                ):
+                    try:
+                        di = np.load(str(doc_index_path), allow_pickle=True)
+                        actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
+                        from .scorer import PreloadedGpuCorpus
+
+                        fits_gpu = PreloadedGpuCorpus.fits_on_gpu(
+                            len(self._doc_ids), actual_max_tok, self._dim,
+                        )
+                        fits_cpu_stage = PreloadedGpuCorpus.fits_cpu_staging(
+                            len(self._doc_ids), actual_max_tok, self._dim,
+                        )
+
+                        if fits_gpu and fits_cpu_stage:
+                            self._doc_vecs = self._load_sealed_vectors()
+                            self._try_gpu_preload()
+                            if self._gpu_corpus is not None:
+                                gpu_preloaded = True
+                                logger.info(
+                                    "GPU preload succeeded (%d docs, max_tok=%d)",
+                                    len(self._doc_ids), actual_max_tok,
+                                )
+                            else:
+                                self._doc_vecs = None
+                        elif fits_gpu:
+                            stage_gb = (
+                                PreloadedGpuCorpus.estimate_cpu_staging_bytes(
+                                    len(self._doc_ids), actual_max_tok, self._dim,
+                                ) / 1e9
+                            )
+                            logger.info(
+                                "Skipping GPU preload (%d docs, max_tok=%d) — "
+                                "CPU staging would require ~%.1f GB; using Rust mmap fetch path",
+                                len(self._doc_ids), actual_max_tok, stage_gb,
+                            )
+                        else:
+                            logger.info(
+                                "Corpus too large for GPU preload (%d docs, max_tok=%d) — "
+                                "using Rust mmap fetch path",
+                                len(self._doc_ids), actual_max_tok,
+                            )
+                    except Exception as exc:
+                        logger.warning("GPU preload check failed: %s", exc)
+
+                if not gpu_preloaded:
+                    self._doc_vecs = None
             else:
                 self._doc_vecs = self._load_sealed_vectors()
                 self._try_gpu_preload()
                 if self._gpu_corpus is None:
                     self._doc_vecs = None
-            self._init_pipeline()
+            if self._rust_index is None or self._gpu_corpus is not None:
+                self._init_pipeline()
             logger.info("Shard index loaded: %d docs from %s",
                         len(self._doc_ids), self._path)
 
@@ -483,11 +530,35 @@ class ShardSegmentManager:
             routed_by_shard = routed.by_shard
 
         sealed_results: List[Tuple[int, float]] = []
+        use_rust_fused = self._rust_index is not None and str(dev) == "cpu"
 
-        if self._gpu_corpus is not None:
+        if self._gpu_corpus is not None and not use_rust_fused:
             candidate_ids = pruned_ids[:scfg.max_docs_exact]
             ids, scores = self._gpu_corpus.score_candidates(q, candidate_ids, k=internal_k)
             sealed_results = list(zip(ids, scores))
+        elif self._rust_index is not None and use_rust_fused:
+            candidate_ids = pruned_ids[:scfg.max_docs_exact]
+            q_np = q.cpu().numpy().astype(np.float32) if not isinstance(q, np.ndarray) else q.astype(np.float32)
+            try:
+                top_ids, top_scores = self._rust_index.score_candidates_exact(
+                    q_np, candidate_ids, internal_k,
+                )
+                sealed_results = list(zip(top_ids.tolist(), top_scores.tolist()))
+            except (AttributeError, RuntimeError):
+                raw_bytes, offsets_arr, doc_ids_arr = self._rust_index.fetch_candidate_embeddings(
+                    candidate_ids,
+                )
+                if len(doc_ids_arr) > 0:
+                    emb_f16 = np.frombuffer(np.array(raw_bytes, copy=False), dtype=np.float16).reshape(-1, self._dim)
+                    emb_t = torch.from_numpy(emb_f16)
+                    offsets_list = [(int(offsets_arr[i, 0]), int(offsets_arr[i, 1])) for i in range(len(doc_ids_arr))]
+                    doc_ids_list = doc_ids_arr.tolist()
+                    shard_chunks = [(emb_t, offsets_list, doc_ids_list)]
+                    ids, scores = score_all_docs_topk(
+                        q, shard_chunks, k=internal_k, device=dev,
+                        quantization_mode=scfg.quantization_mode,
+                    )
+                    sealed_results = list(zip(ids, scores))
         elif self._rust_index is not None:
             candidate_ids = pruned_ids[:scfg.max_docs_exact]
             raw_bytes, offsets_arr, doc_ids_arr = self._rust_index.fetch_candidate_embeddings(
@@ -961,7 +1032,11 @@ class ShardSegmentManager:
 
     def _try_gpu_preload(self) -> None:
         """Attempt to pre-load corpus to GPU (GEM pattern) if it fits."""
-        if self._doc_vecs is None or not self._doc_ids:
+        if (
+            self._doc_vecs is None
+            or not self._doc_ids
+            or not str(self._device).startswith("cuda")
+        ):
             return
         max_tok = max((v.shape[0] for v in self._doc_vecs), default=1)
         if PreloadedGpuCorpus.fits_on_gpu(len(self._doc_vecs), max_tok, self._dim):
@@ -1130,6 +1205,14 @@ class ShardSegmentManager:
                     "Residual codec loaded: nbits=%d, %d bucket weights",
                     nbits_val, len(bw),
                 )
+
+            merged_emb_path = self._path / "merged_embeddings.bin"
+            if merged_emb_path.exists():
+                try:
+                    rust_idx.load_merged(str(self._path))
+                    logger.info("Merged mmap files loaded for zero-copy access")
+                except Exception as e:
+                    logger.warning("Failed to load merged mmap files: %s", e)
 
             self._rust_index = rust_idx
             logger.info(

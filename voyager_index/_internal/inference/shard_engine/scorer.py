@@ -9,6 +9,7 @@ Supports two paths:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -376,12 +377,45 @@ class PreloadedGpuCorpus:
 
     @staticmethod
     def fits_on_gpu(n_docs: int, max_tok: int, dim: int, dtype=torch.float16) -> bool:
-        bytes_needed = n_docs * max_tok * dim * dtype.itemsize
+        bytes_needed = PreloadedGpuCorpus.estimate_gpu_bytes(n_docs, max_tok, dim, dtype=dtype)
         bytes_needed += n_docs * max_tok * 4  # mask
         if not torch.cuda.is_available():
             return False
         free, _total = torch.cuda.mem_get_info()
         return bytes_needed < free * 0.85
+
+    @staticmethod
+    def estimate_gpu_bytes(n_docs: int, max_tok: int, dim: int, dtype=torch.float16) -> int:
+        return int(n_docs * max_tok * dim * dtype.itemsize)
+
+    @staticmethod
+    def estimate_cpu_staging_bytes(n_docs: int, max_tok: int, dim: int, dtype=np.float32) -> int:
+        return int(n_docs * max_tok * dim * np.dtype(dtype).itemsize)
+
+    @staticmethod
+    def available_cpu_bytes() -> int | None:
+        try:
+            return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES"))
+        except (AttributeError, ValueError, OSError):
+            return None
+
+    @classmethod
+    def fits_cpu_staging(
+        cls,
+        n_docs: int,
+        max_tok: int,
+        dim: int,
+        dtype=np.float32,
+        hard_cap_bytes: int = 8 * 1024**3,
+    ) -> bool:
+        bytes_needed = cls.estimate_cpu_staging_bytes(n_docs, max_tok, dim, dtype=dtype)
+        if bytes_needed > hard_cap_bytes:
+            return False
+        avail = cls.available_cpu_bytes()
+        if avail is None:
+            return True
+        # Leave generous headroom for Python object overhead and transient copies.
+        return bytes_needed < avail * 0.45
 
 
 # ------------------------------------------------------------------

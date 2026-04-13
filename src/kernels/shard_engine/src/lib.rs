@@ -9,6 +9,8 @@ pub mod metadata;
 pub mod simd_proxy;
 pub mod centroid_approx;
 pub mod codec;
+pub mod merged_mmap;
+pub mod fused_maxsim;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods, PyArrayMethods};
 
 use crate::codec::ResidualCodec;
+use crate::merged_mmap::MergedMmap;
 use crate::mmap_reader::MmapShard;
 use crate::state::{DocMeta, ShardState, StateHandle};
 use crate::topk::heap_topk;
@@ -136,6 +139,8 @@ pub struct ShardIndex {
     centroids: Option<Arc<Vec<f32>>>,
     n_centroids: usize,
     codec: Option<Arc<ResidualCodec>>,
+    merged: Option<Arc<MergedMmap>>,
+    use_compression: bool,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -260,6 +265,8 @@ impl ShardIndex {
             centroids: None,
             n_centroids: 0,
             codec: None,
+            merged: None,
+            use_compression: false,
             closed: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -733,6 +740,39 @@ impl ShardIndex {
         Ok(())
     }
 
+    /// Load merged flat mmap files for zero-copy document access.
+    ///
+    /// `dir` should contain merged_embeddings.bin, merged_offsets.bin,
+    /// merged_doc_map.bin, and optionally merged_codes.bin.
+    #[pyo3(signature = (dir,))]
+    fn load_merged(&mut self, dir: &str) -> PyResult<()> {
+        self.ensure_open()?;
+        let path = std::path::Path::new(dir);
+        let mm = MergedMmap::load(path)
+            .map_err(|e| PyIOError::new_err(format!("failed to load merged mmap: {e}")))?;
+        log::info!(
+            "Merged mmap loaded: {} docs, dim={}, has_codes={}",
+            mm.n_docs(),
+            mm.dim(),
+            mm.has_codes(),
+        );
+        self.merged = Some(Arc::new(mm));
+        Ok(())
+    }
+
+    /// Enable or disable residual compression for fetch_candidate_embeddings.
+    ///
+    /// When false (default), raw FP16 embeddings are read — lossless.
+    /// When true, packed residuals are decompressed via the codec — lossy but
+    /// smaller I/O.
+    #[pyo3(signature = (enabled,))]
+    fn set_use_compression(&mut self, enabled: bool) -> PyResult<()> {
+        self.ensure_open()?;
+        self.use_compression = enabled;
+        log::info!("use_compression = {}", enabled);
+        Ok(())
+    }
+
     /// Approximate MaxSim scoring using centroid codes (Rayon-parallel).
     ///
     /// Pre-filter stage: scores `candidate_ids` using lightweight centroid
@@ -767,6 +807,7 @@ impl ShardIndex {
         let n_centroids = self.n_centroids;
         let dim = self.dim;
         let centroids_arc = Arc::clone(centroids);
+        let merged_arc = self.merged.as_ref().map(Arc::clone);
 
         let (ids, scs) = py.allow_threads(move || {
             let results = centroid_approx::score_candidates_approx(
@@ -777,10 +818,62 @@ impl ShardIndex {
                 &candidate_ids,
                 &snap,
                 &shard_snap,
+                merged_arc.as_deref(),
                 n_top,
             );
             let ids: Vec<u64> = results.iter().map(|d| d.doc_id).collect();
             let scs: Vec<f32> = results.iter().map(|d| d.score).collect();
+            (ids, scs)
+        });
+
+        Ok((
+            PyArray1::from_slice_bound(py, &ids),
+            PyArray1::from_slice_bound(py, &scs),
+        ))
+    }
+
+    /// Fused exact MaxSim scoring over merged mmap — no Python staging.
+    ///
+    /// Reads FP16 embeddings directly from the merged mmap, converts to f32
+    /// on the fly, computes MaxSim per candidate, and returns top-k results.
+    /// GIL is released during all Rust work.
+    #[pyo3(signature = (query, candidate_ids, k=10))]
+    fn score_candidates_exact<'py>(
+        &self,
+        py: Python<'py>,
+        query: PyReadonlyArray2<f32>,
+        candidate_ids: Vec<u64>,
+        k: usize,
+    ) -> PyResult<(Bound<'py, PyArray1<u64>>, Bound<'py, PyArray1<f32>>)> {
+        self.ensure_open()?;
+        let merged = self.merged.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("merged mmap not loaded — call load_merged first")
+        })?;
+        let shape = query.shape();
+        let q_dim = shape[1];
+        if q_dim != self.dim {
+            return Err(PyValueError::new_err(format!(
+                "query dim {q_dim} != index dim {}", self.dim
+            )));
+        }
+        let q_data: Vec<f32> = query
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query must be contiguous"))?
+            .to_vec();
+
+        let dim = self.dim;
+        let merged_arc = Arc::clone(merged);
+
+        let (ids, scs) = py.allow_threads(move || {
+            let topk = fused_maxsim::fused_maxsim_topk(
+                &q_data,
+                &candidate_ids,
+                &merged_arc,
+                dim,
+                k,
+            );
+            let ids: Vec<u64> = topk.iter().map(|d| d.doc_id).collect();
+            let scs: Vec<f32> = topk.iter().map(|d| d.score).collect();
             (ids, scs)
         });
 
@@ -815,9 +908,37 @@ impl ShardIndex {
         let snap = self.state.load();
         let shard_snap = self.load_shards();
         let dim = self.dim;
-        let codec_opt = self.codec.as_ref().map(Arc::clone);
+        let codec_opt = if self.use_compression {
+            self.codec.as_ref().map(Arc::clone)
+        } else {
+            None
+        };
+        let merged_arc = self.merged.as_ref().map(Arc::clone);
 
         let (flat_bytes, offsets_vec, out_ids) = py.allow_threads(move || {
+            let bytes_per_row_fp16 = dim * 2;
+            let mut flat: Vec<u8> = Vec::new();
+            let mut offsets: Vec<[i64; 2]> = Vec::new();
+            let mut ids: Vec<u64> = Vec::new();
+            let mut pos: i64 = 0;
+
+            // Fast path: merged mmap available
+            if let Some(ref mm) = merged_arc {
+                for &did in &candidate_ids {
+                    if let Some(raw) = mm.get_embeddings_f16_bytes(did) {
+                        let n_tokens = raw.len() / bytes_per_row_fp16;
+                        if n_tokens == 0 {
+                            continue;
+                        }
+                        flat.extend_from_slice(raw);
+                        offsets.push([pos, pos + n_tokens as i64]);
+                        ids.push(did);
+                        pos += n_tokens as i64;
+                    }
+                }
+                return (flat, offsets, ids);
+            }
+
             let mut by_shard: HashMap<u32, Vec<(u64, usize, usize)>> = HashMap::new();
             for &did in &candidate_ids {
                 if let Some(meta) = snap.docs.get(&did) {
@@ -829,12 +950,6 @@ impl ShardIndex {
                     }
                 }
             }
-
-            let bytes_per_row_fp16 = dim * 2;
-            let mut flat: Vec<u8> = Vec::new();
-            let mut offsets: Vec<[i64; 2]> = Vec::new();
-            let mut ids: Vec<u64> = Vec::new();
-            let mut pos: i64 = 0;
 
             for (sid, docs) in &by_shard {
                 let shard = match shard_snap.get(sid) {

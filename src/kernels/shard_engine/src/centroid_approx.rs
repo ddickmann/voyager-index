@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::merged_mmap::MergedMmap;
 use crate::mmap_reader::MmapShard;
 use crate::simd_proxy::dot_product;
 use crate::state::ShardState;
@@ -85,6 +86,7 @@ pub fn score_candidates_approx(
     candidate_ids: &[DocId],
     state: &ShardState,
     shard_snap: &HashMap<u32, Arc<MmapShard>>,
+    merged: Option<&MergedMmap>,
     n_top: usize,
 ) -> Vec<ScoredDoc> {
     let n_q = query_flat.len() / dim;
@@ -93,6 +95,22 @@ pub fn score_candidates_approx(
     }
 
     let lookup_table = compute_lookup_table(query_flat, centroids_flat, n_q, n_centroids, dim);
+
+    // Fast path: merged mmap codes available, no shard-level reads needed.
+    if let Some(mm) = merged {
+        if mm.has_codes() {
+            let all_scored: Vec<ScoredDoc> = candidate_ids
+                .par_iter()
+                .filter_map(|&did| {
+                    let codes = mm.get_codes(did)?;
+                    let score =
+                        approximate_maxsim_single(&lookup_table, codes, n_q, n_centroids);
+                    Some(ScoredDoc { doc_id: did, score })
+                })
+                .collect();
+            return heap_topk(all_scored.into_iter(), n_top);
+        }
+    }
 
     // Group candidates by shard for mmap locality
     let mut by_shard: HashMap<u32, Vec<(DocId, usize, usize)>> = HashMap::new();

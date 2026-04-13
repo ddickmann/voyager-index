@@ -102,18 +102,12 @@ def run_pipeline(
 
     for q in queries[:N_WARMUP]:
         mgr.search_multivector(q, k=k)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
 
     latencies = []
     all_results = []
     for q in queries[:N_EVAL]:
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
         t0 = time.perf_counter()
         results = mgr.search_multivector(q, k=k)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
         latencies.append((time.perf_counter() - t0) * 1000)
         all_results.append([r[0] for r in results])
 
@@ -132,8 +126,8 @@ def run_pipeline(
         "p99_ms": round(float(np.percentile(latencies_arr, 99)), 2),
         "mean_ms": round(float(np.mean(latencies_arr)), 2),
     }
-    log.info("  recall@10=%.4f  QPS=%.1f  p50=%.1fms  p95=%.1fms",
-             stats["recall@10"], stats["qps"], stats["p50_ms"], stats["p95_ms"])
+    log.info("  recall@10=%.4f  QPS=%.1f  p50=%.1fms  p95=%.1fms  mean=%.1fms",
+             stats["recall@10"], stats["qps"], stats["p50_ms"], stats["p95_ms"], stats["mean_ms"])
     return stats
 
 
@@ -144,8 +138,14 @@ def main():
     log.info("Ground truth loaded: %d queries", len(ground_truth))
 
     all_results = []
+    configs = [
+        ("baseline_no_approx", 0),
+        ("centroid_approx_1024", 1024),
+        ("centroid_approx_512", 512),
+        ("centroid_approx_256", 256),
+    ]
 
-    for n_approx in [1024, 512, 256]:
+    for label, n_approx in configs:
         cfg = ShardEngineConfig(
             dim=128,
             n_shards=_args.n_shards,
@@ -158,48 +158,23 @@ def main():
             transfer_mode=TransferMode.PINNED,
         )
 
-        log.info("Loading index with n_centroid_approx=%d...", n_approx)
+        log.info("Loading index: %s (n_centroid_approx=%d)...", label, n_approx)
         mgr = ShardSegmentManager(INDEX_DIR, config=cfg, device=DEVICE)
         if not mgr._is_built:
             mgr.load()
 
-        result = run_pipeline(mgr, queries, f"centroid_approx_{n_approx}", ground_truth, k=K)
+        result = run_pipeline(mgr, queries, label, ground_truth, k=K)
         all_results.append(result)
         print(json.dumps(result, indent=2))
 
         mgr.close()
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
-    # Baseline: proxy scoring only (no centroid approx)
-    cfg_base = ShardEngineConfig(
-        dim=128,
-        n_shards=_args.n_shards,
-        compression=Compression.FP16,
-        layout=StorageLayout.PROXY_GROUPED,
-        router_type=RouterType.LEMUR,
-        k_candidates=2000,
-        n_full_scores=4096,
-        n_centroid_approx=0,
-        transfer_mode=TransferMode.PINNED,
-    )
-    log.info("Loading baseline (no centroid approx)...")
-    mgr_base = ShardSegmentManager(INDEX_DIR, config=cfg_base, device=DEVICE)
-    if not mgr_base._is_built:
-        mgr_base.load()
-
-    result_base = run_pipeline(mgr_base, queries, "baseline_proxy_only", ground_truth, k=K)
-    all_results.append(result_base)
-    print(json.dumps(result_base, indent=2))
-
-    mgr_base.close()
-
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("SUMMARY")
-    print("=" * 60)
+    print("=" * 70)
     for r in all_results:
-        print(f"  {r['label']:30s}  recall@10={r['recall@10']:.4f}  QPS={r['qps']:6.1f}  p50={r['p50_ms']:6.1f}ms")
+        print(f"  {r['label']:30s}  recall@10={r['recall@10']:.4f}  QPS={r['qps']:6.1f}  p50={r['p50_ms']:6.1f}ms  mean={r['mean_ms']:6.1f}ms")
 
 
 if __name__ == "__main__":
