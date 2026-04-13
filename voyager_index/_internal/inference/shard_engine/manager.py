@@ -374,15 +374,13 @@ class ShardSegmentManager:
             self._load_doc_means()
             self._init_rust_index()
 
-            if self._rust_index is not None and self._config.n_centroid_approx > 0:
+            self._doc_vecs = self._load_sealed_vectors()
+            self._try_gpu_preload()
+            if self._gpu_corpus is None and self._rust_index is not None:
                 logger.info(
-                    "Centroid-approx active (n=%d) — skipping sealed vector preload",
-                    self._config.n_centroid_approx,
+                    "GPU preload unavailable — Rust fetch path active for exact scoring",
                 )
                 self._doc_vecs = None
-            else:
-                self._doc_vecs = self._load_sealed_vectors()
-                self._try_gpu_preload()
             self._init_pipeline()
             logger.info("Shard index loaded: %d docs from %s",
                         len(self._doc_ids), self._path)
@@ -484,6 +482,22 @@ class ShardSegmentManager:
             candidate_ids = pruned_ids[:scfg.max_docs_exact]
             ids, scores = self._gpu_corpus.score_candidates(q, candidate_ids, k=internal_k)
             sealed_results = list(zip(ids, scores))
+        elif self._rust_index is not None:
+            candidate_ids = pruned_ids[:scfg.max_docs_exact]
+            raw_bytes, offsets_arr, doc_ids_arr = self._rust_index.fetch_candidate_embeddings(
+                candidate_ids,
+            )
+            if len(doc_ids_arr) > 0:
+                emb_f16 = np.frombuffer(np.array(raw_bytes, copy=False), dtype=np.float16).reshape(-1, self._dim)
+                emb_t = torch.from_numpy(emb_f16)
+                offsets_list = [(int(offsets_arr[i, 0]), int(offsets_arr[i, 1])) for i in range(len(doc_ids_arr))]
+                doc_ids_list = doc_ids_arr.tolist()
+                shard_chunks = [(emb_t, offsets_list, doc_ids_list)]
+                ids, scores = score_all_docs_topk(
+                    q, shard_chunks, k=internal_k, device=dev,
+                    quantization_mode=scfg.quantization_mode,
+                )
+                sealed_results = list(zip(ids, scores))
         else:
             shard_chunks, _stats = self._pipeline.fetch_candidate_docs(
                 routed_by_shard, max_docs=scfg.max_docs_exact,

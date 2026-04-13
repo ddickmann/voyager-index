@@ -17,7 +17,7 @@ use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
-use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods, PyArrayMethods};
 
 use crate::mmap_reader::MmapShard;
 use crate::state::{DocMeta, ShardState, StateHandle};
@@ -749,6 +749,79 @@ impl ShardIndex {
             PyArray1::from_slice_bound(py, &ids),
             PyArray1::from_slice_bound(py, &scs),
         ))
+    }
+
+    /// Fetch FP16 embeddings for candidate documents from mmap'd shards.
+    ///
+    /// Returns `(flat_embeddings_u8, offsets, doc_ids)` where flat_embeddings_u8
+    /// is the raw bytes of FP16 data (caller reinterprets as float16),
+    /// offsets is `(n_docs, 2)` with `[start, end)` row indices,
+    /// and doc_ids is the ordered list.
+    /// GIL is released during the Rust I/O work.
+    #[pyo3(signature = (candidate_ids,))]
+    fn fetch_candidate_embeddings<'py>(
+        &self,
+        py: Python<'py>,
+        candidate_ids: Vec<u64>,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<u8>>,
+        Bound<'py, PyArray2<i64>>,
+        Bound<'py, PyArray1<u64>>,
+    )> {
+        self.ensure_open()?;
+        let snap = self.state.load();
+        let shard_snap = self.load_shards();
+        let dim = self.dim;
+
+        let (flat_bytes, offsets_vec, out_ids) = py.allow_threads(move || {
+            let mut by_shard: HashMap<u32, Vec<(u64, usize, usize)>> = HashMap::new();
+            for &did in &candidate_ids {
+                if let Some(meta) = snap.docs.get(&did) {
+                    if meta.shard_id != u32::MAX {
+                        by_shard
+                            .entry(meta.shard_id)
+                            .or_default()
+                            .push((did, meta.row_start, meta.row_end));
+                    }
+                }
+            }
+
+            let bytes_per_row = dim * 2;
+            let mut flat: Vec<u8> = Vec::new();
+            let mut offsets: Vec<[i64; 2]> = Vec::new();
+            let mut ids: Vec<u64> = Vec::new();
+            let mut pos: i64 = 0;
+
+            for (sid, docs) in &by_shard {
+                let shard = match shard_snap.get(sid) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                for &(did, rs, re) in docs {
+                    if let Ok(raw) = shard.read_rows_raw("embeddings", rs, re) {
+                        let n_tokens = raw.len() / bytes_per_row;
+                        flat.extend_from_slice(raw);
+                        offsets.push([pos, pos + n_tokens as i64]);
+                        ids.push(did);
+                        pos += n_tokens as i64;
+                    }
+                }
+            }
+            (flat, offsets, ids)
+        });
+
+        let raw_arr = PyArray1::from_vec_bound(py, flat_bytes);
+
+        let n_docs = offsets_vec.len();
+        let offsets_flat: Vec<i64> = offsets_vec.into_iter().flat_map(|o| o).collect();
+        let off_1d = PyArray1::from_vec_bound(py, offsets_flat);
+        let offsets_arr = off_1d
+            .reshape([n_docs, 2])
+            .map_err(|e| PyRuntimeError::new_err(format!("reshape offsets: {e}")))?;
+
+        let ids_arr = PyArray1::from_slice_bound(py, &out_ids);
+
+        Ok((raw_arr, offsets_arr, ids_arr))
     }
 
     /// Flush the WAL and sync to disk.

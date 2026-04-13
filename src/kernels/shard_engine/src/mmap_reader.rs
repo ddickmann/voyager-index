@@ -220,6 +220,13 @@ impl MmapShard {
         self.tensors.contains_key(name)
     }
 
+    /// Read selected rows from a named tensor as raw bytes, returning a single
+    /// contiguous buffer. Unlike `read_selected_rows`, this takes `(row_start, row_end)`
+    /// pairs but returns the byte-level data without any dtype interpretation.
+    pub fn read_selected_rows_raw_ref(&self, tensor_name: &str, row_start: usize, row_end: usize) -> io::Result<&[u8]> {
+        self.read_rows_raw(tensor_name, row_start, row_end)
+    }
+
     /// Read all rows of a tensor as raw bytes.
     pub fn read_all_rows_raw(&self, tensor_name: &str) -> io::Result<&[u8]> {
         let meta = self.tensors.get(tensor_name).ok_or_else(|| {
