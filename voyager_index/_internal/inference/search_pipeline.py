@@ -14,8 +14,9 @@ class SearchPipeline:
     Vector-first local hybrid retrieval pipeline.
 
     Public OSS behavior focuses on:
-    1. HNSW-backed dense retrieval.
-    2. Canonical `bm25s` sparse retrieval via `HybridSearchManager`.
+    1. Dense retrieval (shard-based late-interaction by default, or HNSW).
+    2. Canonical `bm25s` sparse retrieval via `HybridSearchManager`,
+       with pure-Python BM25 fallback when bm25s is unavailable.
     3. Optional local/native refinement when a compatible solver is available.
 
     This pipeline does not embed raw text into dense late-interaction queries.
@@ -30,27 +31,37 @@ class SearchPipeline:
         dim: int = 128,
         use_roq: bool = True,
         roq_bits: int = 4,
-        on_disk: bool = True
+        on_disk: bool = True,
+        dense_engine: str = "shard",
+        dense_engine_config: Optional[Any] = None,
     ):
         """
         Initialize the search pipeline.
+
+        Args:
+            dense_engine: Dense backend to use (``"shard"`` or ``"hnsw"``).
+                Defaults to ``"shard"`` for late-interaction retrieval.
+            dense_engine_config: Optional config object forwarded to the
+                dense backend constructor.
         """
         self.config = {
             "dim": dim,
             "use_roq": use_roq,
             "roq_bits": roq_bits,
-            "on_disk": on_disk
+            "on_disk": on_disk,
+            "dense_engine": dense_engine,
         }
 
         self.manager = HybridSearchManager(
             shard_path=Path(shard_path),
             dim=dim,
             on_disk=on_disk,
-            # Enable RoQ 4-bit/8-bit if requested
-            roq_bits=roq_bits if use_roq else None
+            roq_bits=roq_bits if use_roq else None,
+            dense_engine=dense_engine,
+            dense_engine_config=dense_engine_config,
         )
 
-        logger.info(f"SearchPipeline initialized at {shard_path} (RoQ={use_roq})")
+        logger.info(f"SearchPipeline initialized at {shard_path} (dense={dense_engine}, RoQ={use_roq})")
 
     def index(
         self,

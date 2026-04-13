@@ -364,11 +364,11 @@ transferring FP16 embeddings (2 bytes/value) from CPU to GPU per query, transfer
 def _pack_shard(self, vectors, ..., compression):
     if compression == Compression.ROQ4:
         quantizer = RotationalQuantizer(config=RoQConfig(nbits=4))
-        codes, codebook, scales = quantizer.encode(vectors)
+        codes, meta = quantizer.encode(vectors)
         return {
-            "codes": codes,
-            "codebook": codebook,
-            "scales": scales,
+            "roq_codes": codes,       # actual key used in shard_store.py
+            "roq_meta": meta,          # actual key used in shard_store.py
+            "embeddings": vectors_fp16, # FP16 fallback alongside codes
             "doc_offsets": offsets_arr,
             "doc_ids": ids_arr,
         }
@@ -642,9 +642,9 @@ INT8 mode:
   "doc_ids": int64[num_docs]
 
 ROQ4 mode:
-  "codes": uint8[total_tokens, dim // 2]  # packed 4-bit
-  "codebook": float16[n_codewords, dim]
-  "scales": float16[total_tokens]
+  "roq_codes": uint8[total_tokens, NB]    # packed 4-bit codes
+  "roq_meta": float32[total_tokens, 4]    # per-token rotation metadata
+  "embeddings": float16[total_tokens, dim] # FP16 fallback for non-Triton decode
   "doc_offsets": int64[num_docs, 2]
   "doc_ids": int64[num_docs]
 ```

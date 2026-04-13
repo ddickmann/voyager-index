@@ -537,7 +537,11 @@ class SearchService:
             self._copy_into_backup(runtime, backup_root, runtime.path / "hybrid")
             runtime.engine = self._build_engine(runtime.name, runtime.meta)
         elif runtime.kind == CollectionKind.SHARD:
-            pass
+            if hasattr(runtime.engine, 'flush') and callable(runtime.engine.flush):
+                runtime.engine.flush()
+            shard_dir = runtime.path / "shard"
+            if shard_dir.exists():
+                self._copy_into_backup(runtime, backup_root, shard_dir)
         elif runtime.kind == CollectionKind.LATE_INTERACTION:
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "embeddings.h5")
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "metadata.json")
@@ -589,6 +593,9 @@ class SearchService:
 
         if kind == CollectionKind.DENSE:
             self._restore_from_backup(runtime, backup_root, runtime.path / "hybrid")
+        elif kind == CollectionKind.SHARD:
+            shard_dir = runtime.path / "shard"
+            self._restore_from_backup(runtime, backup_root, shard_dir)
         elif kind == CollectionKind.LATE_INTERACTION:
             self._restore_from_backup(runtime, backup_root, runtime.path / "colbert" / "embeddings.h5")
             self._restore_from_backup(runtime, backup_root, runtime.path / "colbert" / "metadata.json")
@@ -684,6 +691,8 @@ class SearchService:
                 "next_internal_id": 0,
                 "records": {},
             }
+            if request.max_documents is not None:
+                meta["max_documents"] = request.max_documents
             if request.kind == CollectionKind.SHARD:
                 meta["n_shards"] = request.n_shards or 256
                 meta["k_candidates"] = request.k_candidates or 2000
@@ -899,6 +908,7 @@ class SearchService:
                         }
                     self._refresh_runtime_indexes(runtime)
 
+                self._evict_if_over_limit(runtime)
                 self._write_meta(runtime)
                 self._commit_journal(backup)
                 return len(points)
@@ -956,7 +966,7 @@ class SearchService:
         with lock:
             memtable_size = runtime.engine._memtable.size if runtime.engine._memtable else 0
             runtime.engine.flush()
-            return {"flushed_docs": memtable_size}
+            return {"memtable_docs_at_sync": memtable_size}
 
     def list_shards(self, name: str) -> Dict[str, Any]:
         runtime, lock = self._assert_shard_collection(name)
@@ -1016,7 +1026,45 @@ class SearchService:
         with lock:
             wal_before = runtime.engine._wal_writer.n_entries if runtime.engine._wal_writer else 0
             runtime.engine.flush()
-            return {"wal_entries_before": wal_before, "wal_entries_after": 0}
+            wal_after = runtime.engine._wal_writer.n_entries if runtime.engine._wal_writer else 0
+            return {"wal_entries_before": wal_before, "wal_entries_after": wal_after}
+
+    def scroll_collection(self, name: str, request) -> Dict[str, Any]:
+        """Paginated iteration over document IDs."""
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            ids, next_offset = runtime.engine.scroll(
+                limit=request.limit,
+                offset=request.offset,
+                filters=request.filter,
+            )
+            return {"ids": ids, "next_offset": next_offset}
+
+    def retrieve_points(self, name: str, request) -> Dict[str, Any]:
+        """Retrieve specific documents by ID."""
+        runtime, lock = self._assert_shard_collection(name)
+        with lock:
+            points = runtime.engine.retrieve(
+                ids=request.ids,
+                with_vector=request.with_vector,
+                with_payload=request.with_payload,
+            )
+            result_points = []
+            for p in points:
+                entry = {"id": p["id"], "payload": p.get("payload", {})}
+                if request.with_vector and p.get("vector") is not None:
+                    vec = p["vector"]
+                    entry["vector"] = vec.tolist() if hasattr(vec, "tolist") else vec
+                result_points.append(entry)
+            return {"points": result_points}
+
+    def search_batch_collection(self, name: str, request) -> Dict[str, Any]:
+        """Batch search over multiple queries."""
+        results = []
+        for search_req in request.searches:
+            resp = self.search(name, search_req)
+            results.append(resp)
+        return {"results": results}
 
     def _dense_query_vector(self, runtime: CollectionRuntime, request: SearchRequest) -> Optional[np.ndarray]:
         if request.vector is not None:
@@ -1706,6 +1754,8 @@ class SearchService:
             elif runtime.kind == CollectionKind.SHARD:
                 if request.query_text:
                     raise ValidationError("Shard collections do not support query_text search")
+                if request.strategy == SearchStrategy.OPTIMIZED:
+                    logger.debug("SearchStrategy.OPTIMIZED is not applicable to shard collections; using shard routing")
                 if request.vectors is not None:
                     query_np = np.asarray(request.vectors, dtype=np.float32)
                 elif request.vector is not None:
@@ -1723,11 +1773,11 @@ class SearchService:
                     query_np,
                     k=request.top_k,
                     filters=request.filter,
+                    n_probes=request.n_probes,
                 )
                 selected_pairs = [
                     (did, sc) for did, sc in shard_results
                     if did in runtime.record_index
-                    and self._matches_filter(runtime.record_index[did]["payload"], request.filter)
                 ][:request.top_k]
                 results = [
                     self._build_scored_point(
@@ -1856,6 +1906,16 @@ class SearchService:
             elif runtime.kind == CollectionKind.MULTIMODAL:
                 storage_mb = runtime.engine.get_statistics().get("storage_mb")
 
+            shard_n_shards = None
+            shard_k_candidates = None
+            shard_total_tokens = None
+            if runtime.kind == CollectionKind.SHARD:
+                shard_n_shards = runtime.meta.get("n_shards")
+                shard_k_candidates = runtime.meta.get("k_candidates")
+                store = getattr(runtime.engine, "_store", None)
+                if store and store.manifest:
+                    shard_total_tokens = store.manifest.total_tokens
+
             return CollectionInfo(
                 name=runtime.name,
                 kind=runtime.kind,
@@ -1868,6 +1928,9 @@ class SearchService:
                 ef_construction=runtime.meta.get("ef_construction") if runtime.kind == CollectionKind.DENSE else None,
                 storage_mode=runtime.meta.get("storage_mode") if runtime.kind == CollectionKind.LATE_INTERACTION else None,
                 storage_path=str(runtime.path),
+                n_shards=shard_n_shards,
+                k_candidates=shard_k_candidates,
+                total_tokens=shard_total_tokens,
             )
 
     def reference_preprocess_documents(self, request: RenderDocumentsRequest) -> Dict[str, Any]:
@@ -1962,6 +2025,213 @@ class SearchService:
             self._reference_optimizer_pipeline = GpuFulfilmentPipeline()
         return self._reference_optimizer_pipeline.backend_health()
 
+    # ------------------------------------------------------------------
+    # Eviction
+    # ------------------------------------------------------------------
+
+    def _evict_if_over_limit(self, runtime: CollectionRuntime) -> None:
+        """Delete oldest documents when the collection exceeds max_documents."""
+        max_docs = runtime.meta.get("max_documents")
+        if not max_docs:
+            return
+        records = runtime.meta.get("records") or {}
+        overflow = len(records) - max_docs
+        if overflow <= 0:
+            return
+        sorted_keys = sorted(
+            records.keys(),
+            key=lambda k: int(records[k].get("internal_id", 0)),
+        )
+        evict_keys = sorted_keys[:overflow]
+        evict_internal = [int(records[k]["internal_id"]) for k in evict_keys]
+        self._delete_internal_ids(runtime, evict_internal)
+        for k in evict_keys:
+            records.pop(k, None)
+        self._refresh_runtime_indexes(runtime)
+        logger.info(
+            "Evicted %d oldest documents from '%s' (max_documents=%d)",
+            len(evict_keys), runtime.name, max_docs,
+        )
+
+    # ------------------------------------------------------------------
+    # Payload CRUD
+    # ------------------------------------------------------------------
+
+    def set_payload(
+        self, name: str, point_ids: List[Any], payload: Dict[str, Any],
+    ) -> int:
+        """Merge payload fields into specified points."""
+        runtime, collection_lock = self._collection_context(name)
+        with collection_lock:
+            records = runtime.meta.get("records") or {}
+            updated = 0
+            for pid in point_ids:
+                key = str(pid)
+                if key not in records:
+                    continue
+                existing = records[key].get("payload") or {}
+                existing.update(payload)
+                records[key]["payload"] = existing
+                internal_id = int(records[key]["internal_id"])
+                if runtime.kind == CollectionKind.SHARD and hasattr(runtime.engine, "upsert_payload"):
+                    runtime.engine.upsert_payload(internal_id, payload)
+                updated += 1
+            if updated:
+                self._refresh_runtime_indexes(runtime)
+                self._write_meta(runtime)
+            return updated
+
+    def delete_payload_keys(
+        self, name: str, point_ids: List[Any], keys: List[str],
+    ) -> int:
+        """Remove specific payload keys from specified points."""
+        runtime, collection_lock = self._collection_context(name)
+        with collection_lock:
+            records = runtime.meta.get("records") or {}
+            updated = 0
+            for pid in point_ids:
+                key = str(pid)
+                if key not in records:
+                    continue
+                existing = records[key].get("payload") or {}
+                changed = False
+                for k in keys:
+                    if k in existing:
+                        del existing[k]
+                        changed = True
+                if changed:
+                    records[key]["payload"] = existing
+                    if runtime.kind == CollectionKind.SHARD and hasattr(runtime.engine, "upsert_payload"):
+                        internal_id = int(records[key]["internal_id"])
+                        runtime.engine.upsert_payload(internal_id, existing)
+                    updated += 1
+            if updated:
+                self._refresh_runtime_indexes(runtime)
+                self._write_meta(runtime)
+            return updated
+
+    def clear_payload(self, name: str, point_ids: List[Any]) -> int:
+        """Clear all payload fields from specified points."""
+        runtime, collection_lock = self._collection_context(name)
+        with collection_lock:
+            records = runtime.meta.get("records") or {}
+            updated = 0
+            for pid in point_ids:
+                key = str(pid)
+                if key not in records:
+                    continue
+                records[key]["payload"] = {}
+                if runtime.kind == CollectionKind.SHARD and hasattr(runtime.engine, "upsert_payload"):
+                    internal_id = int(records[key]["internal_id"])
+                    runtime.engine.upsert_payload(internal_id, {})
+                updated += 1
+            if updated:
+                self._refresh_runtime_indexes(runtime)
+                self._write_meta(runtime)
+            return updated
+
+    def get_point_payload(self, name: str, point_id: str) -> Dict[str, Any]:
+        """Return the payload dict for a single point."""
+        runtime, collection_lock = self._collection_context(name)
+        with collection_lock:
+            records = runtime.meta.get("records") or {}
+            key = str(point_id)
+            if key not in records:
+                raise NotFoundError(f"Point '{point_id}' not found in collection '{name}'")
+            return dict(records[key].get("payload") or {})
+
+    # ------------------------------------------------------------------
+    # Encode / Rerank
+    # ------------------------------------------------------------------
+
+    def encode(self, request):
+        """Encode text/images into embeddings via the configured model provider."""
+        from .models import EncodeResponse
+        provider = self._get_encode_provider()
+        if provider is None:
+            raise ServiceError("No encoding model configured. Set VOYAGER_ENCODE_MODEL or start with a ColPali engine.")
+
+        embeddings = []
+        items = request.texts or request.images or []
+        for item in items:
+            emb = provider.encode(item)
+            if hasattr(emb, "tolist"):
+                emb = emb.tolist()
+            if isinstance(emb, list) and emb and not isinstance(emb[0], list):
+                emb = [emb]
+            embeddings.append(emb)
+        return EncodeResponse(embeddings=embeddings, model=getattr(provider, "model_name", None))
+
+    def rerank(self, request):
+        """Rerank documents against a query."""
+        from .models import RerankResponse, RerankResult
+        provider = self._get_encode_provider()
+        if provider is None:
+            raise ServiceError("No encoding model configured for reranking.")
+
+        query_emb = provider.encode(request.query)
+        if hasattr(query_emb, "numpy"):
+            import numpy as _np
+            query_np = query_emb.numpy().astype(_np.float32)
+        elif hasattr(query_emb, "tolist"):
+            import numpy as _np
+            query_np = _np.array(query_emb, dtype=_np.float32)
+        else:
+            import numpy as _np
+            query_np = _np.array(query_emb, dtype=_np.float32)
+
+        scored = []
+        for idx, doc in enumerate(request.documents):
+            doc_emb = provider.encode(doc)
+            if hasattr(doc_emb, "numpy"):
+                doc_np = doc_emb.numpy().astype(_np.float32)
+            else:
+                doc_np = _np.array(doc_emb, dtype=_np.float32)
+            if query_np.ndim == 1:
+                score = float(_np.dot(query_np, doc_np.flatten()[:len(query_np)]))
+            else:
+                import torch as _torch
+                q = _torch.from_numpy(query_np).float()
+                d = _torch.from_numpy(doc_np).float()
+                if q.dim() == 2 and d.dim() == 2:
+                    sim = q @ d.T
+                    score = float(sim.max(dim=1).values.sum())
+                else:
+                    score = float(_np.dot(query_np.flatten(), doc_np.flatten()[:query_np.size]))
+            scored.append((idx, score, doc))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        results = [
+            RerankResult(index=idx, score=sc, document=doc)
+            for idx, sc, doc in scored[:request.top_k]
+        ]
+        return RerankResponse(results=results, model=getattr(provider, "model_name", None))
+
+    _cached_encode_provider = None
+
+    def _get_encode_provider(self):
+        """Locate an available encoding provider (ColPali engine or VllmPoolingProvider).
+
+        Caches the fallback provider to avoid re-loading the model on every call.
+        """
+        with self._collections_lock:
+            for runtime in self.collections.values():
+                if runtime.kind == CollectionKind.MULTIMODAL:
+                    engine = runtime.engine
+                    if hasattr(engine, "model"):
+                        return engine.model
+        if self._cached_encode_provider is not None:
+            return self._cached_encode_provider
+        try:
+            model_name = os.environ.get("VOYAGER_ENCODE_MODEL")
+            if model_name:
+                provider = ColPaliEngine(ColPaliConfig(model_name=model_name))
+                self._cached_encode_provider = provider
+                return provider
+        except (ImportError, Exception):
+            pass
+        return None
+
     def close(self) -> None:
         """Release collection engines so the same data root can be reopened safely."""
         with self._collections_lock:
@@ -2011,6 +2281,17 @@ class SearchService:
                         "kind": runtime.kind.value,
                         "reason": "storage_missing",
                         "detail": "Late-interaction storage files are missing for a non-empty collection.",
+                    }
+                )
+        elif runtime.kind == CollectionKind.SHARD:
+            if not getattr(runtime.engine, "_is_built", False) and runtime.meta.get("records"):
+                issues.append(
+                    {
+                        "scope": "collection",
+                        "name": runtime.name,
+                        "kind": runtime.kind.value,
+                        "reason": "shard_not_built",
+                        "detail": "Shard engine has records but index is not built.",
                     }
                 )
         else:

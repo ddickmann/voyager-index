@@ -1,4 +1,4 @@
-"""Configuration dataclasses for the shard benchmark sweep."""
+"""Configuration dataclasses for the shard engine and benchmark sweep."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -31,7 +31,8 @@ class RouterType(str, Enum):
 
 
 class AnnBackend(str, Enum):
-    FAISS_HNSW_IP = "faiss_hnsw_ip"
+    FAISS_FLAT_IP = "faiss_flat_ip"
+    FAISS_HNSW_IP = "faiss_flat_ip"  # alias (was misnamed; actual impl is flat)
     FAISS_IVFPQ_IP = "faiss_ivfpq_ip"
     TORCH_EXACT_IP = "torch_exact_ip"
 
@@ -48,9 +49,10 @@ class PoolingConfig:
 class LemurConfig:
     enabled: bool = False
     device: str = "cuda"
-    ann_backend: AnnBackend = AnnBackend.FAISS_HNSW_IP
+    ann_backend: AnnBackend = AnnBackend.FAISS_FLAT_IP
     epochs: int = 10
     k_candidates: int = 2000
+    nprobe: int = 10
     retrain_every_ops: int = 50_000
     retrain_every_hours: int = 24
     retrain_dirty_doc_ratio: float = 0.05
@@ -59,6 +61,13 @@ class LemurConfig:
 
 @dataclass
 class BuildConfig:
+    """Build-time configuration for benchmarking and offline index construction.
+
+    Defaults here are tuned for benchmark sweeps (centroid-grouped layout,
+    centroid router).  For production serving, use ``ShardEngineConfig``
+    which defaults to LEMUR routing and proxy-grouped layout.
+    """
+
     corpus_size: int = 100_000
     n_centroids: int = 1024
     n_shards: int = 256
@@ -76,15 +85,21 @@ class BuildConfig:
 
 @dataclass
 class SearchConfig:
-    top_shards: int = 8
+    """Runtime search parameters.
+
+    ``batch_size`` is reserved for future batched query processing and is
+    not currently used by the shard search path.
+    """
+
     max_docs_exact: int = 10_000
+    n_full_scores: int = 4096
     transfer_mode: TransferMode = TransferMode.PINNED
     pinned_pool_buffers: int = 3
     pinned_buffer_max_tokens: int = 50_000
     batch_size: int = 1
     k_candidates: int = 2000
     use_colbandit: bool = False
-    colbandit: object = None
+    quantization_mode: str = ""
 
 
 @dataclass

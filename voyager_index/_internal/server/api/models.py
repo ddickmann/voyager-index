@@ -88,9 +88,13 @@ class CreateCollectionRequest(BaseModel):
     m: int = Field(default=16, description="HNSW M parameter")
     ef_construction: int = Field(default=200, description="HNSW ef_construction")
     storage_mode: str = Field(default="sync", description="Index storage mode for late-interaction collections")
-    n_shards: Optional[int] = Field(default=None, ge=1, description="Number of shards (shard collections)")
-    k_candidates: Optional[int] = Field(default=None, ge=1, description="LEMUR candidate count (shard collections)")
+    n_shards: Optional[int] = Field(default=None, ge=1, le=65536, description="Number of shards (shard collections)")
+    k_candidates: Optional[int] = Field(default=None, ge=1, le=100000, description="LEMUR candidate count (shard collections)")
     use_colbandit: bool = Field(default=False, description="Enable Col-Bandit reranking (shard collections)")
+    max_documents: Optional[int] = Field(
+        default=None, ge=1,
+        description="Maximum documents in this collection; oldest are evicted on overflow",
+    )
 
     @model_validator(mode="after")
     def validate_kind_specific_options(self) -> "CreateCollectionRequest":
@@ -101,8 +105,11 @@ class CreateCollectionRequest(BaseModel):
                 raise ValueError("Only dense collections support configurable HNSW parameters")
         if self.kind != CollectionKind.LATE_INTERACTION and self.storage_mode != "sync":
             raise ValueError("storage_mode is only supported for late-interaction collections")
-        if self.kind != CollectionKind.SHARD and (self.n_shards is not None or self.k_candidates is not None):
-            raise ValueError("n_shards and k_candidates are only for shard collections")
+        if self.kind != CollectionKind.SHARD:
+            if self.n_shards is not None or self.k_candidates is not None:
+                raise ValueError("n_shards and k_candidates are only for shard collections")
+            if self.use_colbandit:
+                raise ValueError("use_colbandit is only for shard collections")
         return self
 
 
@@ -197,6 +204,14 @@ class SearchRequest(BaseModel):
             'reranking. "none" skips screening and queries the GEM graph index '
             "directly."
         ),
+    )
+    ef: Optional[int] = Field(
+        default=None, ge=1, le=10000,
+        description="HNSW ef search parameter (dense collections only; ignored by shard engine)",
+    )
+    n_probes: Optional[int] = Field(
+        default=None, ge=1, le=1000,
+        description="IVF nprobe override (shard collections with IVF-PQ routing; ignored otherwise)",
     )
 
     @model_validator(mode="after")
@@ -332,6 +347,9 @@ class CollectionInfo(BaseModel):
     ef_construction: Optional[int] = None
     storage_mode: Optional[str] = None
     storage_path: Optional[str] = None
+    n_shards: Optional[int] = None
+    k_candidates: Optional[int] = None
+    total_tokens: Optional[int] = None
 
 
 class CollectionListResponse(BaseModel):
@@ -362,11 +380,11 @@ class MetricsResponse(BaseModel):
 class ShardInfo(BaseModel):
     """Metadata for a single shard."""
 
-    shard_id: int
-    num_docs: int
-    total_tokens: int
-    avg_tokens: float
-    p95_tokens: float
+    shard_id: int = Field(ge=0)
+    num_docs: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    avg_tokens: float = Field(ge=0)
+    p95_tokens: float = Field(ge=0)
 
 
 class ShardListResponse(BaseModel):
@@ -381,15 +399,166 @@ class WalStatusResponse(BaseModel):
     """WAL status for a shard collection."""
 
     collection: str
-    wal_entries: int
-    memtable_docs: int
-    memtable_tombstones: int
+    wal_entries: int = Field(ge=0)
+    memtable_docs: int = Field(ge=0)
+    memtable_tombstones: int = Field(ge=0)
+
+
+class ScrollRequest(BaseModel):
+    """Scroll (paginate) through documents in a collection."""
+
+    limit: int = Field(default=100, ge=1, le=10000, description="Page size")
+    offset: int = Field(default=0, ge=0, description="Offset to start from")
+    filter: Optional[Dict[str, Any]] = Field(default=None, description="Optional payload filters")
+
+
+class ScrollResponse(BaseModel):
+    """Scroll results."""
+
+    ids: List[int]
+    next_offset: Optional[int] = None
+
+
+class RetrieveRequest(BaseModel):
+    """Retrieve specific documents by ID."""
+
+    ids: List[int] = Field(..., description="Document IDs to retrieve")
+    with_vector: bool = Field(default=False, description="Include stored vectors")
+    with_payload: bool = Field(default=True, description="Include payload")
+
+
+class RetrieveResponse(BaseModel):
+    """Retrieve results."""
+
+    points: List[Dict[str, Any]]
+
+
+class SearchBatchRequest(BaseModel):
+    """Batch search request."""
+
+    searches: List[SearchRequest] = Field(..., description="List of search requests")
+
+
+class SearchBatchResponse(BaseModel):
+    """Batch search results."""
+
+    results: List[SearchResponse]
 
 
 class ErrorResponse(BaseModel):
-    """Error response."""
+    """Structured error response (JSON {code, message, details})."""
 
-    error: str
-    detail: Optional[str] = None
-    status_code: int
+    code: str = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[Dict[str, Any]] = Field(default=None, description="Additional error context")
+    request_id: Optional[str] = Field(default=None, description="Request trace ID")
+
+    error: Optional[str] = Field(default=None, description="Legacy error field (deprecated)")
+    detail: Optional[str] = Field(default=None, description="Legacy detail field (deprecated)")
+    status_code: Optional[int] = Field(default=None, description="Legacy status code (deprecated)")
+
+
+# ------------------------------------------------------------------
+# Async mutation task
+# ------------------------------------------------------------------
+
+class MutationTaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class MutationTaskResponse(BaseModel):
+    """Returned on 202 Accepted for async mutations."""
+
+    task_id: str = Field(..., description="Unique task identifier")
+    status: MutationTaskStatus = Field(default=MutationTaskStatus.PENDING)
+    message: str = Field(default="Accepted for processing")
+
+
+class TaskStatusResponse(BaseModel):
+    """Status of an async mutation task."""
+
+    task_id: str
+    status: MutationTaskStatus
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+# ------------------------------------------------------------------
+# Payload / metadata CRUD
+# ------------------------------------------------------------------
+
+class SetPayloadRequest(BaseModel):
+    """Set or merge payload for specific points."""
+
+    payload: Dict[str, Any] = Field(..., description="Payload fields to set/merge")
+    points: List[Union[str, int]] = Field(..., description="Point IDs to update")
+
+
+class DeletePayloadKeysRequest(BaseModel):
+    """Delete specific payload keys from points."""
+
+    keys: List[str] = Field(..., description="Payload keys to remove")
+    points: List[Union[str, int]] = Field(..., description="Point IDs to update")
+
+
+class ClearPayloadRequest(BaseModel):
+    """Clear all payload fields from points."""
+
+    points: List[Union[str, int]] = Field(..., description="Point IDs to clear payload from")
+
+
+# ------------------------------------------------------------------
+# Encode / Rerank
+# ------------------------------------------------------------------
+
+class EncodeRequest(BaseModel):
+    """Encode text or images into embeddings."""
+
+    texts: Optional[List[str]] = Field(default=None, description="Texts to encode")
+    images: Optional[List[str]] = Field(default=None, description="Image paths or URLs to encode")
+    model: Optional[str] = Field(default=None, description="Model name override")
+    truncate: bool = Field(default=True, description="Truncate inputs to model max length")
+
+    @model_validator(mode="after")
+    def validate_input(self) -> "EncodeRequest":
+        if not self.texts and not self.images:
+            raise ValueError("Provide 'texts' or 'images'")
+        return self
+
+
+class EncodeResponse(BaseModel):
+    """Encoding results."""
+
+    embeddings: List[List[List[float]]] = Field(..., description="Embeddings per input (multi-vector)")
+    model: Optional[str] = None
+    usage: Optional[Dict[str, int]] = None
+
+
+class RerankRequest(BaseModel):
+    """Rerank documents against a query."""
+
+    query: str = Field(..., description="Query text")
+    documents: List[str] = Field(..., description="Documents to rerank")
+    top_k: int = Field(default=10, ge=1, le=1000, description="Number of results")
+    model: Optional[str] = Field(default=None, description="Model name override")
+
+
+class RerankResult(BaseModel):
+    """Single rerank result."""
+
+    index: int
+    score: float
+    document: Optional[str] = None
+
+
+class RerankResponse(BaseModel):
+    """Rerank results."""
+
+    results: List[RerankResult]
+    model: Optional[str] = None
 

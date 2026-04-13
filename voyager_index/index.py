@@ -480,8 +480,8 @@ class Index:
             payload = payloads_snap.get(doc_id)
             tok_scores = None
             matched = None
-            if explain and hasattr(self._manager, '_explain_score'):
-                tok_scores, matched = self._manager._explain_score(
+            if explain and hasattr(self._manager, 'explain_score'):
+                tok_scores, matched = self._manager.explain_score(
                     query.astype(np.float32, copy=False), doc_id,
                 )
             results.append(SearchResult(
@@ -531,7 +531,7 @@ class Index:
                 payload = payloads_snap.get(doc_id)
                 if filters and hasattr(self._manager, '_evaluate_filter'):
                     if not self._manager._evaluate_filter(
-                        payload or {}, filters, doc_id=doc_id
+                        payload or {}, filters
                     ):
                         continue
                 results.append(SearchResult(
@@ -609,7 +609,11 @@ class Index:
         raw = self._manager.get_statistics()
         total = raw.get("total_vectors", 0)
         sealed = raw.get("sealed_segments", 0)
-        active = raw.get("active", {}).get("n_live", 0) if isinstance(raw.get("active"), dict) else 0
+        active_raw = raw.get("active", 0)
+        if isinstance(active_raw, dict):
+            active = active_raw.get("n_live", 0)
+        else:
+            active = int(active_raw) if active_raw else 0
         return IndexStats(
             total_documents=total,
             sealed_segments=sealed,

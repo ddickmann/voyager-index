@@ -15,9 +15,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import bm25s
 import numpy as np
-import Stemmer
+
+try:
+    import bm25s
+    import Stemmer
+    _BM25S_AVAILABLE = True
+except ImportError:
+    bm25s = None  # type: ignore[assignment]
+    Stemmer = None  # type: ignore[assignment]
+    _BM25S_AVAILABLE = False
+
+try:
+    from voyager_index._internal.inference.engines.bm25 import BM25Engine as LegacyBM25Engine
+except ImportError:
+    LegacyBM25Engine = None
 
 from voyager_index._internal.inference.stateless_optimizer import (
     GpuFulfilmentPipeline,
@@ -111,8 +123,9 @@ class HybridSearchManager:
 
         # Sparse Index
         self.bm25_path = self.shard_path / "bm25"
-        self.stemmer = Stemmer.Stemmer(stemmer_lang)
+        self.stemmer = Stemmer.Stemmer(stemmer_lang) if Stemmer is not None else None
         self.retriever = None
+        self._legacy_bm25: Any = None
         self.sparse_error: Optional[str] = None
         self.sparse_index_present = (self.bm25_path / "params.index.json").exists()
         self.sparse_dirty = False
@@ -154,20 +167,34 @@ class HybridSearchManager:
         self.payload_buffer: List[Dict[str, Any]] = []
 
     def _load_bm25(self):
-        """Load BM25 index if exists."""
+        """Load BM25 index if exists, falling back to LegacyBM25Engine."""
         self.sparse_index_present = (self.bm25_path / "params.index.json").exists()
         if not self.sparse_index_present:
             self.retriever = None
             self.sparse_error = None
             return
-        try:
-            self.retriever = bm25s.BM25.load(str(self.bm25_path), load_corpus=True)
-            self.sparse_error = None
-            logger.info("Loaded BM25 index")
-        except Exception as e:
-            logger.error(f"Failed to load BM25: {e}")
-            self.retriever = None
-            self.sparse_error = str(e)
+        if _BM25S_AVAILABLE:
+            try:
+                self.retriever = bm25s.BM25.load(str(self.bm25_path), load_corpus=True)
+                self.sparse_error = None
+                logger.info("Loaded BM25 index (bm25s)")
+                return
+            except Exception as e:
+                logger.warning("bm25s load failed, trying legacy fallback: %s", e)
+        if LegacyBM25Engine is not None and self.corpus_buffer:
+            try:
+                self._legacy_bm25 = LegacyBM25Engine()
+                self._legacy_bm25.index_documents(self.corpus_buffer, self.ids_buffer)
+                self.sparse_error = None
+                logger.info("Loaded BM25 index (legacy fallback)")
+                return
+            except Exception as e2:
+                logger.error("Legacy BM25 fallback also failed: %s", e2)
+        self.retriever = None
+        if not _BM25S_AVAILABLE and not self.corpus_buffer:
+            self.sparse_error = "bm25s unavailable; corpus not yet loaded for legacy fallback"
+        else:
+            self.sparse_error = "bm25s unavailable and legacy fallback failed"
 
     def _swap_bm25_generation(self, staged_path: Path) -> None:
         current_path = self.bm25_path
@@ -254,26 +281,46 @@ class HybridSearchManager:
             self._sanitize_sparse_text(text, doc_id)
             for text, doc_id in zip(self.corpus_buffer, self.ids_buffer)
         ]
-        staged_dir: Optional[Path] = None
-        try:
-            corpus_tokens = bm25s.tokenize(sanitized_corpus, stemmer=self.stemmer)
-            staged_dir = Path(tempfile.mkdtemp(prefix="voyager-bm25-", dir=str(self.shard_path)))
-            next_retriever = bm25s.BM25()
-            next_retriever.index(corpus_tokens)
-            next_retriever.save(str(staged_dir))
-            self._swap_bm25_generation(staged_dir)
-            self.retriever = bm25s.BM25.load(str(self.bm25_path), load_corpus=True)
-            self.sparse_error = None
-            self.sparse_index_present = True
-            self.sparse_dirty = False
-        except Exception as exc:
-            self.retriever = None
-            self.sparse_error = str(exc)
-            logger.error("Failed to rebuild BM25: %s", exc)
-            raise
-        finally:
-            if staged_dir is not None and staged_dir.exists():
-                shutil.rmtree(staged_dir, ignore_errors=True)
+
+        if _BM25S_AVAILABLE:
+            staged_dir: Optional[Path] = None
+            try:
+                corpus_tokens = bm25s.tokenize(sanitized_corpus, stemmer=self.stemmer)
+                staged_dir = Path(tempfile.mkdtemp(prefix="voyager-bm25-", dir=str(self.shard_path)))
+                next_retriever = bm25s.BM25()
+                next_retriever.index(corpus_tokens)
+                next_retriever.save(str(staged_dir))
+                self._swap_bm25_generation(staged_dir)
+                self.retriever = bm25s.BM25.load(str(self.bm25_path), load_corpus=True)
+                self._legacy_bm25 = None
+                self.sparse_error = None
+                self.sparse_index_present = True
+                self.sparse_dirty = False
+                return
+            except Exception as exc:
+                logger.warning("bm25s rebuild failed, trying legacy: %s", exc)
+            finally:
+                if staged_dir is not None and staged_dir.exists():
+                    shutil.rmtree(staged_dir, ignore_errors=True)
+
+        if LegacyBM25Engine is not None:
+            try:
+                engine = LegacyBM25Engine()
+                engine.index_documents(sanitized_corpus, self.ids_buffer)
+                self._legacy_bm25 = engine
+                self.retriever = None
+                self.sparse_error = None
+                self.sparse_index_present = True
+                self.sparse_dirty = False
+                logger.info("BM25 rebuilt with legacy fallback (%d docs)", len(sanitized_corpus))
+                return
+            except Exception as exc:
+                logger.error("Legacy BM25 rebuild also failed: %s", exc)
+
+        self.retriever = None
+        self._legacy_bm25 = None
+        self.sparse_error = "Both bm25s and legacy BM25 are unavailable"
+        raise RuntimeError(self.sparse_error)
 
     def index(
         self,
@@ -288,7 +335,18 @@ class HybridSearchManager:
         Note: BM25s currently requires full re-indexing for optimization.
         For real-time, we append to buffer and re-index periodically.
         """
-        self.hnsw.add(vectors, ids=ids, payloads=payloads)
+        if isinstance(vectors, np.ndarray) and vectors.ndim == 3:
+            raise ValueError("3D arrays not supported; pass a list of 2D arrays for multi-vector docs")
+        if self._dense_engine_type == "shard":
+            if isinstance(vectors, np.ndarray) and vectors.ndim == 2:
+                vecs_list = [vectors[i:i+1] for i in range(vectors.shape[0])]
+            elif isinstance(vectors, list):
+                vecs_list = vectors
+            else:
+                vecs_list = [vectors]
+            self.hnsw.add_multidense(vecs_list, ids=ids, payloads=payloads)
+        else:
+            self.hnsw.add(vectors, ids=ids, payloads=payloads)
         next_corpus = [*self.corpus_buffer, *corpus]
         next_ids = [*self.ids_buffer, *[int(item_id) for item_id in ids]]
         next_payloads = [*self.payload_buffer, *[dict(payload or {}) for payload in (payloads or [])]]
@@ -332,7 +390,7 @@ class HybridSearchManager:
         dense_ids = {rid for rid, _ in dense_results}
 
         sparse_results = []
-        if self.retriever and query_text.strip():
+        if self.retriever and query_text.strip() and _BM25S_AVAILABLE:
             self._ensure_sparse_ready()
             query_tokens = bm25s.tokenize([query_text], stemmer=self.stemmer)
             docs, scores = self.retriever.retrieve(query_tokens, k=min(k, len(self.ids_buffer)))
@@ -345,6 +403,11 @@ class HybridSearchManager:
                         continue
                     external_id = self.ids_buffer[doc_idx]
                     sparse_results.append((external_id, float(score)))
+        elif self._legacy_bm25 and query_text.strip():
+            self._ensure_sparse_ready()
+            results = self._legacy_bm25.search(query_text, top_k=k)
+            for sr in results:
+                sparse_results.append((sr.doc_id, sr.score))
         elif query_text.strip() and self.sparse_dirty:
             self._ensure_sparse_ready()
             return self.search(query_text=query_text, query_vector=query_vector, k=k, filters=filters)

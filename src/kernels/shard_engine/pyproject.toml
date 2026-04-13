@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "latence-shard-engine"
+version = "0.1.0"
+description = "Lock-free shard engine for multi-vector retrieval — Rust data plane with GPU scoring callbacks"
+authors = [{name = "Latence Team"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "latence_shard_engine"

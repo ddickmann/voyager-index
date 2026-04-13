@@ -113,3 +113,65 @@ class TestIndexBuilder:
     def test_unknown_engine_raises(self, tmp_dir):
         with pytest.raises(ValueError, match="Unknown engine"):
             Index(tmp_dir, dim=64, engine="nonexistent")
+
+
+class TestIndexPublicAPIShard:
+    """Index-level public API tests for shard engine (FIX 36)."""
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_delete_excludes_from_search(self, tmp_dir):
+        dim = 64
+        idx = Index(tmp_dir, dim=dim, engine="shard", n_shards=4, lemur_epochs=2, k_candidates=100)
+        vectors = _make_corpus(n_docs=50, dim=dim, min_tok=8, max_tok=24)
+        ids = list(range(50))
+        idx.add(vectors, ids=ids)
+        idx.delete([0, 1, 2])
+        results = idx.search(vectors[0], k=50)
+        returned_ids = {r.doc_id for r in results}
+        assert 0 not in returned_ids
+        assert 1 not in returned_ids
+        assert 2 not in returned_ids
+        idx.close()
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_upsert_searchable(self, tmp_dir):
+        dim = 64
+        idx = Index(tmp_dir, dim=dim, engine="shard", n_shards=4, lemur_epochs=2, k_candidates=100)
+        vectors = _make_corpus(n_docs=30, dim=dim, min_tok=8, max_tok=24)
+        idx.add(vectors, ids=list(range(30)))
+        new_vec = np.random.RandomState(999).randn(12, dim).astype(np.float32)
+        idx.upsert([new_vec], ids=[0], payloads=[{"updated": True}])
+        results = idx.search(new_vec, k=5)
+        found_ids = [r.doc_id for r in results]
+        assert 0 in found_ids
+        idx.close()
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_scroll_paginated(self, tmp_dir):
+        dim = 64
+        idx = Index(tmp_dir, dim=dim, engine="shard", n_shards=4, lemur_epochs=2, k_candidates=100)
+        vectors = _make_corpus(n_docs=50, dim=dim, min_tok=8, max_tok=24)
+        idx.add(vectors, ids=list(range(50)))
+        all_ids = []
+        offset = 0
+        while True:
+            page = idx.scroll(limit=20, offset=offset)
+            all_ids.extend(r.doc_id for r in page.results)
+            if page.next_offset is None:
+                break
+            offset = page.next_offset
+        assert len(all_ids) == 50
+        assert len(set(all_ids)) == 50
+        idx.close()
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_search_with_filters(self, tmp_dir):
+        dim = 64
+        idx = Index(tmp_dir, dim=dim, engine="shard", n_shards=4, lemur_epochs=2, k_candidates=100)
+        vectors = _make_corpus(n_docs=40, dim=dim, min_tok=8, max_tok=24)
+        payloads = [{"color": "red" if i < 20 else "blue"} for i in range(40)]
+        idx.add(vectors, ids=list(range(40)), payloads=payloads)
+        results = idx.search(vectors[0], k=40, filters={"color": "red"})
+        for r in results:
+            assert r.payload["color"] == "red"
+        idx.close()

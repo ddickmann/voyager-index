@@ -14,6 +14,16 @@ import numpy as np
 import torch
 
 try:
+    from voyager_index._internal.inference.index_core.io_utils import atomic_json_write
+except ImportError:
+    def atomic_json_write(path, data):
+        """Fallback: plain json.dump when io_utils is unavailable."""
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+try:
     from safetensors.numpy import save_file as st_save_np
     from safetensors.torch import load_file as st_load
     SAFETENSORS_AVAILABLE = True
@@ -21,6 +31,13 @@ except Exception:
     SAFETENSORS_AVAILABLE = False
     st_save_np = None
     st_load = None
+
+try:
+    from safetensors import safe_open as _st_safe_open
+    _MMAP_AVAILABLE = True
+except Exception:
+    _st_safe_open = None
+    _MMAP_AVAILABLE = False
 
 from .config import Compression
 
@@ -53,11 +70,11 @@ class StoreManifest:
     compression: str
     shards: List[ShardMeta]
     global_target_len: int = 0
+    version: int = 1
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        atomic_json_write(path, asdict(self))
 
     @classmethod
     def load(cls, path: Path) -> "StoreManifest":
@@ -65,6 +82,7 @@ class StoreManifest:
             d = json.load(f)
         d["shards"] = [ShardMeta(**s) for s in d["shards"]]
         d.setdefault("global_target_len", 0)
+        d.setdefault("version", 1)
         return cls(**d)
 
 
@@ -144,6 +162,35 @@ class ShardStore:
         if not SAFETENSORS_AVAILABLE:
             raise ImportError("safetensors is required: pip install safetensors")
 
+        if len(doc_offsets) != len(doc_ids):
+            raise ValueError(f"doc_offsets ({len(doc_offsets)}) != doc_ids ({len(doc_ids)})")
+        if len(shard_assignments) != len(doc_ids):
+            raise ValueError(f"shard_assignments ({len(shard_assignments)}) != doc_ids ({len(doc_ids)})")
+        if all_vectors.ndim != 2 or all_vectors.shape[1] != dim:
+            raise ValueError(f"all_vectors shape {all_vectors.shape} incompatible with dim={dim}")
+        if n_shards < 1:
+            raise ValueError(f"n_shards must be >= 1, got {n_shards}")
+        if len(shard_assignments) > 0:
+            sa_min, sa_max = int(np.min(shard_assignments)), int(np.max(shard_assignments))
+            if sa_min < 0 or sa_max >= n_shards:
+                raise ValueError(
+                    f"shard_assignments out of bounds [0, {n_shards}): min={sa_min}, max={sa_max}"
+                )
+        if len(set(doc_ids)) != len(doc_ids):
+            raise ValueError("Duplicate doc_ids detected")
+        if roq_doc_codes is not None and len(roq_doc_codes) != len(doc_ids):
+            raise ValueError(
+                f"roq_doc_codes length ({len(roq_doc_codes)}) != doc_ids ({len(doc_ids)})"
+            )
+        if roq_doc_meta is not None and len(roq_doc_meta) != len(doc_ids):
+            raise ValueError(
+                f"roq_doc_meta length ({len(roq_doc_meta)}) != doc_ids ({len(doc_ids)})"
+            )
+
+        if compression == Compression.ROQ4 and roq_doc_codes is None:
+            logger.warning("ROQ4 requested but no roq_doc_codes provided; falling back to FP16")
+            compression = Compression.FP16
+
         self.shard_dir.mkdir(parents=True, exist_ok=True)
 
         shard_to_centroid: Dict[int, List[int]] = {}
@@ -215,7 +262,6 @@ class ShardStore:
             shard_path = self.shard_dir / file_name
 
             if compression == Compression.ROQ4 and roq_doc_codes is not None:
-                # Build ROQ4 shard with pre-encoded codes and meta
                 shard_codes_list = []
                 shard_meta_list = []
                 roq_offsets = []
@@ -242,6 +288,7 @@ class ShardStore:
                 tensors = ShardStore.pack_shard_roq4(
                     shard_codes_list, shard_meta_list, roq_offsets, shard_doc_ids,
                 )
+                tensors["embeddings"] = shard_vectors.astype(np.float16)
             else:
                 tensors = self._pack_shard(shard_vectors, local_offsets, shard_doc_ids, compression)
             st_save_np(tensors, str(shard_path))
@@ -355,15 +402,27 @@ class ShardStore:
 
     def _load_raw_shard(self, shard_id: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Load and cache decoded shard data. Returns (emb, offsets_tensor, ids_tensor)."""
+        if not SAFETENSORS_AVAILABLE:
+            raise ImportError("safetensors is required: pip install safetensors")
         cached = self._shard_cache.get(shard_id)
         if cached is not None:
             return cached
 
         meta = self._meta_by_id(shard_id)
-        data = st_load(str(self.shard_dir / meta.file_name), device="cpu")
-        emb = self._decode_embeddings(meta, data)
-        offsets_t = data["doc_offsets"]  # (N, 2) int64 tensor
-        ids_t = data["doc_ids"]  # (N,) int64 tensor
+        shard_path = self.shard_dir / meta.file_name
+        try:
+            data = st_load(str(shard_path), device="cpu")
+        except Exception as exc:
+            raise IOError(f"Failed to load shard file {shard_path}: {exc}") from exc
+        try:
+            emb = self._decode_embeddings(meta, data)
+            offsets_t = data["doc_offsets"]
+            ids_t = data["doc_ids"]
+        except KeyError as exc:
+            raise KeyError(
+                f"Missing tensor key {exc} in shard {shard_path} "
+                f"(compression={meta.compression})"
+            ) from exc
         self._shard_cache.put(shard_id, emb, offsets_t, ids_t)
         return emb, offsets_t, ids_t
 
@@ -381,35 +440,130 @@ class ShardStore:
         doc_ids: List[int],
         device: str = "cpu",
     ) -> Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]:
-        """Load only specific documents from a shard (doc-selective access)."""
+        """Load only specific documents from a shard (doc-selective access).
+
+        When safetensors mmap is available, reads only the requested byte
+        ranges from disk instead of loading the entire shard file.
+        """
         if not doc_ids:
             dim = self.manifest.dim if self.manifest else 128
             return torch.empty((0, dim), dtype=torch.float16), [], []
 
-        emb, _offsets_t, _ids_t = self._load_raw_shard(shard_id)
-
-        selected_ids = [
-            int(d) for d in doc_ids
+        selected = [
+            (int(d), self._doc_index[int(d)])
+            for d in doc_ids
             if int(d) in self._doc_index and self._doc_index[int(d)].shard_id == shard_id
         ]
-        if not selected_ids:
+        if not selected:
             dim = self.manifest.dim if self.manifest else 128
             return torch.empty((0, dim), dtype=torch.float16), [], []
 
+        if _MMAP_AVAILABLE:
+            return self._load_docs_selective(shard_id, selected, device)
+
+        emb, _offsets_t, _ids_t = self._load_raw_shard(shard_id)
         pieces: List[torch.Tensor] = []
         offsets: List[Tuple[int, int]] = []
+        out_ids: List[int] = []
         pos = 0
-        for doc_id in selected_ids:
-            meta_doc = self._doc_index[doc_id]
+        for doc_id, meta_doc in selected:
             piece = emb[meta_doc.local_offset_start:meta_doc.local_offset_end]
             pieces.append(piece)
             offsets.append((pos, pos + piece.shape[0]))
+            out_ids.append(doc_id)
             pos += int(piece.shape[0])
 
         merged = torch.cat(pieces, dim=0)
         if device != "cpu":
             merged = merged.to(device)
-        return merged, offsets, selected_ids
+        return merged, offsets, out_ids
+
+    def _load_docs_selective(
+        self,
+        shard_id: int,
+        selected: List[Tuple[int, "DocMeta"]],
+        device: str = "cpu",
+    ) -> Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]:
+        """Mmap-backed selective doc loading — reads only the requested rows.
+
+        Uses ``safetensors.safe_open`` + ``get_slice`` so the OS only pages
+        in the byte ranges for the requested documents, not the entire shard.
+        Falls back to the eager ``_load_raw_shard`` path if ``get_slice`` is
+        unavailable (older safetensors) or if the shard lacks an embeddings key.
+        """
+        meta = self._meta_by_id(shard_id)
+        shard_path = self.shard_dir / meta.file_name
+        is_int8 = meta.compression == "int8"
+
+        try:
+            return self._do_selective_read(shard_path, is_int8, selected, device)
+        except (AttributeError, KeyError, OSError) as exc:
+            logger.debug("Selective mmap read fell back to eager load: %s", exc)
+            return self._load_docs_eager_fallback(shard_id, selected, device)
+
+    def _do_selective_read(
+        self,
+        shard_path: Path,
+        is_int8: bool,
+        selected: List[Tuple[int, "DocMeta"]],
+        device: str,
+    ) -> Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]:
+        pieces: List[torch.Tensor] = []
+        offsets: List[Tuple[int, int]] = []
+        out_ids: List[int] = []
+        pos = 0
+
+        with _st_safe_open(str(shard_path), framework="pt", device="cpu") as f:
+            emb_slice = f.get_slice("embeddings")
+            scales_slice = f.get_slice("scales") if is_int8 else None
+
+            for doc_id, dm in selected:
+                s, e = dm.local_offset_start, dm.local_offset_end
+                if is_int8 and scales_slice is not None:
+                    raw = emb_slice[s:e].float()
+                    sc = scales_slice[s:e].unsqueeze(-1)
+                    piece = (raw * sc).to(torch.float16)
+                else:
+                    piece = emb_slice[s:e].to(torch.float16)
+                pieces.append(piece)
+                offsets.append((pos, pos + piece.shape[0]))
+                out_ids.append(doc_id)
+                pos += piece.shape[0]
+
+        if not pieces:
+            dim = self.manifest.dim if self.manifest else 128
+            return torch.empty((0, dim), dtype=torch.float16), [], []
+
+        merged = torch.cat(pieces, dim=0)
+        if device != "cpu":
+            merged = merged.to(device)
+        return merged, offsets, out_ids
+
+    def _load_docs_eager_fallback(
+        self,
+        shard_id: int,
+        selected: List[Tuple[int, "DocMeta"]],
+        device: str,
+    ) -> Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]:
+        """Fallback: decode the full shard and slice (pre-C1 behaviour)."""
+        emb, _offsets_t, _ids_t = self._load_raw_shard(shard_id)
+        pieces: List[torch.Tensor] = []
+        offsets: List[Tuple[int, int]] = []
+        out_ids: List[int] = []
+        pos = 0
+        for doc_id, meta_doc in selected:
+            piece = emb[meta_doc.local_offset_start:meta_doc.local_offset_end]
+            pieces.append(piece)
+            offsets.append((pos, pos + piece.shape[0]))
+            out_ids.append(doc_id)
+            pos += int(piece.shape[0])
+        if not pieces:
+            dim = self.manifest.dim if self.manifest else 128
+            return torch.empty((0, dim), dtype=torch.float16), [], []
+        merged = torch.cat(pieces, dim=0)
+        if device != "cpu":
+            merged = merged.to(device)
+        return merged, offsets, out_ids
 
     def load_shards(self, shard_ids: List[int], device: str = "cpu") -> Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]:
         all_emb = []
@@ -442,6 +596,26 @@ class ShardStore:
         pinned.copy_(emb)
         return pinned, offsets, doc_ids
 
+    def fetch_docs(self, doc_ids: List[int]) -> Dict[int, np.ndarray]:
+        """Fetch individual documents by ID. Returns {doc_id: np.ndarray}.
+
+        Performance note: access is O(shard_size) per shard because the
+        full shard tensor must be decoded.  The internal ``_ShardLRU``
+        cache amortises cost for repeated accesses to the same shard.
+        """
+        result: Dict[int, np.ndarray] = {}
+        by_shard: Dict[int, List[int]] = {}
+        for did in doc_ids:
+            if did in self._doc_index:
+                sid = self._doc_index[did].shard_id
+                by_shard.setdefault(sid, []).append(did)
+        for sid, dids in by_shard.items():
+            emb, offsets, loaded_ids = self.load_docs_from_shard(sid, dids, device="cpu")
+            for i, loaded_did in enumerate(loaded_ids):
+                s, e = offsets[i]
+                result[loaded_did] = emb[s:e].numpy().astype(np.float32)
+        return result
+
     def shard_ids(self) -> List[int]:
         return [s.shard_id for s in self.manifest.shards] if self.manifest else []
 
@@ -463,13 +637,24 @@ class ShardStore:
 
     def _decode_embeddings(self, meta: ShardMeta, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         if meta.compression == "int8":
+            if "embeddings" not in data:
+                raise KeyError(f"'embeddings' missing in INT8 shard {meta.shard_id}")
+            if "scales" not in data:
+                raise KeyError(f"'scales' missing in INT8 shard {meta.shard_id}")
             emb = data["embeddings"].float()
             scales = data["scales"].unsqueeze(-1)
             return (emb * scales).to(torch.float16)
         if meta.compression == "roq4" and "roq_codes" in data:
-            # For ROQ4 we still return FP16 for the standard path (GpuCorpus, fetch).
-            # The raw codes/meta are accessed via load_shard_roq4() for the ROQ scoring path.
-            return data["roq_codes"].to(torch.float16)
+            if "embeddings" in data:
+                return data["embeddings"].to(torch.float16)
+            logger.warning("ROQ4 shard %d has no FP16 embeddings alongside codes; "
+                           "returning zeros", meta.shard_id)
+            dim = self.manifest.dim if self.manifest else 128
+            n_tokens = data["roq_codes"].shape[0]
+            return torch.zeros(n_tokens, dim, dtype=torch.float16)
+        if "embeddings" not in data:
+            raise KeyError(f"'embeddings' missing in shard {meta.shard_id} "
+                           f"(compression={meta.compression})")
         return data["embeddings"].to(torch.float16)
 
     def load_shard_roq4(self, shard_id: int) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
@@ -477,6 +662,8 @@ class ShardStore:
 
         Returns (codes, meta, offsets_tensor, ids_tensor) or None if not ROQ4.
         """
+        if not SAFETENSORS_AVAILABLE:
+            raise ImportError("safetensors is required: pip install safetensors")
         meta = self._meta_by_id(shard_id)
         if meta.compression != "roq4":
             return None
@@ -498,18 +685,18 @@ class ShardStore:
         self._load_doc_index()
 
     def _load_doc_index(self) -> None:
-        data = np.load(self.doc_index_path)
-        self._doc_index = {}
-        for doc_id, shard_id, start, end, row_index in zip(
-            data["doc_ids"], data["shard_ids"], data["local_starts"], data["local_ends"], data["row_indices"],
-        ):
-            self._doc_index[int(doc_id)] = DocMeta(
-                doc_id=int(doc_id),
-                shard_id=int(shard_id),
-                local_offset_start=int(start),
-                local_offset_end=int(end),
-                row_index=int(row_index),
-            )
+        with np.load(self.doc_index_path) as data:
+            self._doc_index = {}
+            for doc_id, shard_id, start, end, row_index in zip(
+                data["doc_ids"], data["shard_ids"], data["local_starts"], data["local_ends"], data["row_indices"],
+            ):
+                self._doc_index[int(doc_id)] = DocMeta(
+                    doc_id=int(doc_id),
+                    shard_id=int(shard_id),
+                    local_offset_start=int(start),
+                    local_offset_end=int(end),
+                    row_index=int(row_index),
+                )
 
     # ------------------------------------------------------------------
     # Disk-tier helpers
@@ -530,3 +717,83 @@ class ShardStore:
             return
         for meta in self.manifest.shards:
             self.drop_page_cache(meta.shard_id)
+
+    def page_cache_residency(self) -> Optional[Dict]:
+        """Check page cache residency for shard files via ``mincore(2)``.
+
+        Returns ``{"total_pages": N, "resident_pages": M, "hit_rate": M/N}``
+        on Linux, or ``None`` on unsupported platforms / errors.
+        """
+        import ctypes
+        import ctypes.util
+        import sys
+
+        if sys.platform != "linux":
+            return None
+        if not self.manifest:
+            return None
+
+        try:
+            libc_name = ctypes.util.find_library("c")
+            if not libc_name:
+                return None
+            libc = ctypes.CDLL(libc_name, use_errno=True)
+            libc.mincore.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_ubyte),
+            ]
+            libc.mincore.restype = ctypes.c_int
+            _MAP_SHARED = 0x01
+            _PROT_READ = 0x1
+            libc.mmap.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_long,
+            ]
+            libc.mmap.restype = ctypes.c_void_p
+            libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            libc.munmap.restype = ctypes.c_int
+            _MAP_FAILED = ctypes.c_void_p(-1).value
+        except (OSError, AttributeError):
+            return None
+
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError):
+            page_size = 4096
+        total_pages = 0
+        resident_pages = 0
+
+        for meta in self.manifest.shards:
+            path = self.shard_dir / meta.file_name
+            if not path.exists():
+                continue
+            try:
+                fd = os.open(str(path), os.O_RDONLY)
+                try:
+                    size = os.fstat(fd).st_size
+                    if size == 0:
+                        continue
+                    n_pages = (size + page_size - 1) // page_size
+                    addr = libc.mmap(None, size, _PROT_READ, _MAP_SHARED, fd, 0)
+                    if addr == _MAP_FAILED or addr is None:
+                        continue
+                    try:
+                        vec = (ctypes.c_ubyte * n_pages)()
+                        rc = libc.mincore(ctypes.c_void_p(addr), size, vec)
+                        if rc == 0:
+                            total_pages += n_pages
+                            resident_pages += sum(1 for b in vec if b & 1)
+                    finally:
+                        libc.munmap(ctypes.c_void_p(addr), size)
+                finally:
+                    os.close(fd)
+            except (OSError, ValueError):
+                continue
+
+        if total_pages == 0:
+            return {"total_pages": 0, "resident_pages": 0, "hit_rate": 0.0}
+        return {
+            "total_pages": total_pages,
+            "resident_pages": resident_pages,
+            "hit_rate": resident_pages / total_pages,
+        }

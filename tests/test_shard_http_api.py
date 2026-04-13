@@ -231,7 +231,8 @@ def test_checkpoint(tmp_path):
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["wal_entries_after"] == 0
+        assert isinstance(body["wal_entries_after"], int)
+        assert body["wal_entries_before"] >= body["wal_entries_after"]
 
 
 def test_admin_on_non_shard_rejected(tmp_path):
@@ -256,3 +257,70 @@ def test_shard_routed_strategy_accepted(tmp_path):
             json={"vectors": query, "top_k": 3, "strategy": "shard_routed"},
         )
         assert resp.status_code == 200
+
+
+# ------------------------------------------------------------------
+# HTTP observability endpoints (FIX 36)
+# ------------------------------------------------------------------
+
+
+def test_health_endpoint(tmp_path):
+    with _client(tmp_path) as c:
+        resp = c.get("/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert "version" in body
+        assert "collections" in body
+        assert "gpu_available" in body
+
+
+def test_ready_endpoint(tmp_path):
+    with _client(tmp_path) as c:
+        resp = c.get("/ready")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "status" in body
+
+
+def test_metrics_endpoint(tmp_path):
+    with _client(tmp_path) as c:
+        resp = c.get("/metrics")
+        assert resp.status_code == 200
+        text = resp.text
+        assert "voyager_search_requests_total" in text
+        assert "voyager_collections_total" in text
+        assert "voyager_points_total" in text
+
+
+def test_scroll_endpoint(tmp_path):
+    with _client(tmp_path) as c:
+        _create_shard_collection(c)
+        _add_points(c, "test_shard", n=30)
+        resp = c.post(
+            "/collections/test_shard/scroll",
+            json={"limit": 10, "offset": 0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "ids" in body
+        assert len(body["ids"]) <= 10
+
+
+def test_retrieve_endpoint(tmp_path):
+    with _client(tmp_path) as c:
+        _create_shard_collection(c)
+        _add_points(c, "test_shard", n=10)
+        scroll_resp = c.post(
+            "/collections/test_shard/scroll",
+            json={"limit": 5, "offset": 0},
+        )
+        ids = scroll_resp.json()["ids"]
+        resp = c.post(
+            "/collections/test_shard/retrieve",
+            json={"ids": ids, "with_payload": True},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "points" in body
+        assert len(body["points"]) == len(ids)

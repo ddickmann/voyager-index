@@ -17,6 +17,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 _maxsim_fn = None
+_warmup_done_lock = __import__("threading").Lock()
 _warmup_done: set = set()
 
 
@@ -42,6 +43,8 @@ def warmup_maxsim(dim: int, doc_token_counts: List[int], device: str = "cuda") -
     the unique (S, T, H) combinations.
     """
     global _warmup_done
+    if not torch.cuda.is_available() and "cuda" in device:
+        return
     maxsim = _get_maxsim()
     dev = torch.device(device)
 
@@ -56,13 +59,15 @@ def warmup_maxsim(dim: int, doc_token_counts: List[int], device: str = "cuda") -
     for qt in q_tokens_list:
         for dt in sorted(d_tokens_set):
             key = (qt, dt, dim)
-            if key in _warmup_done:
-                continue
+            with _warmup_done_lock:
+                if key in _warmup_done:
+                    continue
             q = torch.zeros(1, qt, dim, dtype=torch.float16, device=dev)
             d = torch.zeros(n_warmup_docs, dt, dim, dtype=torch.float16, device=dev)
             m = torch.ones(n_warmup_docs, dt, dtype=torch.float32, device=dev)
             maxsim(q, d, documents_mask=m)
-            _warmup_done.add(key)
+            with _warmup_done_lock:
+                _warmup_done.add(key)
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -103,6 +108,74 @@ ShardChunk = Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]
 
 
 # ------------------------------------------------------------------
+# Centroid proxy pre-scoring (Track C optimisation)
+# ------------------------------------------------------------------
+
+def proxy_score_candidates(
+    query: torch.Tensor,
+    doc_means: torch.Tensor,
+    candidate_doc_ids: List[int],
+    doc_id_to_idx: Dict[int, int],
+    n_full_scores: int,
+    device: torch.device = None,
+) -> List[int]:
+    """Cheap proxy scoring to prune candidates before exact MaxSim.
+
+    Uses mean-pooled document embeddings (one vector per doc) as a proxy.
+    Score = max over query tokens of (q_token dot d_mean).  This is orders
+    of magnitude cheaper than full MaxSim because each doc is one vector
+    instead of ~120 token vectors.
+
+    Returns the top *n_full_scores* doc IDs from proxy-scored candidates,
+    plus any candidate IDs that could not be proxy-scored (e.g. newly added
+    docs whose means are not yet indexed).  The output may therefore exceed
+    *n_full_scores* when unknown candidates exist.
+    """
+    if not candidate_doc_ids or doc_means is None:
+        return candidate_doc_ids
+
+    if len(candidate_doc_ids) <= n_full_scores:
+        return candidate_doc_ids
+
+    if device is None:
+        device = doc_means.device
+
+    valid: List[Tuple[int, int]] = []
+    unknown: List[int] = []
+    for did in candidate_doc_ids:
+        idx = doc_id_to_idx.get(did)
+        if idx is not None:
+            valid.append((did, idx))
+        else:
+            unknown.append(did)
+
+    if not valid:
+        return candidate_doc_ids
+
+    # Budget for proxy-scored docs — reserve slots for unknowns that
+    # cannot be scored (they pass through unconditionally).
+    budget = max(n_full_scores - len(unknown), 1)
+    if len(valid) <= budget:
+        return [did for did, _ in valid] + unknown
+
+    v_ids, v_indices = zip(*valid)
+    idx_t = torch.tensor(v_indices, dtype=torch.long, device=device)
+    D_proxy = doc_means[idx_t]  # (N, dim)
+
+    q = query.to(device, dtype=torch.float16)
+    if q.dim() == 3:
+        q = q.squeeze(0)
+    # (S, dim) @ (dim, N) → (S, N), max over S → (N,)
+    scores = (q.float() @ D_proxy.float().T).max(dim=0).values
+
+    top_n = min(budget, len(v_ids))
+    _, top_idx = scores.topk(top_n)
+    result = [v_ids[i] for i in top_idx.cpu().tolist()]
+    result.extend(unknown)
+    return result
+
+
+# ------------------------------------------------------------------
 # Batched scoring (Fix 1) — single kernel call for all docs
 # ------------------------------------------------------------------
 
@@ -111,11 +184,15 @@ def score_all_docs_topk(
     shard_chunks: List[ShardChunk],
     k: int = 10,
     device: torch.device = None,
+    quantization_mode: str = "",
 ) -> Tuple[List[int], List[float]]:
     """Score all fetched docs in one kernel call.
 
     Concatenates per-shard tensors (not per-doc slices) to avoid O(n_docs)
     torch.cat overhead, then reshapes for the Triton MaxSim kernel.
+
+    When *quantization_mode* is set (e.g. ``"int8"``), the flag is forwarded
+    to the Triton kernel so it can use reduced-precision accumulation.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,6 +226,11 @@ def score_all_docs_topk(
     n_docs = len(all_doc_ids)
     dim = shard_embs[0].shape[1]
 
+    quant_kwargs: dict = {}
+    if quantization_mode:
+        quant_kwargs["use_quantization"] = True
+        quant_kwargs["quantization_mode"] = quantization_mode
+
     if is_uniform and tok_per_doc > 0:
         flat = torch.cat(shard_embs, dim=0)
         D_gpu = flat.view(n_docs, tok_per_doc, dim).to(device, dtype=torch.float16)
@@ -156,6 +238,7 @@ def score_all_docs_topk(
             queries_embeddings=q,
             documents_embeddings=D_gpu,
             documents_mask=None,
+            **quant_kwargs,
         ).squeeze(0)
     else:
         lengths: List[int] = []
@@ -179,6 +262,7 @@ def score_all_docs_topk(
             queries_embeddings=q,
             documents_embeddings=D_gpu,
             documents_mask=M_gpu,
+            **quant_kwargs,
         ).squeeze(0)
 
     final_k = min(k, n_docs)
@@ -233,6 +317,20 @@ class PreloadedGpuCorpus:
             torch.cuda.synchronize()
         logger.info("PreloadedGpuCorpus ready on %s", device)
 
+    def refresh(self, doc_vecs: list, doc_ids: List[int]) -> None:
+        """Rebuild GPU tensors from a new sealed snapshot."""
+        n_docs = len(doc_vecs)
+        max_tok = max(v.shape[0] for v in doc_vecs) if doc_vecs else 1
+        self.D = torch.zeros((n_docs, max_tok, self.dim), dtype=self.D.dtype, device=self._device)
+        self.M = torch.zeros((n_docs, max_tok), dtype=torch.float32, device=self._device)
+        self.doc_ids = list(doc_ids)
+        self.doc_id_to_idx = {did: i for i, did in enumerate(doc_ids)}
+        self.max_tok = max_tok
+        for i, v in enumerate(doc_vecs):
+            tok = v.shape[0]
+            self.D[i, :tok] = torch.from_numpy(v).to(self.D.dtype)
+            self.M[i, :tok] = 1.0
+
     def score_candidates(
         self,
         query: torch.Tensor,
@@ -244,13 +342,15 @@ class PreloadedGpuCorpus:
         if q.dim() == 2:
             q = q.unsqueeze(0)
 
+        valid_ids = [did for did in candidate_doc_ids if did in self.doc_id_to_idx]
+        if not valid_ids:
+            return [], []
+
         indices = torch.tensor(
-            [self.doc_id_to_idx[did] for did in candidate_doc_ids if did in self.doc_id_to_idx],
+            [self.doc_id_to_idx[did] for did in valid_ids],
             dtype=torch.long,
             device=self._device,
         )
-        if indices.numel() == 0:
-            return [], []
 
         D_slice = self.D[indices]
         M_slice = self.M[indices]
@@ -267,17 +367,16 @@ class PreloadedGpuCorpus:
             documents_mask=M_slice if has_padding else None,
         ).squeeze(0)
 
-        n = indices.shape[0]
+        n = len(valid_ids)
         final_k = min(k, n)
         top_sc, top_idx = scores.topk(final_k)
 
-        cand_ids = [candidate_doc_ids[i] for i in range(n)]
         idx_list = top_idx.cpu().tolist()
-        return [cand_ids[i] for i in idx_list], top_sc.cpu().tolist()
+        return [valid_ids[i] for i in idx_list], top_sc.cpu().tolist()
 
     @staticmethod
     def fits_on_gpu(n_docs: int, max_tok: int, dim: int, dtype=torch.float16) -> bool:
-        bytes_needed = n_docs * max_tok * dim * (2 if dtype == torch.float16 else 4)
+        bytes_needed = n_docs * max_tok * dim * dtype.itemsize
         bytes_needed += n_docs * max_tok * 4  # mask
         if not torch.cuda.is_available():
             return False
@@ -328,6 +427,10 @@ def score_roq4_topk(
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device.type == "cpu" if isinstance(device, torch.device) else device == "cpu":
+        logger.warning("ROQ4 scoring requires CUDA; falling back to empty results")
+        return [], []
 
     qc = query_codes.to(device)
     qm = query_meta.to(device)
@@ -494,6 +597,10 @@ def brute_force_maxsim(
 ) -> Tuple[List[int], List[float]]:
     """Brute-force MaxSim over an entire corpus for ground-truth computation."""
     import numpy as np
+
+    if not doc_ids:
+        return [], []
+
     maxsim = _get_maxsim()
 
     if isinstance(query, np.ndarray):

@@ -58,8 +58,8 @@ class TestCompaction:
 
         task = CompactionTask(mgr)
         stats = task.run()
-        assert stats["flushed_docs"] == 5
-        assert mgr._memtable.size == 0
+        assert stats["memtable_docs_at_sync"] == 5
+        assert mgr._memtable.size == 5
         mgr.close()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

@@ -12,9 +12,10 @@ from .config import (
     StorageLayout,
     TransferMode,
 )
-from .manager import ShardSegmentManager
+from .manager import ShardEngineConfig, ShardSegmentManager
 
 __all__ = [
+    "ShardEngineConfig",
     "ShardSegmentManager",
     "AnnBackend",
     "BuildConfig",

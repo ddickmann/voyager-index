@@ -41,8 +41,7 @@ class MemTable:
                payload: Optional[dict] = None) -> None:
         with self._lock:
             self._docs[doc_id] = vectors.astype(np.float32)
-            if payload:
-                self._payloads[doc_id] = payload
+            self._payloads[doc_id] = payload or {}
             self._tombstones.discard(doc_id)
 
     def delete(self, doc_id: int) -> None:
@@ -59,8 +58,30 @@ class MemTable:
         with self._lock:
             return doc_id in self._tombstones
 
+    def tombstones_snapshot(self) -> Set[int]:
+        """Return a copy of current tombstone set."""
+        with self._lock:
+            return set(self._tombstones)
+
+    def upsert_payload(self, doc_id: int, payload: dict) -> None:
+        """Update just the payload for a doc (vector unchanged).
+
+        If *doc_id* has no vectors in the memtable this is still valid:
+        the payload update applies to a sealed-only document.
+        """
+        with self._lock:
+            if doc_id not in self._docs:
+                logger.debug("upsert_payload for sealed-only doc_id=%d", doc_id)
+            self._payloads[doc_id] = payload
+
     def search(self, query: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
-        """Brute-force MaxSim over memtable documents."""
+        """Brute-force MaxSim over memtable documents.
+
+        The lock is held only while snapshotting doc IDs and vectors.
+        ``brute_force_maxsim`` runs outside the lock, so results reflect
+        a consistent point-in-time snapshot but may be stale by the time
+        they are returned.
+        """
         with self._lock:
             if not self._docs:
                 return []
@@ -85,6 +106,14 @@ class MemTable:
             return docs, payloads, tombstones
 
     def snapshot(self) -> Tuple[Dict[int, np.ndarray], Dict[int, dict], Set[int]]:
-        """Return a copy of current state without draining."""
+        """Return an independent copy of current state without draining.
+
+        Payload dicts are shallow-copied per key so callers cannot mutate
+        the memtable's internal state.
+        """
         with self._lock:
-            return dict(self._docs), dict(self._payloads), set(self._tombstones)
+            return (
+                dict(self._docs),
+                {k: dict(v) for k, v in self._payloads.items()},
+                set(self._tombstones),
+            )

@@ -20,13 +20,19 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.routes import router
 from .api.service import SearchService
+from .middleware import (
+    ConcurrencyLimitMiddleware,
+    RateLimitMiddleware,
+    RequestIdMiddleware,
+    structured_error_response,
+)
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -144,7 +150,12 @@ curl -X POST http://localhost:8080/collections/docs/search \\
     )
     app.state.index_dir = index_dir
 
-    # CORS middleware
+    # --- Middleware stack (outermost first) ---
+    # Request-ID must be outermost so all downstream middleware can read it.
+    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(ConcurrencyLimitMiddleware)
+
     if enable_cors:
         allowed_origins = os.environ.get(
             "VOYAGER_CORS_ORIGINS",
@@ -154,20 +165,33 @@ curl -X POST http://localhost:8080/collections/docs/search \\
             CORSMiddleware,
             allow_origins=[origin.strip() for origin in allowed_origins if origin.strip()],
             allow_credentials=False,
-            allow_methods=["GET", "POST", "DELETE"],
-            allow_headers=["Content-Type", "Authorization"],
+            allow_methods=["GET", "POST", "PUT", "DELETE"],
+            allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
         )
 
-    # Exception handler
+    # --- Structured error handlers ---
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        rid = getattr(request.state, "request_id", "") if hasattr(request, "state") else ""
+        return structured_error_response(
+            422,
+            code="validation_error",
+            message="Request validation failed",
+            details={"errors": exc.errors()},
+            request_id=rid,
+        )
+
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        logger.error(f"Unhandled error: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal server error"},
+        logger.error("Unhandled error: %s", exc, exc_info=True)
+        rid = getattr(request.state, "request_id", "") if hasattr(request, "state") else ""
+        return structured_error_response(
+            500,
+            code="internal_error",
+            message="Internal server error",
+            request_id=rid,
         )
 
-    # Include routes
     app.include_router(router, prefix="")
 
     return app
@@ -178,12 +202,9 @@ def main() -> None:
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", 8080))
-    workers = int(os.environ.get("WORKERS", 1))
-    if workers != 1:
-        raise SystemExit(
-            "WORKERS>1 is not supported by the voyager-index reference API. "
-            "Run a single worker until shared-state coordination is implemented."
-        )
+    workers = min(int(os.environ.get("WORKERS", 1)), 4)
+    if workers < 1:
+        workers = 1
 
     uvicorn.run(
         "voyager_index.server:app",

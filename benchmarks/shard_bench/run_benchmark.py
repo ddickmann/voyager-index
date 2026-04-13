@@ -185,6 +185,7 @@ def run_single_config(
     ground_truth: List[List[int]],
     dim: int,
     device: str = "cuda",
+    force_no_gpu_corpus: bool = False,
 ) -> dict:
     bcfg = cfg.build
     scfg = cfg.search
@@ -217,13 +218,15 @@ def run_single_config(
     n_eval = min(cfg.n_eval_queries, len(query_vecs), len(ground_truth))
     profiles: List[QueryProfile] = []
 
-    # Pre-load corpus to GPU if it fits (GEM pattern: zero-fetch at query time)
     gpu_corpus = None
-    max_tok_est = max((v.shape[0] for v in doc_vecs), default=1)
-    if PreloadedGpuCorpus.fits_on_gpu(len(doc_vecs), max_tok_est, dim):
-        gpu_corpus = PreloadedGpuCorpus(doc_vecs, doc_ids, dim, device=device)
+    if force_no_gpu_corpus:
+        log.info("GPU corpus DISABLED (force_no_gpu_corpus=True) — using shard fetch")
     else:
-        log.info("Corpus too large for GPU (%d docs × %d tok) — using shard fetch", len(doc_vecs), max_tok_est)
+        max_tok_est = max((v.shape[0] for v in doc_vecs), default=1)
+        if PreloadedGpuCorpus.fits_on_gpu(len(doc_vecs), max_tok_est, dim):
+            gpu_corpus = PreloadedGpuCorpus(doc_vecs, doc_ids, dim, device=device)
+        else:
+            log.info("Corpus too large for GPU (%d docs × %d tok) — using shard fetch", len(doc_vecs), max_tok_est)
 
     log.info(
         "Running %d queries: router=%s top_shards=%s k_candidates=%s max_docs=%d transfer=%s compression=%s layout=%s gpu_corpus=%s",
@@ -386,6 +389,7 @@ def main() -> None:
     parser.add_argument("--pool-factor", type=int, default=2)
     parser.add_argument("--use-colbandit", action="store_true")
     parser.add_argument("--k-candidates", type=int, default=2000)
+    parser.add_argument("--no-gpu-corpus", action="store_true", help="Force shard-fetch path, skip GPU corpus preloading")
     args = parser.parse_args()
 
     device = args.device
@@ -480,6 +484,7 @@ def main() -> None:
                                 result = run_single_config(
                                     cfg, query_vecs, doc_vecs, doc_ids,
                                     ground_truth, dim, device=device,
+                                    force_no_gpu_corpus=args.no_gpu_corpus,
                                 )
                                 result["pipeline"] = f"shard_routed_{bcfg.router_type.value}"
                                 all_results.append(result)

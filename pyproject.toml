@@ -69,6 +69,10 @@ server = [
 gpu = [
   "triton>=2.1,<4",
 ]
+shard = [
+  "faiss-cpu>=1.7",
+  "safetensors>=0.3",
+]
 hnswlib-engine = [
   "hnswlib>=0.8,<1",
 ]

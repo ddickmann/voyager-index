@@ -133,7 +133,7 @@ jobs:
           python -m pip install -e ".[server,multimodal,dev,native-hnsw-build,native-gem-build]"
           python -m pip install ./src/kernels/hnsw_indexer
           python -m pip install ./src/kernels/gem_router
-          python -m pip install ./src/kernels/gem_index
+          python -m pip install ./research/gem_index || true
       - name: Run OSS foundation tests
         run: pytest tests/ -v --tb=short --cov=voyager_index --cov-fail-under=30
       - name: Run benchmark smoke
@@ -165,9 +165,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -e ".[server,multimodal,dev,native-build,native-gem-build]"
-          python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver ./src/kernels/gem_router ./src/kernels/gem_index
+          python -m pip install ./src/kernels/hnsw_indexer ./src/kernels/knapsack_solver ./src/kernels/gem_router ./research/gem_index
       - name: Run gem_index Rust tests
-        run: cargo test --manifest-path src/kernels/gem_index/Cargo.toml
+        run: cargo test --manifest-path research/gem_index/Cargo.toml
       - name: Smoke import native packages
         run: |
           python -c "import latence_hnsw, latence_solver, latence_gem_router, latence_gem_index; from latence_solver import TabuSearchSolver; assert hasattr(latence_hnsw, 'HnswSegment'); assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; assert hasattr(latence_gem_router, 'PyGemRouter'); assert hasattr(latence_gem_index, 'GemSegment'); print(latence_hnsw.__file__); print(latence_solver.version()); print(latence_gem_router.__file__); print(latence_gem_index.__file__)"
@@ -211,7 +211,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -e ".[dev,native-gem-build]"
-          python -m pip install ./src/kernels/gem_router ./src/kernels/gem_index
+          python -m pip install ./src/kernels/gem_router ./research/gem_index
       - name: Run promotion gates
         run: python benchmarks/promotion_gates.py
       - name: Run unified eval harness (synthetic, 500 docs)
@@ -230,7 +230,7 @@ jobs:
           "
       - name: Run Rust clippy
         run: |
-          cargo clippy --manifest-path src/kernels/gem_index/Cargo.toml -- -D warnings 2>&1 || true
+          cargo clippy --manifest-path research/gem_index/Cargo.toml -- -D warnings 2>&1 || true
           cargo clippy --manifest-path src/kernels/gem_router/Cargo.toml -- -D warnings 2>&1 || true
 
   graph-qa-quick:
@@ -246,7 +246,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -e ".[dev,native-gem-build]"
-          python -m pip install ./src/kernels/gem_router ./src/kernels/gem_index
+          python -m pip install ./src/kernels/gem_router ./research/gem_index
       - name: Run Graph QA quick gates
         run: pytest tests/test_graph_qa_gates.py -m graph_qa_quick -v --tb=short
       - name: Upload QA artifacts
@@ -271,14 +271,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install -e ".[server,dev]"
-          python -m pip install faiss-cpu
+          python -m pip install -e ".[server,dev,shard]"
       - name: Run shard engine unit tests
         run: |
           pytest tests/test_shard_engine.py tests/test_shard_engine_api.py \
                  tests/test_shard_crud_wal.py tests/test_shard_advanced.py \
                  tests/test_hybrid_shard.py tests/test_shard_roq4.py \
-                 tests/test_shard_http_api.py \
+                 tests/test_shard_http_api.py tests/test_shard_hardening.py \
                  -v --tb=short
 
   docker-smoke:

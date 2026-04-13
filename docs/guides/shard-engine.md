@@ -44,11 +44,11 @@ idx.add(embeddings, ids=list(range(len(embeddings))),
 # Search
 results = idx.search(query_vectors, k=10)
 for r in results:
-    print(f"  doc {r.id}  score={r.score:.4f}")
+    print(f"  doc {r.doc_id}  score={r.score:.4f}")
 
 # CRUD
 idx.delete([0, 1])
-idx.upsert(new_vecs, ids=[0, 1], payloads=[{"title": "updated"}, ...])
+idx.upsert(vectors, ids=[0, 1], payloads=[{"title": "updated"}, ...])
 
 # Persistence
 idx.close()
@@ -112,12 +112,14 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 
 The shard engine uses the same WAL + memtable pattern as the GEM engine:
 
-1. **Write-Ahead Log**: every insert/delete/upsert is logged to a binary WAL
-   before being applied to the in-memory memtable
+1. **Write-Ahead Log**: every insert/delete/upsert/update_payload is logged
+   to a binary WAL before being applied to the in-memory memtable.
+   The `UPDATE_PAYLOAD` op records payload-only changes without vectors.
 2. **MemTable**: in-memory buffer for mutable documents, searched alongside
    sealed shards via score merging
-3. **Flush / Compaction**: `flush()` drains the memtable and truncates the WAL.
-   The `CompactionScheduler` runs this periodically in a background thread.
+3. **Flush / Compaction**: `flush()` syncs the WAL to disk. The memtable is
+   retained for crash safety (real L0-to-sealed merge is planned but not yet
+   implemented). The `CompactionScheduler` runs WAL checkpoints periodically.
 4. **Crash Recovery**: on `load()`, WAL entries are replayed into a fresh
    memtable, restoring all uncommitted mutations.
 
@@ -132,6 +134,9 @@ All admin endpoints require a `shard` collection:
 | `/collections/{name}/shards/{id}` | GET | Detail for a specific shard |
 | `/collections/{name}/wal/status` | GET | WAL entry count, memtable size, tombstone count |
 | `/collections/{name}/checkpoint` | POST | Force WAL checkpoint (flush + truncate) |
+| `/collections/{name}/scroll` | POST | Paginated iteration over document IDs |
+| `/collections/{name}/retrieve` | POST | Retrieve specific documents by ID |
+| `/collections/{name}/search/batch` | POST | Batch search over multiple queries |
 
 ## Hybrid Search
 
@@ -148,7 +153,7 @@ hybrid = HybridSearchManager(
 )
 ```
 
-Results are fused via Reciprocal Rank Fusion (RRF) or the Tabu Search solver.
+Dense and sparse results are returned separately. RRF scores are computed internally for the optional Tabu Search solver refinement step (`refine()`).
 
 ## GPU Memory and Auto-Tiering
 
@@ -174,7 +179,7 @@ Example: 100K docs × 128 tokens × 128 dim = ~3.3 GB.
 | Search method | Graph traversal + qCH proxy | ANN routing + exact MaxSim |
 | Build time (100K) | Minutes | Seconds |
 | Search latency | Sub-linear in N | Linear in candidates (capped) |
-| Dependencies | Rust crate required | Pure Python |
+| Dependencies | Rust crate required | Python + native deps (PyTorch, FAISS, safetensors, Triton) |
 | Scale sweet spot | 100K–10M+ | 10K–500K |
 | WAL + CRUD | Yes | Yes |
 | ROQ 4-bit | Yes | Yes |

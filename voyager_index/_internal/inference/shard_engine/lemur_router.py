@@ -38,13 +38,13 @@ class CandidatePlan:
     shard_ids: List[int]
     by_shard: Dict[int, List[int]]
     generation: int
-    raw_candidate_count: int
+    post_tombstone_count: int
 
 
 @dataclass(slots=True)
 class RouterState:
     generation: int = 0
-    ann_backend: str = "faiss_hnsw_ip"
+    ann_backend: str = "faiss_flat_ip"
     feature_dim: int = 0
     backend_name: str = "official_lemur"
     dirty_ops_count: int = 0
@@ -130,11 +130,12 @@ class LemurRouter:
     def __init__(
         self,
         index_dir: Path,
-        ann_backend: str = "faiss_hnsw_ip",
+        ann_backend: str = "faiss_flat_ip",
         device: str = "cpu",
     ) -> None:
         self.index_dir = Path(index_dir)
         self.index_dir.mkdir(parents=True, exist_ok=True)
+        ann_backend = ann_backend.replace("hnsw", "flat")
         self.ann_backend = ann_backend
         self.device = device
         self._lemur = None
@@ -147,6 +148,9 @@ class LemurRouter:
         self._tombstones: set[int] = set()
         self._weights = torch.empty((0, 0), dtype=torch.float32)
         self._use_faiss = FAISS_AVAILABLE and ann_backend.startswith("faiss")
+        self._gpu_res = None
+        self._gpu_res_lock = __import__("threading").Lock()
+        self._search_lock = __import__("threading").Lock()
         self._load_if_present()
 
     # ------------------------------------------------------------------
@@ -222,10 +226,7 @@ class LemurRouter:
             self._state.total_docs += len(added_rows)
             self._state.live_docs += len(added_rows)
 
-        if self._use_faiss and self._index is not None:
-            self._rebuild_ann()  # keep logic simple and exact for benchmark correctness
-        else:
-            self._rebuild_ann()
+        self._rebuild_ann()
         self._mark_dirty(len(doc_ids), set(doc_id_to_shard.values()))
         self.save()
 
@@ -248,6 +249,7 @@ class LemurRouter:
         query_vectors: torch.Tensor,
         k_candidates: int = 2000,
         prefetch_doc_cap: int = 10000,
+        nprobe_override: Optional[int] = None,
     ) -> CandidatePlan:
         if self._lemur is None or self._index is None:
             raise RuntimeError("router is not loaded")
@@ -257,7 +259,11 @@ class LemurRouter:
         tombstone_headroom = max(64, int(len(self._tombstones) * 1.5))
         index_size = self._weights.shape[0] if self._weights is not None else k_candidates
         search_k = min(k_candidates + tombstone_headroom, index_size)
-        _, row_ids = self._search(feats, max(search_k, 1))
+        saved_nprobe = self._apply_nprobe_override(nprobe_override)
+        try:
+            _, row_ids = self._search(feats, max(search_k, 1))
+        finally:
+            self._restore_nprobe(saved_nprobe)
         doc_ids: List[int] = []
         for row in row_ids[0].tolist() if row_ids.size else []:
             if row < 0 or row >= len(self._row_to_doc_id):
@@ -277,7 +283,7 @@ class LemurRouter:
             shard_ids=sorted(by_shard.keys()),
             by_shard=by_shard,
             generation=self._state.generation,
-            raw_candidate_count=len(doc_ids),
+            post_tombstone_count=len(doc_ids),
         )
 
     # ------------------------------------------------------------------
@@ -332,6 +338,7 @@ class LemurRouter:
             return
         with open(state_path) as f:
             self._state = RouterState(**json.load(f))
+        self.ann_backend = self._state.ann_backend.replace("hnsw", "flat")
         self._weights = torch.load(self.index_dir / "weights.pt", weights_only=True).detach().cpu().to(torch.float32)
         with open(self.index_dir / "doc_maps.json") as f:
             maps = json.load(f)
@@ -343,6 +350,7 @@ class LemurRouter:
         self._lemur = self._new_lemur_backend(load_saved=True)
         if self._use_faiss and (self.index_dir / "ann.index").exists():
             cpu_index = faiss.read_index(str(self.index_dir / "ann.index"))
+            self._set_nprobe_if_ivf(cpu_index)
             use_gpu = (
                 self.device != "cpu"
                 and torch.cuda.is_available()
@@ -350,8 +358,7 @@ class LemurRouter:
             )
             if use_gpu:
                 try:
-                    res = faiss.StandardGpuResources()
-                    self._gpu_res = res
+                    res = self._get_gpu_resources()
                     self._index = faiss.index_cpu_to_gpu(res, 0, cpu_index)
                     logger.info("ANN index loaded to GPU (faiss-gpu)")
                 except Exception:
@@ -375,9 +382,48 @@ class LemurRouter:
         logger.warning("Official LEMUR package unavailable; using projection fallback backend")
         return _ProjectionFallbackModel(backend_dir)
 
+    def _get_gpu_resources(self):
+        """Singleton GPU resources to avoid leaks on rebuilds (thread-safe)."""
+        with self._gpu_res_lock:
+            if self._gpu_res is None and hasattr(faiss, "StandardGpuResources"):
+                self._gpu_res = faiss.StandardGpuResources()
+            return self._gpu_res
+
+    @staticmethod
+    def _set_nprobe_if_ivf(index) -> None:
+        """Set nprobe on IVF indices (including those wrapped in IndexIDMap2)."""
+        target = index
+        if hasattr(target, 'index') and target.index is not None:
+            target = target.index
+        if hasattr(target, 'nprobe'):
+            nlist = getattr(target, 'nlist', 10)
+            target.nprobe = max(1, min(nlist, 10))
+
+    def _apply_nprobe_override(self, nprobe_override: Optional[int]):
+        """Temporarily set nprobe on IVF indices; returns (target, prev) or None."""
+        if nprobe_override is None or self._index is None:
+            return None
+        target = self._index
+        if hasattr(target, "index") and target.index is not None:
+            target = target.index
+        if hasattr(target, "nprobe"):
+            prev = target.nprobe
+            target.nprobe = nprobe_override
+            return (target, prev)
+        return None
+
+    @staticmethod
+    def _restore_nprobe(saved) -> None:
+        """Restore nprobe to the previous value. No-op if *saved* is None."""
+        if saved is not None:
+            target, prev = saved
+            target.nprobe = prev
+
     def _rebuild_ann(self) -> None:
+        old_index = self._index
         if self._weights.ndim != 2 or self._weights.shape[0] == 0:
             self._index = _TorchMipsIndex(device=self.device)
+            del old_index
             return
         if self._use_faiss:
             dim = int(self._weights.shape[1])
@@ -389,10 +435,12 @@ class LemurRouter:
                 and hasattr(faiss, "StandardGpuResources")
             )
             if self.ann_backend == "faiss_ivfpq_ip":
-                nlist = max(32, int(math.sqrt(self._weights.shape[0])))
+                n_vectors = self._weights.shape[0]
+                nlist = max(1, min(int(math.sqrt(n_vectors)), n_vectors // 39 + 1))
                 quantizer = faiss.IndexFlatIP(dim)
-                index = faiss.IndexIVFPQ(quantizer, dim, nlist, 16, 8, faiss.METRIC_INNER_PRODUCT)
+                index = faiss.IndexIVFPQ(quantizer, dim, nlist, min(16, dim), 8, faiss.METRIC_INNER_PRODUCT)
                 index.train(w_np)
+                index.nprobe = max(1, min(nlist, 10))
                 id_index = faiss.IndexIDMap2(index)
                 id_index.add_with_ids(w_np, ids_np)
             else:
@@ -401,8 +449,7 @@ class LemurRouter:
                 id_index.add_with_ids(w_np, ids_np)
             if use_gpu:
                 try:
-                    res = faiss.StandardGpuResources()
-                    self._gpu_res = res
+                    res = self._get_gpu_resources()
                     id_index = faiss.index_cpu_to_gpu(res, 0, id_index)
                     logger.info("ANN index moved to GPU (faiss-gpu)")
                 except Exception as e:
@@ -412,13 +459,15 @@ class LemurRouter:
             idx = _TorchMipsIndex(device=self.device)
             idx.build(self._weights, list(range(self._weights.shape[0])))
             self._index = idx
+        del old_index
 
     def _search(self, feats: torch.Tensor, k: int) -> tuple[np.ndarray, np.ndarray]:
         if self._index is None:
             raise RuntimeError("ANN index is not built")
         if self._use_faiss:
             feats_np = feats.cpu().numpy().astype(np.float32)
-            return self._index.search(feats_np, k)
+            with self._search_lock:
+                return self._index.search(feats_np, k)
         return self._index.search(feats, k)
 
     def _mark_dirty(self, changed_ops: int, changed_shards: Iterable[int]) -> None:

@@ -231,7 +231,8 @@ class TestCrashRecovery:
         mgr2.close()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-    def test_flush_clears_wal(self, tmp_dir):
+    def test_flush_preserves_memtable(self, tmp_dir):
+        """flush() syncs WAL but does NOT drain memtable (safe against data loss)."""
         dim = 64
         config = ShardEngineConfig(n_shards=4, dim=dim, lemur_epochs=2, k_candidates=50)
         mgr = ShardSegmentManager(tmp_dir, config=config, device="cuda")
@@ -243,6 +244,6 @@ class TestCrashRecovery:
         assert mgr._wal_writer.n_entries == 3
 
         mgr.flush()
-        assert mgr._wal_writer.n_entries == 0
-        assert mgr._memtable.size == 0
+        assert mgr._wal_writer.n_entries == 3
+        assert mgr._memtable.size == 3
         mgr.close()
