@@ -25,38 +25,24 @@ install-system-deps: ## Install system packages (apt/dnf/brew)
 
 # ── Native crates ────────────────────────────────────────────────────
 
-build-native: ## Build all three Rust/PyO3 native crates
+build-native: ## Build the supported Rust/PyO3 native crate
 	python -m pip install maturin
-	python -m pip install ./src/kernels/hnsw_indexer
 	python -m pip install ./src/kernels/knapsack_solver
-	python -m pip install ./src/kernels/gem_router
 
 install-native: build-native ## Alias for build-native
 
-build-hnsw: ## Build only the HNSW indexer crate
-	python -m pip install ./src/kernels/hnsw_indexer
-
 build-solver: ## Build only the knapsack solver crate
 	python -m pip install ./src/kernels/knapsack_solver
-
-build-gem-router: ## Build only the GEM router crate
-	python -m pip install ./src/kernels/gem_router
 
 # ── Testing ──────────────────────────────────────────────────────────
 
 test: test-rust test-python ## Run all tests
 
-test-rust: ## Run Rust unit tests for all crates
-	cd src/kernels/gem_router && cargo test
-	cd src/kernels/hnsw_indexer && cargo test
+test-rust: ## Run Rust unit tests for supported crates
 	cd src/kernels/knapsack_solver && cargo test
 
 test-python: ## Run Python test suite
 	python -m pytest tests/ -v
-
-test-gem: ## Run GEM router tests only
-	cd src/kernels/gem_router && cargo test
-	python -m pytest tests/test_gem_router.py -v
 
 # ── Maintenance ──────────────────────────────────────────────────────
 
@@ -66,16 +52,14 @@ lint: ## Run linters
 
 clean: ## Remove build artifacts
 	rm -rf build/ dist/ *.egg-info
-	rm -rf src/kernels/gem_router/target
-	rm -rf src/kernels/hnsw_indexer/target
 	rm -rf src/kernels/knapsack_solver/target
+	rm -rf src/kernels/shard_engine/target
+	rm -rf research/gem_index/target
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 verify: ## Verify all native modules are importable
 	python -c "import voyager_index; print('voyager_index OK')"
-	python -c "import latence_hnsw; print('latence_hnsw OK')"
 	python -c "import latence_solver; print('latence_solver OK')"
-	python -c "import latence_gem_router; print('latence_gem_router OK')"
 
-benchmark: ## Run GEM router benchmark
-	python tools/benchmarks/benchmark_audit.py
+benchmark: ## Run the supported benchmark smoke
+	python benchmarks/oss_reference_benchmark.py --device cpu --points 32 --top-k 5

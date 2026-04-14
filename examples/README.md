@@ -43,4 +43,4 @@ Use `README.md` for the full install matrix and `http://127.0.0.1:8080/docs` for
 - `examples/vllm_pooling_provider.py`
 
 This does not require the server, but it does assume you understand the
-multimodal provider seam documented in `MULTIMODAL_FOUNDATION.md`.
+multimodal provider seam documented in `internal/contracts/MULTIMODAL_FOUNDATION.md`.

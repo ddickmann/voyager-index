@@ -1,263 +1,164 @@
-# Scaling GEM Index to Millions of Documents
+# Scaling Shard Collections
 
-This guide explains how the GEM index scales, what the current limits are,
-and the concrete engineering roadmap to support million-scale and beyond.
+This guide covers the supported shard-first scaling path in `voyager-index`.
+Use it when you need to choose between CPU exact serving, streamed GPU serving,
+or a GPU-corpus deployment on a single machine.
 
-## Current Architecture (v1.0)
+## What scales
 
-The GEM index is a graph-based multi-vector retrieval system.  Each document
-is represented by multiple token-level vectors (e.g., 128 vectors from
-ColBERT-Zero, or 1024 patch vectors from ColPali).  The index stores:
+The shard engine scales by splitting the corpus into independent shard files and
+then combining:
 
-1. **Codebook** — a two-stage quantizer mapping each token vector to a
-   centroid ID (u16).  Size: `O(n_fine * dim + n_fine^2)`.
-2. **Flat codes** — one u16 centroid ID per token.  Size: `2 * n_tokens` bytes.
-3. **Document profiles** — per-document centroid ID lists and routing info.
-   Size: `4 * n_tokens + 4 * n_docs * ctop_r` bytes.
-4. **Navigable graph** — CSR-compressed adjacency lists, one node per document.
-   Size: `~4 * n_docs * max_degree` bytes.
-5. **Raw vectors (optional)** — full float32 vectors for exact MaxSim
-   reranking.  Size: `4 * n_tokens * dim` bytes.
+- LEMUR routing to choose a small candidate set
+- exact MaxSim scoring on CPU or Triton on GPU
+- optional ColBANDIT reranking
+- optional dense+BM25 hybrid fusion for dense collections
+- WAL-backed mutations and restart-safe reloads
 
-### Memory Formulas
+The key scaling knobs are about candidate control and memory movement, not about
+switching to a different engine.
 
-The **persistent index** (what stays in RAM after build, without raw vectors):
+## Pick a deployment shape
 
-```
-index_bytes ≈ 6 * n_tokens              # flat_codes + centroid_ids
-            + 4 * n_docs * max_degree    # graph
-            + 4 * n_fine^2               # codebook pairwise distances
-            + 4 * n_fine * dim           # codebook centroids
-            + 24 * n_docs               # doc_ids + offsets
-```
+### CPU-first exact serving
 
-The **build-time peak** (zero-copy builder, v1.1+):
+Use this when:
 
-```
-build_bytes ≈ 4 * n_tokens * dim        # Python float32 array (zero-copy, no Rust copy)
-            + index_bytes               # structures being constructed
-            + ~0.5 * n_docs * max_degree # NN-Descent working memory (batched)
-```
+- the machine has no CUDA device
+- latency is acceptable with CPU MaxSim
+- you want the simplest operational path
 
-### Scaling Table
+Recommended defaults:
 
-Assuming ColBERT-style embeddings (~128 tokens/doc, dim=128), n_fine=2048,
-max_degree=48:
+- `router_device="cpu"`
+- `quantization_mode="none"` for quality-first exact serving
+- `n_full_scores` sized to the exact-stage budget you can afford
 
-| Corpus Size | Tokens     | Persistent Index | Build-Time RAM | Status     |
-|-------------|------------|------------------|----------------|------------|
-| 7,500       | 950K       | ~9 MB            | ~1 GB          | Verified   |
-| 75,000      | 9.5M       | ~91 MB           | ~8 GB          | Verified   |
-| 100,000     | 13.3M      | ~127 MB          | ~10 GB         | Verified   |
-| 1,000,000   | 128M       | ~1.2 GB          | ~68 GB         | v1.2       |
-| 10,000,000  | 1.28B      | ~12 GB           | ~660 GB        | v2.0       |
+### Streamed GPU serving
 
-The persistent index is remarkably compact: **~1.2 GB for 1M documents**.
-The bottleneck is entirely build-time memory — the monolithic builder must
-hold all float32 vectors in RAM simultaneously.
+Use this when:
 
-## Hard Limits
+- the corpus does not fit comfortably in VRAM
+- you still want Triton MaxSim for the exact stage
+- CPU to GPU transfer cost is acceptable
 
-- **Document IDs**: stored as `u64` — no practical limit.
-- **Token centroid codes**: stored as `u16` — max 65,535 fine centroids.
-  Recommended: `n_fine = sqrt(n_tokens)`, so this supports up to ~4.3B tokens
-  (~33M docs at 128 tokens/doc) before saturating.
-- **Document count in graph**: stored as `u32` node IDs — max ~4.3B documents.
-- **Posting list offsets**: stored as `u32` — max ~4.3B entries.
+Recommended defaults:
 
-None of these limits are a concern below 10M documents.
+- `transfer_mode="pinned"` or `transfer_mode="double_buffered"`
+- `router_device="cpu"` unless the router itself becomes the bottleneck
+- `quantization_mode="int8"`, `fp8`, or `roq4` only after validating recall
 
-## Recommended Hyperparameters by Corpus Size
+### GPU-corpus serving
 
-| Parameter          | < 10K docs | 10K-100K   | 100K-1M    | > 1M        |
-|--------------------|------------|------------|------------|-------------|
-| `n_fine`           | 256        | 1024-2048  | 2048-4096  | 4096-8192   |
-| `n_coarse`         | 16-32      | 64-128     | 128-256    | 256-512     |
-| `max_degree`       | 32         | 32-48      | 48-64      | 64          |
-| `ef_construction`  | 200        | 200-400    | 400        | 400-600     |
-| `ctop_r`           | 2-3        | 3-4        | 4          | 4-6         |
-| `max_kmeans_iter`  | 10         | 15-20      | 20         | 20          |
+Use this when:
 
-**Rule of thumb for n_fine**: `n_fine ≈ sqrt(total_tokens)`.  The auto-tuner
-applies this when `n_fine=0` is passed to `build()`.
+- the full rerank frontier or corpus fits in VRAM
+- you want the highest query throughput on one box
+- you can dedicate GPU memory to retrieval
 
-**Rule of thumb for n_coarse**: `n_coarse ≈ sqrt(n_docs)`.  The auto-tuner
-applies this when `n_coarse=0` is passed to `build()`.  This is critical for
-build speed: the graph construction algorithm (NN-Descent) runs per-cluster,
-and its cost is roughly O(cluster_size^2).  Doubling `n_coarse` halves the
-largest cluster size, giving ~4x faster graph construction.
+Recommended defaults:
 
-## Production Configuration
+- increase `gpu_corpus_rerank_topn`
+- keep request payloads base64-encoded
+- use multi-worker serving only if the machine still has enough headroom
 
-For maximum quality at scale, use the full acceleration stack:
+## The most important knobs
+
+### Collection layout
+
+- `n_shards`: more shards reduce per-shard work but increase merge overhead
+- `k_candidates`: router shortlist size before exact scoring
+- `max_docs_exact`: hard cap on the exact stage
+- `n_full_scores`: proxy shortlist sent to exact full scoring
+
+### Compute and transfer
+
+- `router_device`: where LEMUR runs
+- `transfer_mode`: `pageable`, `pinned`, or `double_buffered`
+- `quantization_mode`: `none`, `int8`, `fp8`, or `roq4`
+- `gpu_corpus_rerank_topn`: how much of the frontier stays on GPU
+
+### Quality levers
+
+- `use_colbandit`: enable ColBANDIT in the shard rerank path
+- `n_centroid_approx`: use centroid approximation before exact scoring
+- `variable_length_strategy`: tune batching for uneven token counts
+
+## Practical starting points
+
+### Small to mid-size shard corpus
+
+Start with:
 
 ```python
-seg.build(
-    vectors, doc_ids, offsets,
-    n_fine=0,             # auto: sqrt(n_tokens), clamped [64, 2048]
-    n_coarse=0,           # auto: sqrt(n_docs), clamped [16, 1024]
-    max_degree=48,
-    ef_construction=400,
-    ctop_r=4,
-    use_emd=False,        # qCH proxy for construction (fast)
-    dual_graph=True,      # GEM paper Algorithm 1
-    store_raw_vectors=False,  # save memory; use GPU reranking instead
+from voyager_index import Index
+
+idx = Index(
+    "/data/my-index",
+    dim=128,
+    engine="shard",
+    n_shards=128,
+    k_candidates=2000,
+    max_docs_exact=8000,
+    n_full_scores=2048,
+    router_device="cpu",
 )
 ```
 
-For search with GPU-accelerated reranking:
+### GPU-scored collection
+
+Start with:
 
 ```python
-# 1. Proxy search on graph (CPU)
-candidates = seg.search(query_vecs, k=100, ef=2000, n_probes=8)
-
-# 2. GPU MaxSim reranking (Triton kernel)
-from voyager_index.kernels.triton_maxsim import fast_colbert_scores
-reranked = rerank_with_triton(candidates, query_vecs, doc_vectors)
+idx = Index(
+    "/data/my-index",
+    dim=128,
+    engine="shard",
+    n_shards=256,
+    k_candidates=2000,
+    max_docs_exact=10000,
+    n_full_scores=4096,
+    transfer_mode="pinned",
+    quantization_mode="int8",
+    use_colbandit=True,
+    router_device="cpu",
+)
 ```
 
-For storage-efficient deployment, ROQ 4-bit quantization reduces raw vector
-storage by 8x while maintaining > 99% of MaxSim fidelity.
+## Multi-worker guidance
 
----
+For the reference API on a single machine:
 
-## Roadmap: Scaling Beyond 100K
+- start with `WORKERS=4`
+- move to `WORKERS=8` only after checking CPU saturation, IO pressure, and GPU memory contention
+- keep every worker on the same `VOYAGER_INDEX_PATH`
 
-### v1.0 (Current Release)
+Mutations remain durable because the server coordinates collection revisions and
+WAL-backed writes across workers on the same host.
 
-Monolithic in-memory build.  Verified at 75K documents (9.5M tokens) with
-aggressive hyperparameters on a 25 GB container.
+## Mutation and recovery posture
 
-Key optimizations shipped:
-- In-place L2 normalization (avoids 6.8 GB copy during codebook training)
-- Reusable buffer in fine k-means (eliminates ~5 GB RSS bloat from glibc)
-- Memory-aware evaluation pipeline with float16 storage and batched GPU
-  ground truth
+Scaling is not just query throughput. The production path also keeps:
 
-### v1.1 — Zero-Copy Build (Next Patch)
+- WAL-backed CRUD mutations
+- collection reload and readiness reporting after restart
+- worker-visible mutation results
+- deletion and upsert visibility across service instances
 
-**Goal**: Cut build-time RAM in half by eliminating the Rust vector copy.
+If you are tuning aggressively, validate both latency and restart behavior on
+your real collection shape.
 
-Currently, `seg.build()` copies all float32 vectors from Python (numpy) into
-a Rust-owned `Vec<f32>`.  Both copies coexist during the entire build.
-By borrowing the numpy buffer directly via a raw pointer, the Rust side
-operates on the same memory without allocating a second copy.
+## Benchmark honestly
 
-| Metric              | v1.0           | v1.1          |
-|---------------------|----------------|---------------|
-| 75K build RAM       | ~10 GB         | ~5 GB         |
-| 100K build RAM      | ~14 GB         | ~7 GB         |
-| 1M build RAM        | ~131 GB        | ~66 GB        |
+Use `docs/benchmarks.md` for the public benchmark story and
+`docs/guides/max-performance-reference-api.md` for deployment guidance.
 
-This is a single-file change in `lib.rs` (replace `.to_vec()` with unsafe
-borrow when `store_raw_vectors=False`).  The numpy array is immutable during
-the build call, so this is sound.
+When testing a new profile, capture at least:
 
-### v1.2 — Streaming Build (Next Minor Release)
+- recall or ranking parity versus your exact baseline
+- p50, p95, and p99 latency
+- QPS at the target worker count
+- CPU RAM and GPU VRAM use
 
-**Goal**: Build million-scale indexes with < 5 GB working memory.
-
-The key insight: the persistent index does not store raw vectors.  It only
-needs centroid codes (u16 per token) and graph adjacency.  Therefore, we do
-not need all vectors in RAM simultaneously.
-
-**Architecture:**
-
-```
-Phase 1: Train codebook on a random sample
-  - Load 1-5% of tokens (~1M from a 128M corpus) → ~0.5 GB
-  - Run two-stage k-means → codebook (~17 MB)
-
-Phase 2: Stream-assign centroid codes
-  - Process documents in batches of 10K-50K
-  - Per batch: load float32 vectors, assign codes, free vectors
-  - Accumulate FlatDocCodes and DocProfiles incrementally
-  - Peak memory: one batch of vectors (~0.5 GB) + accumulated codes
-
-Phase 3: Incremental graph construction
-  - Use MutableGemSegment (already implemented) for online insertion
-  - Insert documents one-by-one or in small batches
-  - Graph connectivity maintained via existing bridge repair
-  - No need for all vectors — qCH scoring uses centroid codes only
-
-Phase 4: Optional reranking index
-  - Quantize vectors to ROQ 4-bit on the fly during Phase 2
-  - Store quantized vectors to disk (memory-mapped at query time)
-  - 8x storage reduction: 1M docs → ~8 GB on disk instead of 64 GB
-```
-
-**Working set**: ~2-5 GB regardless of corpus size.  The only scaling
-factor is the accumulated code index (~6 bytes/token) and graph (~200
-bytes/doc).
-
-**What needs to be built:**
-- Codebook training on sampled subset (straightforward refactor)
-- Batched vector loading with streaming code assignment
-- Integration with `MutableGemSegment` for incremental graph insertion
-- Memory-mapped ROQ storage for query-time reranking
-
-### v2.0 — Sharded Index (Major Release)
-
-**Goal**: Support 10M+ documents across multiple index shards with
-query-time merging.
-
-**Architecture:**
-
-```
-                    ┌─────────────────┐
-                    │   Query Router   │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-        ┌──────────┐  ┌──────────┐  ┌──────────┐
-        │ Shard 0  │  │ Shard 1  │  │ Shard 2  │
-        │ 1M docs  │  │ 1M docs  │  │ 1M docs  │
-        └──────────┘  └──────────┘  └──────────┘
-              │              │              │
-              └──────────────┼──────────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │  Result Merger   │
-                    │  (MaxSim RRF)    │
-                    └─────────────────┘
-```
-
-Each shard is a self-contained GEM index built via v1.2 streaming.
-The query router fans out to all shards in parallel, and results are
-merged using score-normalized fusion.
-
-**What needs to be built:**
-- Shard-aware `GemCollection` that manages multiple `GemSegment` instances
-- Parallel query dispatch with async result collection
-- Cross-shard score normalization (MaxSim scores are comparable across
-  shards if codebooks are shared or scores are z-normalized)
-- Shared codebook option: train one codebook on a global sample, reuse
-  across shards for score comparability
-- Shard balancing: assign documents to shards by cluster affinity to
-  maximize intra-shard recall
-- Optional: cross-shard graph edges for hard queries (graph-of-graphs)
-
-**Scaling:**
-
-| Shards | Docs/Shard | Total Docs | RAM/Shard | Total RAM |
-|--------|------------|------------|-----------|-----------|
-| 3      | 1M         | 3M         | 5 GB      | 15 GB     |
-| 10     | 1M         | 10M        | 5 GB      | 50 GB     |
-| 10     | 10M        | 100M       | 15 GB     | 150 GB    |
-
-With v1.2 streaming build, each shard needs only ~5 GB to build.
-Shards can be built in parallel across machines or sequentially on a
-single node.
-
----
-
-## Summary
-
-The GEM index persistent footprint is inherently compact (~6 bytes per token
-+ ~200 bytes per document for the graph).  The scaling challenge is
-build-time memory, not runtime.  The v1.2 streaming builder eliminates
-this bottleneck entirely by processing vectors in batches and never
-holding the full corpus in RAM.  Combined with v2.0 sharding for
-query-time parallelism, the architecture scales to hundreds of millions
-of documents on commodity hardware.
+The shard engine is the supported scaling path. Historical GEM/HNSW material has
+been moved to `research/legacy/`.

@@ -35,7 +35,9 @@ nav:
   - Guides:
     - ColBERT Search: guides/colbert.md
     - ColPali Multimodal: guides/colpali.md
-    - GEM Native Index: guides/gem-native.md
+    - Shard Engine: guides/shard-engine.md
+    - Scaling: guides/scaling.md
+    - Max-Performance Reference API: guides/max-performance-reference-api.md
   - API Reference:
     - Python API: api/python.md
     - Rust Crates: api/rust.md

@@ -577,9 +577,9 @@ So keep `multimodal_optimize_mode: "auto"` unless you are intentionally
 experimenting. Backend-selection and deeper screening experiments still live in
 the library and validation surface. See:
 
-- `MULTIMODAL_FOUNDATION.md`
-- `SCREENING_PROMOTION_DECISION_MEMO.md`
-- `docs/validation/README.md`
+- `internal/contracts/MULTIMODAL_FOUNDATION.md`
+- `internal/memos/SCREENING_PROMOTION_DECISION_MEMO.md`
+- `internal/validation/README.md`
 
 When the solver *does* make sense:
 
@@ -605,9 +605,9 @@ Important truth:
 Where to explore them:
 
 - overview: `README.md`
-- multimodal guidance: `MULTIMODAL_FOUNDATION.md`
-- benchmark posture: `BENCHMARKS.md`
-- validation evidence: `docs/validation/README.md`
+- multimodal guidance: `internal/contracts/MULTIMODAL_FOUNDATION.md`
+- benchmark posture: `docs/benchmarks.md`
+- validation evidence: `internal/validation/README.md`
 
 ## Step 10. Persistence, Restart Safety, And Readiness
 
@@ -669,7 +669,7 @@ Those surfaces are:
 
 - `voyager_index.render_documents(...)`
 - `POST /reference/preprocess/documents`
-- the `PageBundle` contract in `ADAPTER_CONTRACTS.md`
+- the `PageBundle` contract in `internal/contracts/ADAPTER_CONTRACTS.md`
 
 Typical flow:
 
@@ -707,7 +707,7 @@ Important truth:
 
 ## Step 13. Optional Ontology / Knowledge Features
 
-The OSS repo also documents `OntologySidecar` in `ADAPTER_CONTRACTS.md`.
+The OSS repo also documents `OntologySidecar` in `internal/contracts/ADAPTER_CONTRACTS.md`.
 
 Typical flow:
 
@@ -756,7 +756,7 @@ If you want to keep going:
 
 - shortest first-run path: `docs/reference_api_tutorial.md`
 - runnable examples: `examples/README.md`
-- multimodal and screening details: `MULTIMODAL_FOUNDATION.md`
-- benchmark and validation posture: `BENCHMARKS.md`, `SCREENING_PROMOTION_DECISION_MEMO.md`, `docs/validation/README.md`
-- contracts and external seams: `ADAPTER_CONTRACTS.md`
-- public contract summary: `OSS_FOUNDATION.md`
+- multimodal and screening details: `internal/contracts/MULTIMODAL_FOUNDATION.md`
+- benchmark and validation posture: `docs/benchmarks.md`, `internal/memos/SCREENING_PROMOTION_DECISION_MEMO.md`, `internal/validation/README.md`
+- contracts and external seams: `internal/contracts/ADAPTER_CONTRACTS.md`
+- public contract summary: `internal/contracts/OSS_FOUNDATION.md`

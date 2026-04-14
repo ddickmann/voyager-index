@@ -15,7 +15,7 @@ licenses are documented below.
 The vendored Qdrant subtree provides segment/HNSW internals used by
 `src/kernels/hnsw_indexer/`. Five files have been modified from the upstream
 snapshot; each carries a prominent header notice per Apache-2.0 Section 4(b).
-See `QDRANT_VENDORING.md` for the complete list of modifications.
+See `internal/contracts/QDRANT_VENDORING.md` for the complete list of modifications.
 
 ## Distribution Guidance
 

@@ -11,7 +11,7 @@ See the root `LICENSE` file.
 
 - Path: `src/kernels/vendor/qdrant/`
 - License: Apache-2.0
-- Details: see `QDRANT_VENDORING.md`
+- Details: see `internal/contracts/QDRANT_VENDORING.md`
 
 ### Native Crate Packages
 

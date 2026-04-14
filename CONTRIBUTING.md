@@ -5,7 +5,7 @@
 The supported OSS surface for contributions is the `voyager-index` foundation:
 
 - `voyager_index/`
-- `src/` for the deprecated compatibility shims and native package sources
+- `src/kernels/` for native package sources and vendored dependencies
 - `deploy/reference-api/`
 - `docs/`, `examples/`, and `notebooks/`
 - `tools/` for maintainer-oriented scripts and experiments
@@ -19,17 +19,17 @@ not the default contribution target for the OSS foundation cut.
 
 Before changing public behavior, treat these docs as the canonical OSS guidance:
 
-- `ADAPTER_CONTRACTS.md`
 - `docs/README.md`
 - `README.md`
-- `OSS_FOUNDATION.md`
-- `MULTIMODAL_FOUNDATION.md`
+- `internal/contracts/ADAPTER_CONTRACTS.md`
+- `internal/contracts/OSS_FOUNDATION.md`
+- `internal/contracts/MULTIMODAL_FOUNDATION.md`
 
 Namespace rules:
 
 - add or document public behavior under `voyager_index.*`
 - treat `voyager_index._internal.*` as implementation detail rather than user-facing contract
-- treat `src.*` as a deprecated compatibility namespace, not the preferred import path
+- do not add or depend on a `src.*` Python import surface
 
 Behavior rules:
 
@@ -71,7 +71,7 @@ Native truth:
 - keep the public import surface under `voyager_index`
 - keep public docs and examples aligned with the `voyager_index` surface in the same pass as behavior changes
 - prefer CPU-safe tests when adding new coverage
-- preserve the licensing boundary documented in `LICENSING.md` and `QDRANT_VENDORING.md`
+- preserve the licensing boundary documented in `LICENSING.md` and `internal/contracts/QDRANT_VENDORING.md`
 - keep the public solver API aligned around `/reference/optimize` and the shared request contract instead of adding parallel one-off optimize paths
 - keep `SearchPipeline` guidance limited to its vector-first dense/hybrid role
 - distinguish the canonical OSS solver contract from any future premium productization, but do not describe the OSS solver as CPU-only

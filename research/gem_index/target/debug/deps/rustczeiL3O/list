@@ -1,7 +1,0 @@
-{
-  global:
-    PyInit_latence_gem_router;
-
-  local:
-    *;
-};

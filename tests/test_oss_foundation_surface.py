@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from unittest.mock import patch
-import warnings
 
 import torch
 
@@ -63,16 +61,13 @@ def test_sparse_engine_surface_points_to_bm25s() -> None:
     assert BM25Engine is BM25sEngine
 
 
-def test_legacy_src_namespace_warns_and_points_to_internal() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        src_pkg = importlib.reload(importlib.import_module("src"))
-        server_pkg = importlib.reload(importlib.import_module("src.server"))
-
-    internal_server = importlib.import_module("voyager_index._internal.server")
-    assert src_pkg is not None
-    assert list(server_pkg.__path__) == list(internal_server.__path__)
-    assert any(issubclass(item.category, DeprecationWarning) for item in caught)
+def test_deprecated_src_namespace_is_not_shipped() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "\"src\"" not in pyproject
+    assert "\"src.server\"" not in pyproject
+    assert "\"src.inference\"" not in pyproject
+    assert "\"src.kernels\"" not in pyproject
 
 
 def test_public_voyager_modules_do_not_import_src_directly() -> None:
@@ -85,15 +80,19 @@ def test_public_voyager_modules_do_not_import_src_directly() -> None:
 
 def test_repo_no_longer_contains_mixed_runtime_python_trees() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    assert (repo_root / "src" / "__init__.py").exists()
-    assert (repo_root / "src" / "inference" / "__init__.py").exists()
-    assert (repo_root / "src" / "server" / "__init__.py").exists()
-    assert (repo_root / "src" / "kernels" / "__init__.py").exists()
+    assert not (repo_root / "src" / "__init__.py").exists()
+    assert not (repo_root / "src" / "inference" / "__init__.py").exists()
+    assert not (repo_root / "src" / "server" / "__init__.py").exists()
+    assert not (repo_root / "src" / "kernels" / "__init__.py").exists()
     assert not (repo_root / "src" / "inference" / "index_core").exists()
     assert not (repo_root / "src" / "server" / "main.py").exists()
     assert not (repo_root / "src" / "kernels" / "triton_maxsim.py").exists()
     assert not (repo_root / "src" / "kernels" / "triton_roq.py").exists()
     assert not (repo_root / "voyager_index" / "_internal" / "inference" / "solver").exists()
+    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "index_gpu").exists()
+    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "gym").exists()
+    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "control").exists()
+    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "distributed").exists()
     assert (repo_root / "deploy" / "reference-api" / "Dockerfile").exists()
 
 

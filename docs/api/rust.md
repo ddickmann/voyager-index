@@ -1,60 +1,32 @@
 # Rust Crates
 
-## `latence-gem-index`
+The supported native crate story for the shard-first OSS surface is intentionally
+small.
 
-Source: `src/kernels/gem_index/`
+## `latence-solver`
 
-Native GEM graph index for multi-vector retrieval. Implements the proximity
-graph from the GEM paper with qCH proxy scoring, diversity-based neighbor
-selection, cluster-guided beam search, self-healing, and multi-modal ensemble
-fusion.
+Source: `src/kernels/knapsack_solver/`
 
-### Modules
+`latence-solver` is the native refinement crate behind the optional Tabu-style
+packing/refinement lane used by the public `/reference/optimize` API and the
+solver-backed dense hybrid flow.
 
-| Module | Description |
-|---|---|
-| `lib.rs` | PyO3 bindings: `GemSegment`, `PyMutableGemSegment`, `PyEnsembleGemSegment` |
-| `graph.rs` | Graph construction (standard, dual-graph, payload-aware), neighbor selection, shortcut injection and pruning |
-| `search.rs` | Beam search with prefetching, shortcut traversal, and search stats |
-| `mutable.rs` | Mutable segment: insert, delete, upsert, compact, heal, graph quality metrics |
-| `ensemble.rs` | Multi-modal ensemble: per-modality segments with RRF fusion |
-| `persistence.rs` | Bincode + CRC32 atomic save/load with mmap for large files and version migration |
-| `id_tracker.rs` | External ↔ internal ID mapping with deletion tracking and compaction |
-| `visited.rs` | Generation-based visited set with thread-local pooling (zero-alloc per search) |
-| `emd.rs` | qCH and qEMD distance functions with chunked AVX-friendly inner loops |
-| `network_simplex.rs` | Network simplex EMD solver and Sinkhorn-regularized OT approximation |
-| `score_cache.rs` | LRU-style pairwise score cache for construction |
+### What it provides
 
-### Dependencies
+- knapsack-style refinement for retrieval result packing
+- the native acceleration path behind `dense_hybrid_mode="tabu"`
+- a shared contract between in-process refinement and the reference API
 
-- `latence-gem-router` (codebook, qCH scoring, flat codes, filter index)
-- `pyo3` + `numpy` (Python bindings)
-- `rayon` (parallel construction and batch search)
-- `parking_lot` (concurrency)
-- `bincode` + `crc32fast` (persistence)
-- `memmap2` (memory-mapped I/O for large segments)
-- `log` (structured logging for filter warnings and diagnostics)
+### Why it is still public
 
----
+- it is part of the supported PyPI/source-build story
+- CI builds and validates it as part of the release surface
+- it remains relevant to the current shard-first product narrative
 
-## `latence-gem-router`
+## Legacy native crates
 
-Source: `src/kernels/gem_router/`
+Historical GEM, GEM-router, and HNSW-native material is still archived in-repo
+for research and archaeology, but it is not part of the supported public Rust
+crate surface.
 
-GEM codebook, cluster routing, qCH proxy scoring engine, and filter index.
-
-### Key Types
-
-- `TwoStageCodebook` — fine + coarse centroids with IDF weighting and centroid refinement
-- `FlatDocCodes` — contiguous u16 centroid codes for cache-friendly scoring
-- `ClusterPostings` — coarse cluster → document posting lists with medoid tracking
-- `FilterIndex` — per-cluster Roaring bitmap index for payload-based filtering
-- `CutoffTree` — decision tree for adaptive per-document cluster cutoff prediction
-- `GemRouter` — full routing pipeline: build, route, score, persist
-
-### Performance
-
-- `matrixmultiply::sgemm` with AVX2+FMA for query-centroid scores
-- AVX2 gather-based proxy scoring (`_mm256_i32gather_ps`)
-- Pre-allocated score buffer reuse across queries
-- Roaring bitmap intersection for sub-microsecond filter evaluation
+See `research/legacy/README.md` if you need that older material.

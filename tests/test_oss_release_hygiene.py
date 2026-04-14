@@ -35,6 +35,24 @@ def test_no_committed_validation_reports_bundle_remains() -> None:
     assert tracked.stdout.strip() == ""
 
 
+def test_no_tracked_native_target_or_packaging_artifacts_remain() -> None:
+    tracked = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "research/gem_index/target",
+            "src/kernels/shard_engine/target",
+            "dist",
+            "voyager_index.egg-info",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert tracked.stdout.strip() == ""
+
+
 def test_feature_bridge_error_is_portable() -> None:
     with pytest.raises(ImportError) as exc:
         FeatureBridge()
@@ -46,6 +64,14 @@ def test_feature_bridge_error_is_portable() -> None:
 def test_root_pyproject_no_longer_packages_from_compat_src() -> None:
     payload = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "compat/src" not in payload
+    assert "\"src\"" not in payload
+    assert "\"src.server\"" not in payload
+    assert "\"src.inference\"" not in payload
+    assert "\"src.kernels\"" not in payload
+    assert "voyager_index._internal.inference.index_gpu" not in payload
+    assert "voyager_index._internal.inference.gym" not in payload
+    assert "voyager_index._internal.inference.control" not in payload
+    assert "voyager_index._internal.inference.distributed" not in payload
 
 
 def test_reference_api_dockerfile_uses_root_src_tree() -> None:

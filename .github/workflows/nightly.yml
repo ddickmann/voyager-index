@@ -42,12 +42,13 @@ jobs:
 
       - name: Run nightly benchmark smoke
         run: |
-          python benchmarks/oss_reference_benchmark.py --device cpu --points 32 --top-k 5 > benchmarks/results/nightly_benchmark.json
-          python -c "import json; payload = json.load(open('benchmarks/results/nightly_benchmark.json', 'r', encoding='utf-8')); assert 'reference_api_search' in payload; assert 'multimodal_search' in payload"
+          mkdir -p validation-reports/nightly
+          python benchmarks/oss_reference_benchmark.py --device cpu --points 32 --top-k 5 > validation-reports/nightly/nightly_benchmark.json
+          python -c "import json; payload = json.load(open('validation-reports/nightly/nightly_benchmark.json', 'r', encoding='utf-8')); assert 'reference_api_search' in payload; assert 'multimodal_search' in payload"
 
       - name: Upload nightly artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nightly-shard-surface
-          path: benchmarks/results/nightly_benchmark.json
+          path: validation-reports/nightly/nightly_benchmark.json

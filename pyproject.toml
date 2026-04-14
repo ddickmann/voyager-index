@@ -115,22 +115,14 @@ Changelog = "https://github.com/ddickmann/voyager-index/blob/main/CHANGELOG.md"
 [tool.setuptools]
 include-package-data = true
 packages = [
-  "src",
-  "src.server",
-  "src.inference",
-  "src.kernels",
   "voyager_index",
   "voyager_index._internal",
   "voyager_index._internal.server",
   "voyager_index._internal.server.api",
   "voyager_index._internal.inference",
-  "voyager_index._internal.inference.control",
-  "voyager_index._internal.inference.distributed",
   "voyager_index._internal.inference.engines",
   "voyager_index._internal.inference.fusion",
-  "voyager_index._internal.inference.gym",
   "voyager_index._internal.inference.index_core",
-  "voyager_index._internal.inference.index_gpu",
   "voyager_index._internal.inference.quantization",
   "voyager_index._internal.inference.utils",
   "voyager_index._internal.kernels",

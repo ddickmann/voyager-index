@@ -38,6 +38,8 @@ src/kernels/knapsack_solver/target/
 src/kernels/hnsw_indexer/target/
 src/kernels/gem_router/target/
 src/kernels/gem_index/target/
+src/kernels/shard_engine/target/
+research/gem_index/target/
 *.whl
 
 # IDE
@@ -52,13 +54,6 @@ tools/dev/
 tools/sandbox/
 
 # Internal validation artifacts (may contain PII)
-docs/validation/validation-sidecar*/
-docs/validation/validation-centroid*/
-docs/validation/validation-screening-audit/
-
-# Internal process docs
-SCREENING_PROMOTION_DECISION_MEMO.md
-ADAPTER_CONTRACTS.md
-OSS_FOUNDATION.md
-MULTIMODAL_FOUNDATION.md
-QDRANT_VENDORING.md
+internal/validation/validation-sidecar*/
+internal/validation/validation-centroid*/
+internal/validation/validation-screening-audit/

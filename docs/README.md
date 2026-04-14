@@ -26,29 +26,30 @@ Install:
 - ColBERT late-interaction: `docs/guides/colbert.md`
 - ColPali multimodal: `docs/guides/colpali.md`
 - Scaling and memory: `docs/guides/scaling.md`
-- GEM graph index: `docs/guides/gem-native.md` (historical / compatibility path)
 
-## Public Contracts
+## Public References
 
-- `OSS_FOUNDATION.md`: supported public Python and API contract
-- `MULTIMODAL_FOUNDATION.md`: multimodal model matrix, storage, and scoring guidance
-- `ADAPTER_CONTRACTS.md`: documentation-level seams between OSS, providers, and future sidecars
+- `docs/benchmarks.md`: public benchmark framing and methodology
+- `PRODUCTION.md`: deployment checklist for the shard-first path
+- `CHANGELOG.md`: release history
 
-## Evaluation And Evidence
+## Contributor And Internal References
 
-- `BENCHMARKS.md`: reproducible OSS smoke benchmark harness
-- `SCREENING_PROMOTION_DECISION_MEMO.md`: current promotion policy for multimodal screening
-- `docs/validation/README.md`: archived validation bundles and what each one proves
+- `internal/README.md`: internal plans, validation, benchmark notes, and contracts
+- `internal/contracts/OSS_FOUNDATION.md`: supported Python/API contract reference
+- `internal/contracts/MULTIMODAL_FOUNDATION.md`: multimodal storage and serving notes
+- `internal/contracts/ADAPTER_CONTRACTS.md`: cross-surface seams and integration notes
+- `internal/validation/README.md`: archived validation bundles and supporting evidence
 
 ## Contributors And Release
 
 - `CONTRIBUTING.md`: setup, validation, and contribution workflow
-- `CHANGELOG.md`: release history
 - `SECURITY.md`: supported surface and disclosure instructions
 - `tools/README.md`: contributor-only scripts moved out of the repo landing zone
+- `research/legacy/README.md`: archived GEM/HNSW research, tests, and benchmarks
 
 ## Legal And Vendor
 
 - `LICENSING.md`: repo-level licensing guide
-- `QDRANT_VENDORING.md`: vendored Qdrant boundary
+- `internal/contracts/QDRANT_VENDORING.md`: vendored Qdrant boundary
 - `THIRD_PARTY_NOTICES.md`: redistributed third-party notices

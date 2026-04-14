@@ -84,10 +84,10 @@ jobs:
           assert 'voyager_index/py.typed' in wheel_names, 'py.typed missing from wheel'
           assert 'voyager_index/py.typed' in sdist_names, 'py.typed missing from sdist'
           assert 'tests/fixtures/dataset_di_fixture.json' in sdist_names, 'fixture missing from sdist'
-          assert 'src/__init__.py' in wheel_names
-          assert 'src/server/__init__.py' in wheel_names
-          assert 'src/inference/__init__.py' in wheel_names
-          assert 'src/kernels/__init__.py' in wheel_names
+          assert 'src/__init__.py' not in wheel_names
+          assert 'src/server/__init__.py' not in wheel_names
+          assert 'src/inference/__init__.py' not in wheel_names
+          assert 'src/kernels/__init__.py' not in wheel_names
           assert 'src/server/main.py' not in wheel_names
           assert 'src/server/api/service.py' not in wheel_names
           assert 'src/inference/index_core/index.py' not in wheel_names
