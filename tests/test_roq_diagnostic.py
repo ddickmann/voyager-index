@@ -78,8 +78,9 @@ def test_triton_vs_python_accuracy():
         print("✓ PASS: Triton FP16 produces equivalent results to Python FP32")
     else:
         print("✗ FAIL: Significant discrepancy detected!")
-    
-    return scores_py, scores_triton
+
+    assert max_diff < 0.1
+    assert top1_match
 
 
 def test_1bit_roq_correctness():
