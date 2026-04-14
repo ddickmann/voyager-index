@@ -7,6 +7,19 @@ quality: LEMUR routing, ColBANDIT, dense BM25 hybrid fusion, and quantized scori
 Use it together with `docs/reference_api_tutorial.md` for the basics and
 `docs/guides/shard-engine.md` for deeper shard internals.
 
+## Who this guide is for
+
+Use this guide if you are deploying `voyager-index-server` on a single machine
+and want to choose between:
+
+- CPU exact serving
+- streamed GPU exact or quantized serving
+- GPU-corpus serving
+- higher-QPS worker layouts
+
+Skip this guide if you only need the first local index example; start with
+`docs/reference_api_tutorial.md` instead.
+
 ## What "production path" means here
 
 The reference server now supports:

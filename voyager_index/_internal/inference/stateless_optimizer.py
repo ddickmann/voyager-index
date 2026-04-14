@@ -156,6 +156,7 @@ def _default_optimizer_policy() -> Dict[str, Any]:
             "best_mass_weight": 0.65,
             "margin_weight": 0.35,
             "floor": 1e-3,
+            "metadata_blend": 0.60,
         },
         "retrieval": {
             "base": 0.30,
@@ -166,17 +167,37 @@ def _default_optimizer_policy() -> Dict[str, Any]:
             "sparse_rr": 0.05,
             "agreement": 0.10,
             "disagreement_penalty": 0.05,
+            "rerank": 0.0,
+            "rerank_rr": 0.0,
+            "rerank_agreement": 0.0,
+            "rerank_disagreement_gate": 0.0,
+            "utility": 0.0,
+            "utility_rr": 0.0,
+            "entailment": 0.0,
+            "teacher_utility": 0.0,
+            "contradiction_penalty": 0.0,
         },
         "payload_signals": {
             "anti_shadow_frontier_weight": 0.60,
             "anti_shadow_uniqueness_weight": 0.40,
             "ambiguity_hard_coverage_weight": 0.50,
             "ambiguity_relevance_weight": 0.50,
+            "ambiguity_contradiction_weight": 0.40,
             "support_quorum_floor": 0.50,
             "support_quorum_uniqueness_weight": 0.50,
+            "support_quorum_utility_weight": 0.35,
+            "support_quorum_contradiction_penalty": 0.35,
             "pack_value_frontier_weight": 0.40,
             "pack_value_quorum_weight": 0.35,
             "pack_value_uniqueness_weight": 0.25,
+            "pack_value_utility_weight": 0.25,
+        },
+        "redundancy": {
+            "centroid": 0.55,
+            "lexical": 0.15,
+            "containment": 0.10,
+            "aspect": 0.15,
+            "same_source": 0.05,
         },
         "controller": {
             "name": "auto_v1",
@@ -216,6 +237,19 @@ def _default_optimizer_policy() -> Dict[str, Any]:
             "pack_value_fulfilment_boost": 0.07,
             "pack_value_aux_boost": 0.06,
             "anti_shadow_aux_boost": 0.03,
+            "rerank_coverage_threshold": 0.15,
+            "rerank_agreement_threshold": 0.35,
+            "post_rerank_iterations_floor": 72,
+            "post_rerank_lambda_floor": 0.58,
+            "post_rerank_retrieval_boost": 0.10,
+            "post_rerank_geometry_penalty": 0.05,
+            "post_rerank_pack_value_boost": 0.04,
+            "utility_signal_threshold": 0.20,
+            "contradiction_signal_threshold": 0.18,
+            "utility_relevance_boost": 0.06,
+            "utility_support_quorum_boost": 0.05,
+            "contradiction_lambda_floor": 0.72,
+            "contradiction_iterations_floor": 96,
         },
         "blend_weights": {
             "relevance": {
@@ -251,6 +285,148 @@ def _default_optimizer_policy() -> Dict[str, Any]:
             "fulfilment": 0.35,
             "auxiliary": 0.15,
         },
+    }
+
+
+def _post_rerank_optimizer_policy() -> Dict[str, Any]:
+    return _deep_merge_dict(
+        _default_optimizer_policy(),
+        {
+            "name": "post_rerank_v1",
+            "retrieval": {
+                "base": 0.42,
+                "rrf": 0.14,
+                "dense": 0.08,
+                "sparse": 0.05,
+                "dense_rr": 0.05,
+                "sparse_rr": 0.03,
+                "agreement": 0.04,
+                "disagreement_penalty": 0.02,
+                "rerank": 0.28,
+                "rerank_rr": 0.08,
+                "rerank_agreement": 0.12,
+                "rerank_disagreement_gate": 0.85,
+                "utility": 0.06,
+                "entailment": 0.05,
+                "teacher_utility": 0.03,
+                "contradiction_penalty": 0.06,
+            },
+            "controller": {
+                "name": "post_rerank_v1",
+                "rerank_coverage_threshold": 0.05,
+                "rerank_agreement_threshold": 0.20,
+                "post_rerank_iterations_floor": 84,
+                "post_rerank_lambda_floor": 0.64,
+                "post_rerank_retrieval_boost": 0.12,
+                "post_rerank_geometry_penalty": 0.06,
+                "post_rerank_pack_value_boost": 0.05,
+            },
+            "blend_weights": {
+                "relevance": {
+                    "geometry": 0.26,
+                    "retrieval": 0.30,
+                    "lexical": 0.10,
+                    "winner_mass": 0.08,
+                    "hard_coverage": 0.10,
+                    "uniqueness": 0.07,
+                    "support_quorum": 0.09,
+                },
+                "fulfilment": {
+                    "fulfilment": 0.32,
+                    "margin": 0.14,
+                    "winner_mass": 0.10,
+                    "frontier_gain": 0.18,
+                    "support_quorum": 0.14,
+                    "pack_value": 0.12,
+                },
+            },
+            "ranking": {
+                "relevance": 0.55,
+                "fulfilment": 0.30,
+                "auxiliary": 0.15,
+            },
+        },
+    )
+
+
+def _frontier_optimizer_policy() -> Dict[str, Any]:
+    return _deep_merge_dict(
+        _post_rerank_optimizer_policy(),
+        {
+            "name": "frontier_v1",
+            "token_weights": {
+                "metadata_blend": 0.78,
+            },
+            "retrieval": {
+                "base": 0.24,
+                "rrf": 0.10,
+                "dense": 0.08,
+                "sparse": 0.04,
+                "dense_rr": 0.04,
+                "sparse_rr": 0.02,
+                "agreement": 0.04,
+                "disagreement_penalty": 0.03,
+                "rerank": 0.14,
+                "rerank_rr": 0.05,
+                "rerank_agreement": 0.08,
+                "utility": 0.18,
+                "utility_rr": 0.06,
+                "entailment": 0.10,
+                "teacher_utility": 0.12,
+                "contradiction_penalty": 0.16,
+            },
+            "payload_signals": {
+                "ambiguity_contradiction_weight": 0.65,
+                "support_quorum_utility_weight": 0.55,
+                "support_quorum_contradiction_penalty": 0.45,
+                "pack_value_utility_weight": 0.40,
+            },
+            "redundancy": {
+                "centroid": 0.40,
+                "lexical": 0.18,
+                "containment": 0.12,
+                "aspect": 0.20,
+                "same_source": 0.10,
+            },
+            "controller": {
+                "name": "frontier_v1",
+                "post_rerank_iterations_floor": 92,
+                "post_rerank_lambda_floor": 0.68,
+                "utility_signal_threshold": 0.16,
+                "contradiction_signal_threshold": 0.12,
+                "utility_relevance_boost": 0.08,
+                "utility_support_quorum_boost": 0.07,
+                "contradiction_lambda_floor": 0.78,
+                "contradiction_iterations_floor": 108,
+            },
+            "blend_weights": {
+                "relevance": {
+                    "geometry": 0.24,
+                    "retrieval": 0.32,
+                    "lexical": 0.10,
+                    "winner_mass": 0.06,
+                    "hard_coverage": 0.12,
+                    "uniqueness": 0.06,
+                    "support_quorum": 0.10,
+                },
+                "fulfilment": {
+                    "fulfilment": 0.32,
+                    "margin": 0.12,
+                    "winner_mass": 0.08,
+                    "frontier_gain": 0.18,
+                    "support_quorum": 0.18,
+                    "pack_value": 0.12,
+                },
+            },
+        },
+    )
+
+
+def _optimizer_policy_presets() -> Dict[str, Dict[str, Any]]:
+    return {
+        "baseline_v1": _default_optimizer_policy(),
+        "post_rerank_v1": _post_rerank_optimizer_policy(),
+        "frontier_v1": _frontier_optimizer_policy(),
     }
 
 
@@ -581,8 +757,22 @@ class GpuFulfilmentPipeline:
         self._warm_dimensions: set[int] = set()
         self._last_self_test: Optional[Dict[str, Any]] = None
 
-    def _resolve_optimizer_policy(self, policy_override: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        resolved = _deep_merge_dict(_default_optimizer_policy(), dict(policy_override or {}))
+    def _resolve_optimizer_policy(self, policy_override: Any = None) -> Dict[str, Any]:
+        presets = _optimizer_policy_presets()
+        if policy_override is None:
+            resolved = copy.deepcopy(presets["baseline_v1"])
+        elif isinstance(policy_override, str):
+            resolved = copy.deepcopy(presets.get(policy_override, presets["baseline_v1"]))
+            if policy_override not in presets:
+                resolved["name"] = policy_override
+        elif isinstance(policy_override, dict):
+            policy_name = str(policy_override.get("name", "baseline_v1"))
+            resolved = copy.deepcopy(presets.get(policy_name, presets["baseline_v1"]))
+            overrides = {key: copy.deepcopy(value) for key, value in policy_override.items() if key != "name"}
+            resolved = _deep_merge_dict(resolved, overrides)
+            resolved["name"] = policy_name
+        else:
+            raise TypeError("optimizer_policy must be None, a preset name, or a dict override")
         blend_weights = resolved.get("blend_weights", {})
         resolved["blend_weights"] = {
             branch: self._normalize_weight_map(dict(weights))
@@ -999,8 +1189,10 @@ class GpuFulfilmentPipeline:
         expansion_vectors = (
             metadata.get("query_expansion_vectors")
             or metadata.get("query_aspect_vectors")
+            or metadata.get("query_focus_vectors")
             or nested_query_payload.get("query_expansion_vectors")
             or nested_query_payload.get("query_aspect_vectors")
+            or nested_query_payload.get("query_focus_vectors")
         )
         if expansion_vectors is None:
             return query_vectors
@@ -1146,6 +1338,87 @@ class GpuFulfilmentPipeline:
         return weights.astype(np.float32, copy=False)
 
     @staticmethod
+    def _query_payload_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        nested = metadata.get("query_payload", {})
+        return nested if isinstance(nested, dict) else {}
+
+    @staticmethod
+    def _coerce_weight_sequence(raw: Any) -> list[float]:
+        if isinstance(raw, np.ndarray):
+            return [float(value) for value in raw.reshape(-1).tolist()]
+        if isinstance(raw, (list, tuple)):
+            values: list[float] = []
+            for item in raw:
+                if isinstance(item, (int, float)):
+                    values.append(float(item))
+                elif isinstance(item, dict) and isinstance(item.get("weight"), (int, float)):
+                    values.append(float(item["weight"]))
+            return values
+        return []
+
+    def _metadata_query_token_weights(
+        self,
+        metadata: Dict[str, Any] | None,
+        *,
+        expected_rows: int,
+    ) -> np.ndarray | None:
+        if expected_rows <= 0:
+            return None
+        nested = self._query_payload_metadata(metadata)
+        for key in (
+            "query_token_weights",
+            "query_aspect_weights",
+            "teacher_token_weights",
+            "query_aspects",
+        ):
+            raw = metadata.get(key) if isinstance(metadata, dict) else None
+            if raw is None:
+                raw = nested.get(key)
+            values = self._coerce_weight_sequence(raw)
+            if not values:
+                continue
+            if len(values) == expected_rows - 1 and expected_rows > 1:
+                values = [float(np.mean(values))] + values
+            if len(values) != expected_rows:
+                continue
+            arr = np.clip(np.asarray(values, dtype=np.float32), 0.0, None)
+            total = float(arr.sum())
+            if total <= 1e-8:
+                arr = np.full((expected_rows,), 1.0 / float(expected_rows), dtype=np.float32)
+            else:
+                arr /= total
+            return arr.astype(np.float32, copy=False)
+        return None
+
+    def _metadata_coverage_row_gains(
+        self,
+        metadata: Dict[str, Any] | None,
+        *,
+        expected_rows: int,
+    ) -> np.ndarray | None:
+        if expected_rows <= 0:
+            return None
+        nested = self._query_payload_metadata(metadata)
+        for key in ("coverage_row_gains", "query_row_gains", "query_aspect_gains"):
+            raw = metadata.get(key) if isinstance(metadata, dict) else None
+            if raw is None:
+                raw = nested.get(key)
+            values = self._coerce_weight_sequence(raw)
+            if not values:
+                continue
+            if len(values) == expected_rows - 1 and expected_rows > 1:
+                values = [1.0] + values
+            if len(values) != expected_rows:
+                continue
+            arr = np.clip(np.asarray(values, dtype=np.float32), 0.0, None)
+            if float(arr.max()) <= 1e-8:
+                return None
+            return arr.astype(np.float32, copy=False)
+        return None
+
+    @staticmethod
     def _normalize_feature(values: np.ndarray) -> np.ndarray:
         feature = np.nan_to_num(np.asarray(values, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         if feature.size == 0:
@@ -1195,6 +1468,16 @@ class GpuFulfilmentPipeline:
                 phrases.add(" ".join(tokens[offset : offset + width]))
         return phrases
 
+    @staticmethod
+    def _source_identity(metadata: Dict[str, Any] | None) -> str | None:
+        if not isinstance(metadata, dict):
+            return None
+        for key in ("source_id", "document_id", "doc_id", "parent_id", "url", "path", "source"):
+            value = metadata.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                return str(value).strip().lower()
+        return None
+
     def _lexical_overlap_scores(
         self,
         query_text: str,
@@ -1238,21 +1521,67 @@ class GpuFulfilmentPipeline:
         rrf_values = []
         dense_values = []
         sparse_values = []
+        rerank_values = []
+        utility_values = []
+        entailment_values = []
+        contradiction_values = []
+        teacher_utility_values = []
+        rerank_presence = []
         for candidate in candidates:
             metadata = candidate.metadata or {}
             base_values.append(float(metadata.get("base_relevance", 0.0) or 0.0))
             rrf_values.append(float(metadata.get("rrf_score", 0.0) or 0.0))
             dense_values.append(float(metadata.get("dense_score", 0.0) or 0.0))
             sparse_values.append(float(metadata.get("sparse_score", 0.0) or 0.0))
+            rerank_raw: float | None = None
+            for key in ("rerank_score", "cross_encoder_score", "ce_score", "ltr_score"):
+                value = metadata.get(key)
+                if isinstance(value, (int, float)):
+                    rerank_raw = float(value) if rerank_raw is None else max(rerank_raw, float(value))
+            rerank_values.append(float(rerank_raw) if rerank_raw is not None else 0.0)
+            rerank_presence.append(1.0 if rerank_raw is not None else 0.0)
+            utility_raw: float | None = None
+            for key in ("utility_score", "nli_utility_score"):
+                value = metadata.get(key)
+                if isinstance(value, (int, float)):
+                    utility_raw = float(value) if utility_raw is None else max(utility_raw, float(value))
+            utility_values.append(float(utility_raw) if utility_raw is not None else 0.0)
+            entailment_values.append(float(metadata.get("nli_entailment", 0.0) or 0.0))
+            contradiction_values.append(float(metadata.get("nli_contradiction", 0.0) or 0.0))
+            teacher_raw: float | None = None
+            for key in ("teacher_utility_score", "distilled_utility_score"):
+                value = metadata.get(key)
+                if isinstance(value, (int, float)):
+                    teacher_raw = float(value) if teacher_raw is None else max(teacher_raw, float(value))
+            teacher_utility_values.append(float(teacher_raw) if teacher_raw is not None else 0.0)
 
         base = self._normalize_feature(np.asarray(base_values, dtype=np.float32))
         rrf = self._normalize_feature(np.asarray(rrf_values, dtype=np.float32))
         dense = self._normalize_feature(np.asarray(dense_values, dtype=np.float32))
         sparse = self._normalize_feature(np.asarray(sparse_values, dtype=np.float32))
+        rerank = self._normalize_feature(np.asarray(rerank_values, dtype=np.float32))
+        utility = self._normalize_feature(np.asarray(utility_values, dtype=np.float32))
+        entailment = self._normalize_feature(np.asarray(entailment_values, dtype=np.float32))
+        contradiction = self._normalize_feature(np.asarray(contradiction_values, dtype=np.float32))
+        teacher_utility = self._normalize_feature(np.asarray(teacher_utility_values, dtype=np.float32))
         dense_rr = self._reciprocal_rank_from_scores(dense)
         sparse_rr = self._reciprocal_rank_from_scores(sparse)
+        rerank_rr = self._reciprocal_rank_from_scores(rerank)
+        utility_rr = self._reciprocal_rank_from_scores(utility)
         agreement = np.sqrt(np.clip(dense * sparse, 0.0, 1.0)).astype(np.float32, copy=False)
+        rerank_anchor = np.maximum(base, np.maximum(dense, sparse)).astype(np.float32, copy=False)
+        rerank_agreement = np.sqrt(np.clip(rerank * rerank_anchor, 0.0, 1.0)).astype(
+            np.float32, copy=False
+        )
         disagreement = np.abs(dense - sparse).astype(np.float32, copy=False)
+        disagreement_effective = (
+            disagreement
+            * (
+                1.0
+                - float(retrieval_policy.get("rerank_disagreement_gate", 0.0))
+                * rerank_agreement
+            )
+        ).astype(np.float32, copy=False)
         composite = (
             retrieval_policy["base"] * base
             + retrieval_policy["rrf"] * rrf
@@ -1261,15 +1590,33 @@ class GpuFulfilmentPipeline:
             + retrieval_policy["dense_rr"] * dense_rr
             + retrieval_policy["sparse_rr"] * sparse_rr
             + retrieval_policy["agreement"] * agreement
-            - retrieval_policy["disagreement_penalty"] * disagreement
+            + float(retrieval_policy.get("rerank", 0.0)) * rerank
+            + float(retrieval_policy.get("rerank_rr", 0.0)) * rerank_rr
+            + float(retrieval_policy.get("rerank_agreement", 0.0)) * rerank_agreement
+            + float(retrieval_policy.get("utility", 0.0)) * utility
+            + float(retrieval_policy.get("utility_rr", 0.0)) * utility_rr
+            + float(retrieval_policy.get("entailment", 0.0)) * entailment
+            + float(retrieval_policy.get("teacher_utility", 0.0)) * teacher_utility
+            - retrieval_policy["disagreement_penalty"] * disagreement_effective
+            - float(retrieval_policy.get("contradiction_penalty", 0.0)) * contradiction
         ).astype(np.float32, copy=False)
         return {
             "base": base,
             "rrf": rrf,
             "dense": dense,
             "sparse": sparse,
+            "rerank": rerank,
+            "rerank_rr": rerank_rr,
+            "rerank_agreement": rerank_agreement,
+            "rerank_presence": np.asarray(rerank_presence, dtype=np.float32),
+            "utility": utility,
+            "utility_rr": utility_rr,
+            "entailment": entailment,
+            "contradiction": contradiction,
+            "teacher_utility": teacher_utility,
             "agreement": agreement,
             "disagreement": disagreement,
+            "disagreement_effective": disagreement_effective,
             "composite": self._normalize_feature(composite),
         }
 
@@ -1383,8 +1730,13 @@ class GpuFulfilmentPipeline:
             signal_policy["anti_shadow_frontier_weight"] * frontier_gain
             + signal_policy["anti_shadow_uniqueness_weight"] * uniqueness
         )
+        contradiction = retrieval_signals.get("contradiction", zeros)
+        utility = retrieval_signals.get("utility", zeros)
         ambiguity = self._normalize_feature(
-            retrieval_signals["disagreement"]
+            (
+                retrieval_signals["disagreement"]
+                + float(signal_policy.get("ambiguity_contradiction_weight", 0.0)) * contradiction
+            )
             * (
                 signal_policy["ambiguity_hard_coverage_weight"] * hard_coverage
                 + signal_policy["ambiguity_relevance_weight"] * self._normalize_feature(relevance_scores)
@@ -1395,6 +1747,12 @@ class GpuFulfilmentPipeline:
             * (
                 signal_policy["support_quorum_floor"]
                 + signal_policy["support_quorum_uniqueness_weight"] * uniqueness
+                + float(signal_policy.get("support_quorum_utility_weight", 0.0)) * utility
+            )
+            * (
+                1.0
+                - float(signal_policy.get("support_quorum_contradiction_penalty", 0.0))
+                * contradiction
             )
         )
 
@@ -1413,6 +1771,7 @@ class GpuFulfilmentPipeline:
                 signal_policy["pack_value_frontier_weight"] * frontier_gain
                 + signal_policy["pack_value_quorum_weight"] * support_quorum
                 + signal_policy["pack_value_uniqueness_weight"] * uniqueness
+                + float(signal_policy.get("pack_value_utility_weight", 0.0)) * utility
             )
             / cost_scale
         )
@@ -1475,6 +1834,9 @@ class GpuFulfilmentPipeline:
                         + retrieval_signals["rrf"]
                         + retrieval_signals["dense"]
                         + retrieval_signals["sparse"]
+                        + retrieval_signals["rerank"]
+                        + retrieval_signals["utility"]
+                        + retrieval_signals["teacher_utility"]
                     )
                     > 0.0
                 )
@@ -1496,6 +1858,12 @@ class GpuFulfilmentPipeline:
             "uncovered_mass": float(uncovered_mass),
             "retrieval_agreement_mean": float(np.mean(retrieval_signals["agreement"])) if retrieval_signals["agreement"].size else 0.0,
             "retrieval_disagreement_mean": float(np.mean(retrieval_signals["disagreement"])) if retrieval_signals["disagreement"].size else 0.0,
+            "rerank_signal_mean": float(np.mean(retrieval_signals["rerank"])) if retrieval_signals["rerank"].size else 0.0,
+            "rerank_coverage": float(np.mean(retrieval_signals["rerank_presence"])) if retrieval_signals["rerank_presence"].size else 0.0,
+            "rerank_agreement_mean": float(np.mean(retrieval_signals["rerank_agreement"])) if retrieval_signals["rerank_agreement"].size else 0.0,
+            "utility_signal_mean": float(np.mean(retrieval_signals["utility"])) if retrieval_signals["utility"].size else 0.0,
+            "teacher_utility_signal_mean": float(np.mean(retrieval_signals["teacher_utility"])) if retrieval_signals["teacher_utility"].size else 0.0,
+            "contradiction_signal_mean": float(np.mean(retrieval_signals["contradiction"])) if retrieval_signals["contradiction"].size else 0.0,
             "redundancy_density": float(redundancy_density),
             "frontier_gain_mean": float(np.mean(payload_signals["frontier_gain"])) if payload_signals["frontier_gain"].size else 0.0,
             "frontier_gain_p90": float(np.quantile(payload_signals["frontier_gain"], 0.9)) if payload_signals["frontier_gain"].size else 0.0,
@@ -1527,7 +1895,7 @@ class GpuFulfilmentPipeline:
         updated_solver = dict(solver_config_payload)
         updated_blend = {branch: dict(weights) for branch, weights in blend_weights.items()}
 
-        if name == "auto_v1":
+        if name in {"auto_v1", "post_rerank_v1"}:
             ambiguity_pressure = (
                 controller_features["uncovered_mass"]
                 + controller_features["retrieval_disagreement_mean"]
@@ -1592,6 +1960,36 @@ class GpuFulfilmentPipeline:
                 updated_solver["exact_window_size"] = max(
                     int(updated_solver.get("exact_window_size", 14)),
                     int(controller_defaults["large_exact_window_size"]),
+                )
+            if (
+                controller_features["rerank_coverage"] >= controller_defaults["rerank_coverage_threshold"]
+                and controller_features["rerank_agreement_mean"] >= controller_defaults["rerank_agreement_threshold"]
+            ):
+                updated_solver["iterations"] = max(
+                    int(updated_solver.get("iterations", 100)),
+                    int(controller_defaults["post_rerank_iterations_floor"]),
+                )
+                updated_solver["lambda_"] = max(
+                    float(updated_solver.get("lambda_", 0.5)),
+                    float(controller_defaults["post_rerank_lambda_floor"]),
+                )
+                updated_blend["relevance"]["retrieval"] += controller_defaults["post_rerank_retrieval_boost"]
+                updated_blend["relevance"]["geometry"] = max(
+                    updated_blend["relevance"]["geometry"] - controller_defaults["post_rerank_geometry_penalty"],
+                    0.0,
+                )
+                updated_blend["fulfilment"]["pack_value"] += controller_defaults["post_rerank_pack_value_boost"]
+            if controller_features.get("utility_signal_mean", 0.0) >= controller_defaults.get("utility_signal_threshold", 1.0):
+                updated_blend["relevance"]["retrieval"] += controller_defaults.get("utility_relevance_boost", 0.0)
+                updated_blend["fulfilment"]["support_quorum"] += controller_defaults.get("utility_support_quorum_boost", 0.0)
+            if controller_features.get("contradiction_signal_mean", 0.0) >= controller_defaults.get("contradiction_signal_threshold", 1.0):
+                updated_solver["lambda_"] = max(
+                    float(updated_solver.get("lambda_", 0.5)),
+                    float(controller_defaults.get("contradiction_lambda_floor", 0.5)),
+                )
+                updated_solver["iterations"] = max(
+                    int(updated_solver.get("iterations", 100)),
+                    int(controller_defaults.get("contradiction_iterations_floor", 100)),
                 )
 
         for key, value in dict(controller_spec.get("solver_overrides", {})).items():
@@ -1753,6 +2151,12 @@ class GpuFulfilmentPipeline:
             "summary": {
                 "mean_geometry_signal": float(np.mean(context["geometry"])) if context["geometry"].size else 0.0,
                 "mean_retrieval_signal": float(np.mean(context["retrieval"]["composite"])) if context["retrieval"]["composite"].size else 0.0,
+                "mean_rerank_signal": float(np.mean(context["retrieval"]["rerank"])) if context["retrieval"]["rerank"].size else 0.0,
+                "mean_rerank_agreement_signal": float(np.mean(context["retrieval"]["rerank_agreement"])) if context["retrieval"]["rerank_agreement"].size else 0.0,
+                "mean_utility_signal": float(np.mean(context["retrieval"]["utility"])) if context["retrieval"]["utility"].size else 0.0,
+                "mean_teacher_utility_signal": float(np.mean(context["retrieval"]["teacher_utility"])) if context["retrieval"]["teacher_utility"].size else 0.0,
+                "mean_contradiction_signal": float(np.mean(context["retrieval"]["contradiction"])) if context["retrieval"]["contradiction"].size else 0.0,
+                "rerank_coverage": float(np.mean(context["retrieval"]["rerank_presence"])) if context["retrieval"]["rerank_presence"].size else 0.0,
                 "mean_lexical_overlap": float(np.mean(context["lexical"])) if context["lexical"].size else 0.0,
                 "mean_margin_signal": float(np.mean(context["novelty"]["margin"])) if context["novelty"]["margin"].size else 0.0,
                 "mean_cluster_novelty": float(np.mean(context["cluster"])) if context["cluster"].size else 0.0,
@@ -1770,6 +2174,7 @@ class GpuFulfilmentPipeline:
         query_vectors: np.ndarray,
         candidate_vectors: Sequence[np.ndarray],
         *,
+        metadata: Dict[str, Any] | None,
         policy: Dict[str, Any],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not candidate_vectors:
@@ -1785,19 +2190,93 @@ class GpuFulfilmentPipeline:
             candidate_vectors,
             device=self.device,
         )
+        row_gains = self._metadata_coverage_row_gains(
+            metadata,
+            expected_rows=int(coverage_cpu.shape[0]),
+        )
+        if row_gains is not None:
+            coverage_cpu = np.clip(
+                coverage_cpu.astype(np.float32, copy=False) * row_gains[:, None],
+                0.0,
+                1.0,
+            ).astype(np.float32, copy=False)
         token_weights = self._query_token_weights(coverage_cpu, policy=policy)
+        metadata_token_weights = self._metadata_query_token_weights(
+            metadata,
+            expected_rows=int(coverage_cpu.shape[0]),
+        )
+        if metadata_token_weights is not None:
+            blend = float(policy["token_weights"].get("metadata_blend", 0.60))
+            token_weights = (
+                (1.0 - blend) * token_weights.astype(np.float32, copy=False)
+                + blend * metadata_token_weights.astype(np.float32, copy=False)
+            ).astype(np.float32, copy=False)
+            token_weights /= float(max(token_weights.sum(), 1e-8))
         relevance = (coverage_cpu * token_weights[:, None]).sum(axis=0).astype(np.float32, copy=False)
         fulfilment = relevance.copy()
         return coverage_cpu, token_weights, relevance, fulfilment
 
-    def _redundancy_matrix(self, candidate_vectors: Sequence[np.ndarray]) -> np.ndarray:
+    def _redundancy_matrix(
+        self,
+        candidates: Sequence[OptimizerCandidate],
+        candidate_vectors: Sequence[np.ndarray],
+        *,
+        coverage_matrix: np.ndarray,
+        policy: Dict[str, Any],
+    ) -> np.ndarray:
         if not candidate_vectors:
             return np.zeros((0, 0), dtype=np.float32)
         centroids = np.stack([_centroid(vector) for vector in candidate_vectors]).astype(np.float32)
         centroids = _normalize_rows(centroids)
-        similarity = centroids @ centroids.T
+        centroid_similarity = np.clip(centroids @ centroids.T, 0.0, 1.0).astype(np.float32, copy=False)
+        np.fill_diagonal(centroid_similarity, 0.0)
+        n = len(candidates)
+        lexical_similarity = np.zeros((n, n), dtype=np.float32)
+        containment_similarity = np.zeros((n, n), dtype=np.float32)
+        source_similarity = np.zeros((n, n), dtype=np.float32)
+        term_sets = [self._text_terms(candidate.text) for candidate in candidates]
+        source_ids = [self._source_identity(candidate.metadata) for candidate in candidates]
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = term_sets[i]
+                b = term_sets[j]
+                inter = len(a & b) if a and b else 0
+                union = len(a | b) if a or b else 0
+                lexical = float(inter / union) if union else 0.0
+                containment = 0.0
+                if inter > 0:
+                    containment = max(
+                        float(inter / float(max(len(a), 1))),
+                        float(inter / float(max(len(b), 1))),
+                    )
+                lexical_similarity[i, j] = lexical_similarity[j, i] = lexical
+                containment_similarity[i, j] = containment_similarity[j, i] = containment
+                same_source = (
+                    source_ids[i] is not None
+                    and source_ids[j] is not None
+                    and source_ids[i] == source_ids[j]
+                )
+                if same_source:
+                    source_similarity[i, j] = source_similarity[j, i] = 1.0
+        aspect_similarity = np.zeros((n, n), dtype=np.float32)
+        if coverage_matrix.ndim == 2 and coverage_matrix.shape[0] > 1:
+            aspect_profiles = _normalize_rows(coverage_matrix.T.astype(np.float32, copy=False))
+            aspect_similarity = np.clip(
+                aspect_profiles @ aspect_profiles.T,
+                0.0,
+                1.0,
+            ).astype(np.float32, copy=False)
+            np.fill_diagonal(aspect_similarity, 0.0)
+        redundancy_policy = self._normalize_weight_map(policy.get("redundancy", {}))
+        similarity = (
+            redundancy_policy.get("centroid", 0.0) * centroid_similarity
+            + redundancy_policy.get("lexical", 0.0) * lexical_similarity
+            + redundancy_policy.get("containment", 0.0) * containment_similarity
+            + redundancy_policy.get("aspect", 0.0) * aspect_similarity
+            + redundancy_policy.get("same_source", 0.0) * source_similarity
+        ).astype(np.float32, copy=False)
         np.fill_diagonal(similarity, 0.0)
-        return similarity.astype(np.float32, copy=False)
+        return np.clip(similarity, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _optimize_decoded(
         self,
@@ -1923,9 +2402,15 @@ class GpuFulfilmentPipeline:
         coverage_matrix, query_token_weights, relevance_scores, fulfilment_scores = self._coverage_and_relevance(
             query_vectors,
             candidate_vectors,
+            metadata=normalized_request.metadata,
             policy=optimizer_policy,
         )
-        redundancy_matrix = self._redundancy_matrix(candidate_vectors)
+        redundancy_matrix = self._redundancy_matrix(
+            normalized_request.candidates,
+            candidate_vectors,
+            coverage_matrix=coverage_matrix,
+            policy=optimizer_policy,
+        )
         centroid_vectors = np.stack([_centroid(vector) for vector in candidate_vectors]).astype(np.float32)
         token_costs = np.asarray(
             [candidate.token_count for candidate in normalized_request.candidates],

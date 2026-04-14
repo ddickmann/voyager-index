@@ -1,174 +1,141 @@
 # Quickstart
 
-## Installation
+## Install
+
+Pick the profile you need:
 
 ```bash
-pip install voyager-index                # pure Python
-pip install voyager-index[native]        # + prebuilt Rust kernels (recommended)
-pip install voyager-index[native,gpu]    # + Triton GPU acceleration
+pip install "voyager-index[shard]"
+pip install "voyager-index[shard,gpu]"
+pip install "voyager-index[server,shard]"
+pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
 ```
 
-## 5-Line Minimal Example
+`engine="shard"` is the mainline production path. `gem` and `hnsw` remain
+compatibility backends, but they are not the default user journey in these docs.
+
+## Minimal Local Index
+
+Each document is a matrix of token or patch embeddings shaped
+`(n_tokens, dim)`.
 
 ```python
 import numpy as np
+
 from voyager_index import Index
 
-idx = Index("my_index", dim=128, engine="gem", seed_batch_size=64)
-idx.add([np.random.randn(32, 128).astype(np.float32) for _ in range(100)])
-results = idx.search(np.random.randn(32, 128).astype(np.float32), k=10)
-```
-
-## Create an Index
-
-Each document is a matrix of token embeddings `(n_tokens, dim)`:
-
-```python
-import numpy as np
-from voyager_index import Index
+rng = np.random.default_rng(7)
+docs = [rng.normal(size=(16, 128)).astype("float32") for _ in range(64)]
+query = rng.normal(size=(16, 128)).astype("float32")
 
 idx = Index(
-    "my_index",
+    "quickstart-index",
     dim=128,
-    engine="gem",              # native GEM graph index
-    seed_batch_size=64,        # train codebook after 64 docs
-    n_fine=128,                # fine centroids (128–2048 depending on corpus)
-    n_coarse=16,               # coarse clusters for routing
+    engine="shard",
+    n_shards=32,
+    k_candidates=256,
+    compression="fp16",
 )
+idx.add(
+    docs,
+    ids=list(range(len(docs))),
+    payloads=[{"title": f"Document {i}", "tenant": "demo"} for i in range(len(docs))],
+)
+
+results = idx.search(query, k=5)
+print(results[0])
+idx.close()
 ```
 
-### Engine Selection
-
-| Engine | When to use |
-|---|---|
-| `"gem"` | Multi-vector workloads (ColBERT, ColPali). Default when native crates are installed. |
-| `"hnsw"` | Legacy single-vector workloads. |
-| `"auto"` | Auto-detect: uses GEM if available, falls back to HNSW. |
-
-### Builder Pattern (Advanced)
+## Builder Form
 
 ```python
 from voyager_index import IndexBuilder
 
-idx = (IndexBuilder("my_index", dim=128)
-       .with_gem(seed_batch_size=64, n_fine=256)
-       .with_gpu_rerank(device="cuda")      # exact MaxSim reranking on GPU
-       .with_wal(enabled=True)              # crash-safe write-ahead log
-       .build())
-
-# Or with ROQ 4-bit compressed reranking (~8x less memory):
-idx = (IndexBuilder("my_index", dim=128)
-       .with_gem(seed_batch_size=64)
-       .with_roq(bits=4)                    # ROQ 4-bit + fused Triton kernel
-       .build())
+idx = (
+    IndexBuilder("builder-index", dim=128)
+    .with_shard(
+        n_shards=64,
+        k_candidates=512,
+        compression="fp16",
+        quantization_mode="fp8",
+        transfer_mode="pinned",
+    )
+    .with_wal(enabled=True)
+    .build()
+)
 ```
 
-## Add Documents
+## CRUD And Recovery
 
 ```python
-n_docs = 100
-embeddings = [np.random.randn(32, 128).astype(np.float32) for _ in range(n_docs)]
-ids = list(range(n_docs))
-payloads = [{"title": f"Document {i}"} for i in range(n_docs)]
+idx.upsert([docs[0]], ids=[0], payloads=[{"title": "updated"}])
+idx.update_payload(0, {"title": "updated", "tenant": "demo"})
+idx.delete([1, 2, 3])
+idx.flush()
+idx.close()
 
-idx.add(embeddings, ids=ids, payloads=payloads)
+reopened = Index("builder-index", dim=128, engine="shard")
+print(reopened.stats())
+reopened.close()
 ```
 
-## Search
-
-```python
-query = np.random.randn(32, 128).astype(np.float32)
-results = idx.search(query, k=10, ef=200)
-
-for r in results:
-    print(f"  Doc {r.doc_id}: score={r.score:.4f}, payload={r.payload}")
-```
-
-## Filtered Search
-
-```python
-results = idx.search(query, k=10, filters={"title": {"$contains": "science"}})
-```
-
-Qdrant-compatible filter operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`,
-`$in`, `$nin`, `$exists`, `$contains`, `$and`, `$or`, `$not`.
-
-Filters are applied natively during graph traversal via cluster-level bitmap
-pruning — not post-hoc.
-
-## Text-Based Search (with Embedding Function)
-
-If you have a ColBERT model, pass it as `embedding_fn`:
-
-```python
-idx = Index("my_index", dim=128, engine="gem", embedding_fn=my_colbert_model)
-idx.add_texts(["Document about AI", "Document about biology"])
-results = idx.search_text("What is machine learning?", k=5)
-```
-
-The `embedding_fn` must implement `embed_documents(texts)` and `embed_query(text)`.
-
-## Multimodal: PDF to Search Results
+## Multimodal Start
 
 ```python
 from voyager_index.preprocessing import enumerate_renderable_documents, render_documents
 
-# Step 1: Discover and render documents to page images
-docs = enumerate_renderable_documents("./my_documents/")
-pages = render_documents(docs["documents"], "./rendered_pages/")
-
-# Step 2: Embed page images with a ColPali model
-# page_embeddings = [model.embed_image(p["image_path"]) for p in pages["rendered"]]
-
-# Step 3: Index and search
-idx = Index("multimodal_index", dim=128, engine="gem", seed_batch_size=32)
-# idx.add(page_embeddings, payloads=[{"source": p["source"], "page": p["page_number"]} ...])
-# results = idx.search(query_embedding, k=10)
+documents = enumerate_renderable_documents("./docs-to-index")
+rendered = render_documents(documents["documents"], "./rendered-pages")
+print(rendered["rendered"][0]["image_path"])
 ```
 
-Supported input formats: PDF, DOCX, XLSX, PNG, JPG, WebP, GIF.
+Supported render inputs: PDF, DOCX, XLSX, PNG, JPG, WebP, and GIF.
 
-## Update and Delete
+## HTTP Start
+
+Start the reference server:
+
+```bash
+HOST=0.0.0.0 WORKERS=4 voyager-index-server
+```
+
+Use base64 transport for new clients:
 
 ```python
-idx.update_payload(0, {"title": "Updated Document 0"})
-idx.upsert(new_vectors, ids=[0], payloads=[{"title": "Replaced Doc 0"}])
-idx.delete([1, 2, 3])
+import numpy as np
+import requests
+
+from voyager_index import encode_vector_payload
+
+query = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
+
+response = requests.post(
+    "http://127.0.0.1:8080/collections/demo/search",
+    json={
+        "vectors": encode_vector_payload(query, dtype="float16"),
+        "top_k": 5,
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["results"][0])
 ```
 
-## Scroll (Pagination)
+JSON float arrays still work, but base64 is the preferred/default transport for
+large dense and multivector payloads.
 
-```python
-page = idx.scroll(limit=20, offset=0)
-for r in page.results:
-    print(f"  Doc {r.doc_id}: {r.payload}")
-if page.next_offset:
-    print(f"  Next page at offset {page.next_offset}")
-```
+## What To Tune First
 
-## Snapshot and Restore
-
-```python
-idx.snapshot("backup.tar.gz")
-```
-
-## Cleanup
-
-```python
-idx.close()
-```
-
-Or use a context manager:
-
-```python
-with Index("my_index", dim=128, engine="gem", seed_batch_size=64) as idx:
-    idx.add(embeddings, ids=ids)
-    results = idx.search(query, k=10)
-```
+- `n_shards`: controls shard granularity
+- `k_candidates`: router frontier before exact scoring
+- `compression`: stored representation such as `fp16`, `int8`, or `roq4`
+- `quantization_mode`: active GPU scoring mode such as `int8`, `fp8`, or `roq4`
+- `transfer_mode`: CPU->GPU fetch strategy for streamed GPU scoring
 
 ## Next Steps
 
-- **[API Reference](../api/python.md)** — full method signatures and types
-- **[GEM Guide](../guides/gem-native.md)** — production configuration and tuning
-- **[Scaling Guide](../guides/scaling.md)** — memory planning for large corpora
-- **[ColPali Guide](../guides/colpali.md)** — multimodal retrieval end-to-end
+- [Python API Reference](../api/python.md)
+- [Reference API Tutorial](../reference_api_tutorial.md)
+- [Shard Engine Guide](../guides/shard-engine.md)
+- [Max-Performance Reference API Guide](../guides/max-performance-reference-api.md)

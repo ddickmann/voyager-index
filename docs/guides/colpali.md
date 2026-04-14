@@ -4,7 +4,8 @@
 
 [ColPali](https://arxiv.org/abs/2407.01449) extends the late-interaction
 paradigm to multimodal retrieval: document pages are encoded as grids of patch
-embeddings. voyager-index indexes these multi-vector representations natively.
+embeddings. `voyager-index` indexes these multivector representations through
+the shard engine, which is the mainline production path in this repo.
 
 ## Example
 
@@ -14,7 +15,7 @@ from voyager_index import Index
 
 DIM = 128  # ColPali embedding dimension
 
-with Index("colpali_index", dim=DIM, engine="gem", seed_batch_size=16) as idx:
+with Index("colpali_index", dim=DIM, engine="shard", n_shards=64, k_candidates=512) as idx:
 
     # Each page produces a (n_patches, 128) matrix
     # e.g., a 1024-patch ViT output
@@ -42,12 +43,14 @@ with Index("colpali_index", dim=DIM, engine="gem", seed_batch_size=16) as idx:
         print(f"  Page {r.doc_id}: score={r.score:.4f}, file={r.payload['filename']}")
 ```
 
-## Why GEM for ColPali
+## Why Shard-First For ColPali
 
-ColPali pages produce 1024+ patch embeddings per document. Traditional HNSW
-indexes each patch separately, requiring per-patch search + aggregation.
-GEM's proximity graph operates at the document level, making it **52x faster**
-at 1024-patch sequences.
+ColPali pages produce 1024+ patch embeddings per document. The shard engine
+keeps the retrieval story simple:
+
+- LEMUR routing narrows the candidate pool
+- exact MaxSim still decides the final ranking
+- GPU scoring and quantization are optional layers, not a separate product
 
 ## Payload Filtering
 

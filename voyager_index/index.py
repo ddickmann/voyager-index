@@ -95,12 +95,12 @@ class Index:
     """
     Primary interface for voyager-index.
 
-    Supports GEM (native multi-vector), HNSW, and Shard (LEMUR-routed) backends.
+    Supports shard (mainline), GEM, and HNSW backends.
     Provides CRUD operations, search, scroll, snapshot, and lifecycle management.
 
     Example::
 
-        idx = Index("my_index", dim=128, engine="gem")
+        idx = Index("my_index", dim=128, engine="shard")
         idx.add(embeddings, ids=[1, 2, 3])
         results = idx.search(query, k=10)
         idx.close()
@@ -128,7 +128,7 @@ class Index:
         Args:
             path: Directory to store the index.
             dim: Vector dimensionality.
-            engine: 'gem', 'hnsw', or 'auto' (default: auto-detect).
+            engine: 'shard', 'gem', 'hnsw', or 'auto' (default: compatibility auto-detect).
             mode: Optional mode hint: 'colbert', 'colpali', or None.
                   When set, auto-configures engine and parameters for
                   the specified model family.
@@ -716,8 +716,7 @@ class IndexBuilder:
     Every ``with_*`` method returns ``self`` so calls can be chained::
 
         idx = (IndexBuilder("my_index", dim=128)
-               .with_gem(seed_batch_size=64, n_fine=128)
-               .with_gpu_rerank(device="cuda")
+               .with_shard(n_shards=64, k_candidates=512)
                .with_wal(enabled=True)
                .build())
 

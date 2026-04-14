@@ -5,8 +5,8 @@ paths.
 
 Install:
 
-- `pip install voyager-index` is the recommended install path
-- optional extras: `[native]`, `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`
+- `pip install "voyager-index[shard]"` is the mainline install path
+- optional extras: `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`, `[native]`
 - contributors and developers can install from source: `bash scripts/install_from_source.sh --cpu` or `make install-cpu`
 - the install commands in `docs/reference_api_tutorial.md` and `docs/full_feature_cookbook.md` cover both paths
 - `README.md` is the product homepage; the docs below expand the same public OSS story rather than replacing it
@@ -22,11 +22,11 @@ Install:
 
 ## Engine Guides
 
-- GEM graph index: `docs/guides/gem-native.md`
 - Shard engine (LEMUR-routed): `docs/guides/shard-engine.md`
 - ColBERT late-interaction: `docs/guides/colbert.md`
 - ColPali multimodal: `docs/guides/colpali.md`
 - Scaling and memory: `docs/guides/scaling.md`
+- GEM graph index: `docs/guides/gem-native.md` (historical / compatibility path)
 
 ## Public Contracts
 

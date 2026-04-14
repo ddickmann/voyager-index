@@ -6,7 +6,11 @@ from typing import Optional, Union
 
 import numpy as np
 import torch
-from tqdm.auto import tqdm
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - optional progress bar
+    def tqdm(*args, **kwargs):
+        return nullcontext(None)
 
 from .single_maxsim import single_maxsim
 from .model import (
@@ -345,7 +349,7 @@ class Lemur:
         else:
             path = Path(path)
 
-        payload = torch.load(path, map_location=self.device)
+        payload = torch.load(path, map_location=self.device, weights_only=False)
         config = dict(payload["config"])
         model_type = config.pop("model_type")
         builders = {

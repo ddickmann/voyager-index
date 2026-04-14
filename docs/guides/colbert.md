@@ -3,8 +3,9 @@
 ## Overview
 
 [ColBERT](https://arxiv.org/abs/2004.12832) produces multi-vector document
-representations where each token gets its own embedding. voyager-index's GEM
-engine natively indexes these multi-vector documents.
+representations where each token gets its own embedding. `voyager-index`
+supports these multivector documents through the shard engine, which is the
+mainline production path in this repo.
 
 ## End-to-End Example
 
@@ -15,7 +16,7 @@ from voyager_index import Index
 DIM = 128  # ColBERT default
 
 # 1. Create index
-with Index("colbert_index", dim=DIM, engine="gem", seed_batch_size=32) as idx:
+with Index("colbert_index", dim=DIM, engine="shard", n_shards=64, k_candidates=512) as idx:
 
     # 2. Add documents (each is a (n_tokens, 128) matrix)
     doc_embeddings = [
@@ -58,6 +59,6 @@ results = idx.search(query_embs, k=10)
 
 ## Performance Tips
 
-- Use `seed_batch_size=64` for small collections (< 1000 docs)
-- Increase `n_fine` for longer documents (512+ tokens)
-- Set `ef=128` or higher for high-recall applications
+- Start with `engine="shard"` and only tune `n_shards` and `k_candidates` first
+- Use GPU scoring when exact-stage latency matters more than deployment simplicity
+- Prefer base64 transport in the HTTP API when ColBERT queries or documents get large

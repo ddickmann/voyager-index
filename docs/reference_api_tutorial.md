@@ -1,99 +1,65 @@
 # Reference API Tutorial
 
-This is the primary OSS happy path for `voyager-index`.
+This is the shortest HTTP-only path through the shipped `voyager-index`
+reference API.
 
-It walks through the public HTTP API only. You do not need to read the full
-repo first.
+Read this first if you want:
 
-If you want the advanced, full-surface follow-up after this beginner path, use
-`docs/full_feature_cookbook.md`.
+- a single-machine retrieval service
+- base64-ready request examples
+- dense, late-interaction, multimodal, and shard collection basics
 
-If you want the fastest production-oriented CPU/GPU setup, worker guidance, and
-base64-first API examples, also read
-`docs/guides/max-performance-reference-api.md`.
+Then continue with:
 
-If you prefer to run the advanced flow as a logged example with a JSON report,
-use `examples/reference_api_feature_tour.py`.
+- `docs/guides/max-performance-reference-api.md` for worker and CPU/GPU tuning
+- `docs/full_feature_cookbook.md` for the broader surface
 
 ## 1. Install
 
-Install from PyPI (recommended):
-
 ```bash
-pip install voyager-index[server]
+pip install "voyager-index[server,shard]"
+pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
 ```
 
-That install includes the supported document-rendering stack for
-`POST /reference/preprocess/documents` and `voyager_index.render_documents(...)`.
+The `server` extra includes the supported document-rendering stack for
+`POST /reference/preprocess/documents`.
 
-For the full install matrix and product overview, start with `README.md`.
+The optional `native` extra currently adds one supported native wheel:
 
-Optional native packages add prebuilt Rust kernels:
-
-```bash
-pip install voyager-index[native,server]
-```
-
-What they add:
-
-- `latence_hnsw`: optional native dense/HNSW acceleration
-- `latence_solver`: canonical OSS solver package for optimized dense refinement and `/reference/optimize`
-- `latence_gem_router`: GEM-inspired set-native multi-vector routing core
-
-Neither native package is required for the default OSS tutorial path.
-
-### Install from source (contributors)
-
-```bash
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
-bash scripts/install_from_source.sh --cpu
-```
+- `latence_solver` for `dense_hybrid_mode="tabu"` and `/reference/optimize`
 
 ## 2. Start The Server
+
+Local development:
 
 ```bash
 voyager-index-server
 ```
 
-The interactive API docs are available at:
+Single-host production-style start:
+
+```bash
+HOST=0.0.0.0 WORKERS=4 voyager-index-server
+```
+
+OpenAPI:
 
 ```text
 http://127.0.0.1:8080/docs
 http://127.0.0.1:8080/redoc
 ```
 
-By default the reference service:
-
-- binds to `127.0.0.1`
-- stores collections under `VOYAGER_INDEX_PATH` or `/data/voyager-index`
-- auto-selects multiple local workers on multi-core hosts
-- exposes `/health`, `/ready`, and `/metrics`
-
-For a single-host production deployment, prefer:
+Useful probes:
 
 ```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/metrics
 ```
 
-## 3. Run The Happy-Path Example
+## 3. Dense Collection
 
-```bash
-python examples/reference_api_happy_path.py
-```
-
-That script exercises:
-
-- one `dense` collection
-- one `late_interaction` collection
-- one `multimodal` collection
-- payload filters
-- collection listing
-- truthful OSS notes about optional solver and provider integrations
-
-## 4. Dense Collection
-
-Create the collection:
+Create a collection:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/collections/tutorial-dense \
@@ -101,64 +67,68 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-dense \
   -d '{"dimension": 4, "kind": "dense"}'
 ```
 
-Insert points:
+Insert points with the preferred base64 transport:
 
-`POST /collections/{name}/points` is also the delta-ingestion path: sending the
-same IDs again replaces or upserts those points.
+```python
+import requests
 
-JSON float arrays remain supported, but base64 transport is the preferred
-default for new clients. Use `voyager_index.encode_vector_payload(...)` to build
-those request bodies.
+from voyager_index import encode_vector_payload
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-dense/points \
-  -H "Content-Type: application/json" \
-  -d '{
+body = {
     "points": [
-      {
-        "id": "invoice",
-        "vector": [1, 0, 0, 0],
-        "payload": {"text": "invoice total due", "doc_type": "invoice"}
-      },
-      {
-        "id": "report",
-        "vector": [0, 1, 0, 0],
-        "payload": {"text": "board report summary", "doc_type": "report"}
-      }
+        {
+            "id": "invoice",
+            "vector": encode_vector_payload([1, 0, 0, 0], dtype="float16"),
+            "payload": {"text": "invoice total due", "doc_type": "invoice"},
+        },
+        {
+            "id": "report",
+            "vector": encode_vector_payload([0, 1, 0, 0], dtype="float16"),
+            "payload": {"text": "board report summary", "doc_type": "report"},
+        },
     ]
-  }'
+}
+
+requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-dense/points",
+    json=body,
+    timeout=30,
+).raise_for_status()
 ```
 
-Search with vector + text + filter:
+Search with dense + BM25 fusion:
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-dense/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vector": [1, 0, 0, 0],
-    "query_text": "invoice",
-    "filter": {"doc_type": "invoice"},
-    "top_k": 2
-  }'
+```python
+import requests
+
+from voyager_index import encode_vector_payload
+
+response = requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-dense/search",
+    json={
+        "vector": encode_vector_payload([1, 0, 0, 0], dtype="float16"),
+        "query_text": "invoice",
+        "filter": {"doc_type": "invoice"},
+        "dense_hybrid_mode": "rrf",
+        "top_k": 2,
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["results"][0])
 ```
 
-Hybrid mode defaults to standard fusion, and you can opt into solver refinement
-when `latence_solver` is installed:
+Use solver refinement when `latence_solver` is installed:
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-dense/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vector": [1, 0, 0, 0],
-    "query_text": "invoice",
-    "dense_hybrid_mode": "tabu",
-    "top_k": 2
-  }'
+```json
+{
+  "dense_hybrid_mode": "tabu"
+}
 ```
 
-## 5. Late-Interaction Collection
+## 4. Late-Interaction Collection
 
-Create and query a multivector text collection with precomputed embeddings:
+Create the collection:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/collections/tutorial-li \
@@ -166,40 +136,49 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-li \
   -d '{"dimension": 4, "kind": "late_interaction"}'
 ```
 
-The same route also accepts a base64 matrix payload in `vectors`, which is the
-recommended transport once query tensors get large.
+Insert and query multivectors:
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-li/points \
-  -H "Content-Type: application/json" \
-  -d '{
-    "points": [
-      {
-        "id": "doc-1",
-        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-        "payload": {"text": "invoice total due", "label": "invoice"}
-      }
-    ]
-  }'
+```python
+import requests
+
+from voyager_index import encode_vector_payload
+
+doc_vectors = [[1, 0, 0, 0], [1, 0, 0, 0]]
+
+requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-li/points",
+    json={
+        "points": [
+            {
+                "id": "doc-1",
+                "vectors": encode_vector_payload(doc_vectors, dtype="float16"),
+                "payload": {"text": "invoice total due", "label": "invoice"},
+            }
+        ]
+    },
+    timeout=30,
+).raise_for_status()
+
+response = requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-li/search",
+    json={
+        "vectors": encode_vector_payload(doc_vectors, dtype="float16"),
+        "filter": {"label": "invoice"},
+        "with_vector": True,
+        "top_k": 2,
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["results"][0])
 ```
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-li/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-    "filter": {"label": "invoice"},
-    "with_vector": true,
-    "top_k": 2
-  }'
-```
+## 5. Multimodal Collection
 
-## 6. Multimodal Collection
+The multimodal collection API stores precomputed embeddings, but the reference
+server also provides the preprocessing step.
 
-The collection write API still expects precomputed embeddings, but the supported
-ingestion flow can now start from source docs and page images.
-
-Render source docs into PageBundle-like page assets:
+Render source documents:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/reference/preprocess/documents \
@@ -210,10 +189,6 @@ curl -X POST http://127.0.0.1:8080/reference/preprocess/documents \
   }'
 ```
 
-That response gives you page-level `image_path` values plus optional extracted
-text. Feed those images into your embedding provider, then store the resulting
-patch/token embeddings with `POST /collections/{name}/points`.
-
 Create the collection:
 
 ```bash
@@ -222,138 +197,152 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-mm \
   -d '{"dimension": 4, "kind": "multimodal"}'
 ```
 
-Insert precomputed patch embeddings:
+Insert and search patch embeddings:
+
+```python
+import requests
+
+from voyager_index import encode_vector_payload
+
+page_vectors = [[1, 0, 0, 0], [1, 0, 0, 0]]
+
+requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-mm/points",
+    json={
+        "points": [
+            {
+                "id": "page-1",
+                "vectors": encode_vector_payload(page_vectors, dtype="float16"),
+                "payload": {"doc_id": "invoice.pdf", "page_number": 1, "kind": "invoice"},
+            }
+        ]
+    },
+    timeout=30,
+).raise_for_status()
+
+response = requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-mm/search",
+    json={
+        "vectors": encode_vector_payload(page_vectors, dtype="float16"),
+        "filter": {"kind": "invoice"},
+        "with_vector": True,
+        "top_k": 2,
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["results"][0])
+```
+
+Practical guidance:
+
+- `multimodal_optimize_mode="auto"` is the safe default
+- explicit solver orderings are for targeted experiments
+- pure multimodal retrieval usually wants exact MaxSim first, not solver-first packing
+
+## 6. Shard Collection
+
+Shard collections are the max-performance public retrieval path.
+
+Create one:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-mm/points \
+curl -X POST http://127.0.0.1:8080/collections/tutorial-shard \
   -H "Content-Type: application/json" \
   -d '{
-    "points": [
-      {
-        "id": "page-1",
-        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-        "payload": {"doc_id": "invoice.pdf", "page_number": 1, "kind": "invoice"}
-      }
-    ]
+    "dimension": 128,
+    "kind": "shard",
+    "n_shards": 256,
+    "compression": "fp16",
+    "quantization_mode": "fp8",
+    "transfer_mode": "pinned",
+    "router_device": "cpu",
+    "use_colbandit": true
   }'
 ```
 
-Search:
+Shard search is vector-only over HTTP:
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-mm/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-    "filter": {"kind": "invoice"},
-    "with_vector": true,
-    "top_k": 2
-  }'
+```python
+import numpy as np
+import requests
+
+from voyager_index import encode_vector_payload
+
+query = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
+
+response = requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-shard/search",
+    json={
+        "vectors": encode_vector_payload(query, dtype="float16"),
+        "top_k": 10,
+        "quantization_mode": "fp8",
+        "transfer_mode": "pinned",
+        "use_colbandit": True,
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["results"][0])
 ```
 
-Optional optimized multimodal search:
+Important truth-in-advertising note:
 
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-mm/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-    "strategy": "optimized",
-    "multimodal_optimize_mode": "auto",
-    "multimodal_candidate_budget": 80,
-    "top_k": 2
-  }'
-```
-
-Important guidance:
-
-- `multimodal_optimize_mode: "auto"` currently resolves to exact MaxSim plus trust-aware lightweight screening
-- explicit solver orderings are available as `solver_prefilter_maxsim` and `maxsim_then_solver`
-- the current full rendered `tmp_data` benchmark (`547` pages, `8` real-model queries) kept `maxsim_only` as the winner; both solver orderings were slower and lower quality on that corpus
-- use those explicit solver orderings only for intentional experiments; for mixed-source chunk pools, prefer `POST /reference/optimize` as the final packing layer instead
+- shard HTTP search does not take `query_text`
+- dense BM25 hybrid stays on `dense` collections over HTTP
+- shard + BM25 fusion is an in-process `HybridSearchManager` workflow
 
 ## 7. Persistence And Inspection
 
-List collections:
+Collections persist under the configured storage root. Useful endpoints:
 
 ```bash
 curl http://127.0.0.1:8080/collections
-```
-
-Check readiness and health:
-
-```bash
+curl http://127.0.0.1:8080/collections/tutorial-shard/info
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/ready
-curl http://127.0.0.1:8080/docs
 ```
 
-Collections persist on disk under the configured root:
+Shard-only admin endpoints:
 
-- `hybrid/` for `dense`
-- `colbert/` for `late_interaction`
-- `colpali/` for `multimodal`
+- `POST /collections/{name}/compact`
+- `POST /collections/{name}/checkpoint`
+- `GET /collections/{name}/wal/status`
+- `GET /collections/{name}/shards`
+- `POST /collections/{name}/scroll`
+- `POST /collections/{name}/retrieve`
 
-## 8. Optional Integrations
+## 8. Optional Solver Surface
 
-### Optional Local Native Refinement
-
-If `latence_solver` is built and importable, `dense` search can use
-`strategy="optimized"` plus `max_tokens` and `max_chunks` for local refinement.
-
-This is an optional enhancement, not the baseline OSS contract.
-
-### Stateless Optimize Endpoint
-
-The same solver contract is also exposed publicly at:
+Check availability:
 
 ```bash
 curl http://127.0.0.1:8080/reference/optimize/health
 ```
 
-`POST /reference/optimize` accepts the canonical `OptimizerRequest` JSON shape:
+`/reference/optimize` is the stateless solver endpoint for:
 
-- `query_text`
-- `query_vectors` as base64 dense or multivector payloads
-- `candidates`
-- `constraints`
-- `solver_config`
-- `metadata`
+- dense
+- dense + BM25
+- late-interaction
+- multimodal
+- mixed candidate pools you want to pack or refine explicitly
 
-This endpoint is the OSS reference surface for dense, dense+BM25, multivector, and multivector+BM25 solver requests. It requires `latence_solver` to be installed.
+Use it when you already have a candidate pool and want optimization, not when
+you simply need standard exact multimodal retrieval.
 
-Practical guidance:
+## 9. Honest Boundaries
 
-- pure multimodal retrieval should stay on exact Triton MaxSim
-- if you already have chunks coming from BM25, ontology/rules, dense retrieval, multimodal retrieval, or a mixed union of those sources, `/reference/optimize` is the intended last-layer defense and is a stronger replacement for simple rank fusion like RRF
-- this is intentionally a more innovative and somewhat provocative framing than the mainstream stack: retrieval stays truthful, but final LLM context assembly becomes an explicit optimization step rather than an afterthought
+Outside the OSS HTTP contract:
 
-### Optional vLLM Pooling Provider
-
-Use `voyager_index.VllmPoolingProvider` to build requests for a user-operated
-pooling endpoint:
-
-```bash
-python examples/vllm_pooling_provider.py
-```
-
-This integration is optional and user-operated. `voyager-index` does not ship a
-managed paid service inside the OSS repo.
-
-## 9. Honest OSS Boundaries
-
-The following are intentionally outside the OSS promise:
-
-- ad hoc collection-specific optimize variants like `/collections/{name}/optimize`; use `/reference/optimize` instead
-- Voyager research code and premium solver backends: live in the separate `latence-voyager` repo
-- graph and Neo4j-adjacent concepts: library-side concepts, not part of the reference HTTP API contract
-- built-in document intelligence or remote embedding serving: use external producers and providers, then send embeddings into the OSS API
+- collection-specific ad hoc optimize endpoints
+- built-in remote embedding hosting
+- distributed control-plane features
+- internal research backends that are not part of the shard-first public story
 
 ## 10. Next Stops
 
 - `docs/full_feature_cookbook.md`
-- `examples/README.md`
-- `notebooks/README.md`
-- `MULTIMODAL_FOUNDATION.md`
-- `BENCHMARKS.md`
-- `docs/validation/README.md`
+- `docs/guides/max-performance-reference-api.md`
+- `docs/guides/shard-engine.md`
+- `docs/benchmarks.md`

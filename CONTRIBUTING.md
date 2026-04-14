@@ -9,9 +9,7 @@ The supported OSS surface for contributions is the `voyager-index` foundation:
 - `deploy/reference-api/`
 - `docs/`, `examples/`, and `notebooks/`
 - `tools/` for maintainer-oriented scripts and experiments
-- `src/kernels/hnsw_indexer/`
 - `src/kernels/knapsack_solver/` for the canonical OSS knapsack solver package and bindings
-- `src/kernels/gem_router/` for the GEM-inspired multi-vector routing core
 - root packaging, docs, tests, and examples
 
 Deferred or product-internal areas may exist in the repository, but they are
@@ -46,15 +44,13 @@ Behavior rules:
 ```bash
 python -m pip install --upgrade pip
 python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-python -m pip install -e ".[server,multimodal,dev,native-build,native-hnsw-build,native-solver-build,native-gem-build]"
+python -m pip install -e ".[server,shard,multimodal,dev,native-solver-build]"
 ```
 
 Optional native packages (require Rust toolchain):
 
 ```bash
-python -m pip install ./src/kernels/hnsw_indexer
 python -m pip install ./src/kernels/knapsack_solver
-python -m pip install ./src/kernels/gem_router
 ```
 
 Or use the one-command installer:
@@ -66,10 +62,9 @@ bash scripts/install_from_source.sh
 Native truth:
 
 - repo source presence does not make a native module active
-- `latence_hnsw`, `latence_solver`, and `latence_gem_router` only affect runtime after they are built and importable in the current environment
-- `cargo` and `rustc` are required for all native packages
+- `latence_solver` only affects runtime after it is built and importable in the current environment
+- `cargo` and `rustc` are required to build the solver package from source
 - `latence_solver` is the canonical OSS solver package with CPU fallback and optional CUDA-backed execution when built with GPU features
-- `latence_gem_router` provides the GEM-inspired set-native routing core for ColBERT and ColPali
 
 ## Before Opening A Change
 
@@ -80,7 +75,7 @@ Native truth:
 - keep the public solver API aligned around `/reference/optimize` and the shared request contract instead of adding parallel one-off optimize paths
 - keep `SearchPipeline` guidance limited to its vector-first dense/hybrid role
 - distinguish the canonical OSS solver contract from any future premium productization, but do not describe the OSS solver as CPU-only
-- when touching native code or native-lane docs, verify `latence_hnsw`, `latence_solver`, and `latence_gem_router` with the same build/install rigor
+- when touching native code or native-lane docs, verify `latence_solver` with the same build/install rigor
 
 ## Validation
 
@@ -110,8 +105,7 @@ Deeper maintainer-only helpers now live under:
 For native-specific changes, also verify:
 
 ```bash
-python src/kernels/hnsw_indexer/verify_install.py
-python -c "import latence_hnsw, latence_solver, latence_gem_router; print(latence_hnsw.__file__); print(latence_solver.version()); print(latence_gem_router.__file__)"
+python -c "import latence_solver; print(latence_solver.version())"
 ```
 
 The ontology contract test resolves its fixture in this order:

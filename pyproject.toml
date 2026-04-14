@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "voyager-index"
 version = "0.1.2"
-description = "The first open-source native multi-vector index. GEM graph index and LEMUR-routed shard engine for ColBERT/ColPali late-interaction retrieval — 52x faster than HNSW, sub-5ms shard search at 100K, full CRUD+WAL, GPU Triton MaxSim, ROQ 4-bit quantization, filters, and self-healing graphs."
+description = "Shard-first late-interaction retrieval for ColBERT and ColPali style workloads with CPU/GPU modes, Triton MaxSim, BM25 hybrid search, durable CRUD/WAL, multimodal preprocessing, and base64-ready reference APIs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -25,8 +25,7 @@ keywords = [
   "colbert",
   "colpali",
   "maxsim",
-  "graph-index",
-  "gem",
+  "shard",
   "vector-search",
   "quantization",
   "roq",
@@ -34,6 +33,7 @@ keywords = [
   "multimodal",
   "rag",
   "bm25",
+  "tabu-search",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -79,13 +79,7 @@ hnswlib-engine = [
 native-build = [
   "maturin>=1.5,<2.0",
 ]
-native-hnsw-build = [
-  "maturin>=1.5,<2.0",
-]
 native-solver-build = [
-  "maturin>=1.5,<2.0",
-]
-native-gem-build = [
   "maturin>=1.5,<2.0",
 ]
 multimodal = [
@@ -98,11 +92,11 @@ preprocessing = [
   "python-docx>=1.1,<2",
   "openpyxl>=3.1,<4",
 ]
-native = [
-  "latence-hnsw>=0.1.1",
+solver = [
   "latence-solver>=0.1.1",
-  "latence-gem-router>=0.1.1",
-  "latence-gem-index>=0.1.2",
+]
+native = [
+  "latence-solver>=0.1.1",
 ]
 dev = [
   "pytest>=8,<9",

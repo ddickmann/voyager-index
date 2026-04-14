@@ -54,11 +54,6 @@ ROLE_TO_ID = {
     "procedure": 7,
 }
 NATIVE_PACKAGE_SPECS = {
-    "latence_hnsw": {
-        "distribution": "latence_hnsw",
-        "source_dir": REPO_ROOT / "src" / "kernels" / "hnsw_indexer",
-        "verify_script": REPO_ROOT / "src" / "kernels" / "hnsw_indexer" / "verify_install.py",
-    },
     "latence_solver": {
         "distribution": "latence-solver",
         "source_dir": REPO_ROOT / "src" / "kernels" / "knapsack_solver",
@@ -4055,7 +4050,6 @@ def main() -> None:
                 "sauerkrautlm-colpali": safe_version("sauerkrautlm-colpali"),
                 "httpx": safe_version("httpx"),
                 "latence_solver": safe_version(NATIVE_PACKAGE_SPECS["latence_solver"]["distribution"]),
-                "latence_hnsw": safe_version(NATIVE_PACKAGE_SPECS["latence_hnsw"]["distribution"]),
             },
         },
         "inputs": {
@@ -4089,8 +4083,6 @@ def main() -> None:
     report["lanes"]["model"] = run_model_lane(evaluation_bundle, output_dir)
     report["lanes"]["solver"] = run_solver_lane(output_dir, native_packages, evaluation_bundle)
     report["lanes"]["ontology_variant"] = run_ontology_variant_evaluation(output_dir, native_packages, evaluation_bundle)
-    report["lanes"]["native_hnsw"] = run_native_hnsw_lane(output_dir, native_packages)
-    report["lanes"]["gem_router"] = run_gem_router_lane(output_dir)
 
     blockers = []
     if not corpus_inventory["documents"]:
@@ -4108,10 +4100,6 @@ def main() -> None:
     if report["lanes"]["ontology_variant"]["status"] != "passed":
         blockers.append(
             f"ontology lane status={report['lanes']['ontology_variant']['status']} reason={report['lanes']['ontology_variant'].get('reason')}"
-        )
-    if report["lanes"]["native_hnsw"]["status"] != "passed":
-        blockers.append(
-            f"latence_hnsw lane status={report['lanes']['native_hnsw']['status']} reason={report['lanes']['native_hnsw'].get('reason')}"
         )
     report["blockers"] = blockers
     report["value_summary"] = build_value_summary(report)

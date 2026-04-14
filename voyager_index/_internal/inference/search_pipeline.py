@@ -86,7 +86,12 @@ class SearchPipeline:
         self,
         query: Union[str, np.ndarray],
         top_k_retrieval: int = 100,
-        enable_refinement: bool = False
+        enable_refinement: bool = False,
+        query_text: str = "",
+        query_payload: Optional[Dict[str, Any]] = None,
+        solver_config: Optional[Dict[str, Any]] = None,
+        optimizer_policy: Optional[Any] = None,
+        refine_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Execute retrieval with optional solver refinement.
@@ -96,6 +101,11 @@ class SearchPipeline:
             top_k_retrieval: Number of candidates from HNSW (Map).
             enable_refinement: Whether to run optional local/native solver
                 refinement when available.
+            query_text: Optional sparse text / rerank text for dense-query refinement.
+            query_payload: Optional query-side metadata passed into refinement.
+            solver_config: Optional solver config overrides for the optimizer path.
+            optimizer_policy: Optional optimizer policy preset or override dict.
+            refine_options: Optional refinement options, including cross-encoder settings.
         """
         if isinstance(query, str):
             search_output = self.manager.search(
@@ -120,7 +130,7 @@ class SearchPipeline:
             )
 
         search_output = self.manager.search(
-            query_text="",
+            query_text=query_text,
             query_vector=query_vector,
             k=top_k_retrieval
         )
@@ -142,8 +152,12 @@ class SearchPipeline:
 
         refine_results = self.manager.refine(
             query_vector=query_vector,
-            query_text="",
-            candidate_ids=retrieval_ids
+            query_text=query_text,
+            query_payload=query_payload,
+            candidate_ids=retrieval_ids,
+            solver_config=solver_config,
+            optimizer_policy=optimizer_policy,
+            refine_options=refine_options,
         )
 
         return {

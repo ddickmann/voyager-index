@@ -1,8 +1,16 @@
 # Python API Reference
 
+## Mainline Surface
+
+The mainline local API is `Index(..., engine="shard")`.
+
+`engine="auto"` is still the constructor default for compatibility, but if you
+want the shard production path described in the docs, pass `engine="shard"`
+explicitly.
+
 ## `voyager_index.Index`
 
-The primary interface for creating and querying indexes.
+Primary local interface for creating, mutating, and querying indexes.
 
 ### Constructor
 
@@ -11,91 +19,135 @@ Index(
     path: str,
     dim: int,
     *,
-    engine: str = "auto",        # "gem", "hnsw", or "auto"
-    mode: str | None = None,     # "colbert", "colpali", or None
-    embedding_fn: Any = None,    # auto-embedding callable
-    n_fine: int = 256,           # fine centroids (codebook size)
-    n_coarse: int = 32,          # coarse clusters
-    max_degree: int = 32,        # max graph neighbors (M)
-    ef_construction: int = 200,  # beam width during build
-    n_probes: int = 4,           # clusters to probe during search
-    enable_wal: bool = True,     # write-ahead log
-    # GEM keyword args (passed through to GemNativeSegmentManager):
-    rerank_device: str = None,       # "cuda" for GPU MaxSim reranking
-    roq_rerank: bool = False,        # enable ROQ 4-bit fused Triton reranking
-    roq_bits: int = 4,               # ROQ quantization bit width
-    use_emd: bool = True,            # qEMD (metric) for graph construction
-    dual_graph: bool = True,         # per-cluster + cross-cluster bridges
-    warmup_kernels: bool = True,     # vLLM-style Triton pre-compilation
-    seed_batch_size: int = 256,      # docs before first codebook + graph
-    max_kmeans_iter: int = 15,       # K-means iterations for codebook
-    ctop_r: int = 3,                 # top coarse clusters per document
-    enable_shortcuts: bool = False,  # learned shortcut edges
-    store_raw_vectors: bool = True,  # keep FP32 for in-segment reranking
+    engine: str = "auto",
+    mode: str | None = None,
+    embedding_fn: Any | None = None,
+    n_fine: int = 256,
+    n_coarse: int = 32,
+    max_degree: int = 32,
+    ef_construction: int = 200,
+    n_probes: int = 4,
+    enable_wal: bool = True,
+    **kwargs,
 )
 ```
 
-### Methods
+### Shard kwargs
 
-| Method | Signature | Description |
+These keyword arguments are passed through when `engine="shard"`:
+
+| Argument | Meaning |
+|---|---|
+| `n_shards` | Number of sealed shards |
+| `k_candidates` | LEMUR candidate budget before exact scoring |
+| `compression` | Stored representation: `fp16`, `int8`, `roq4` |
+| `quantization_mode` | Active scoring mode: `none`, `int8`, `fp8`, `roq4` |
+| `transfer_mode` | CPU->GPU transfer path: `pageable`, `pinned`, `double_buffered` |
+| `router_device` | Device for the LEMUR router, usually `cpu` or `cuda` |
+| `lemur_epochs` | Router training epochs |
+| `lemur_search_k_cap` | Router search cap |
+| `max_docs_exact` | Exact-stage doc budget |
+| `n_full_scores` | Proxy shortlist size before full scoring |
+| `pinned_pool_buffers` | Pinned-memory buffer pool size |
+| `pinned_buffer_max_tokens` | Max tokens per pinned transfer buffer |
+| `gpu_corpus_rerank_topn` | GPU-corpus rerank frontier |
+| `n_centroid_approx` | Optional centroid-approx candidate stage |
+| `variable_length_strategy` | Variable-length exact scheduling mode |
+| `uniform_shard_tokens` | Optional shard packing knob |
+| `seed` | Random seed |
+| `device` | Scoring device for the manager, typically `cpu` or `cuda` |
+
+### Core methods
+
+| Method | Signature | Notes |
 |---|---|---|
-| `add` | `(vectors, *, ids=None, payloads=None)` | Add documents (3D array or list of 2D) |
+| `add` | `(vectors, *, ids=None, payloads=None)` | Add multivector documents |
 | `add_batch` | `(vectors, *, ids=None, payloads=None)` | Alias for `add()` |
-| `add_texts` | `(texts, *, ids=None, payloads=None)` | Add documents by text using `embedding_fn` |
-| `upsert` | `(vectors, *, ids, payloads=None)` | Insert or replace documents by ID |
-| `search` | `(query, k=10, *, ef=100, n_probes=4, filters=None, explain=False)` | Multi-vector search → `List[SearchResult]` |
-| `search_text` | `(text, k=10, *, ef=100, filters=None, explain=False)` | Text search using `embedding_fn` |
-| `search_batch` | `(queries, k=10, *, ef=100, n_probes=4, filters=None)` | Batch search → `List[List[SearchResult]]` |
-| `delete` | `(ids)` | Delete documents by ID |
-| `update_payload` | `(doc_id, payload)` | Update document metadata |
-| `get` | `(ids)` | Retrieve payloads by ID → `List[Optional[Dict]]` |
-| `scroll` | `(limit=100, offset=0, *, filters=None)` | Paginated iteration → `ScrollPage` |
-| `stats` | `()` | Summary statistics → `IndexStats` |
-| `snapshot` | `(output_path)` | Create tarball backup |
+| `add_texts` | `(texts, *, ids=None, payloads=None)` | Uses `embedding_fn` |
+| `upsert` | `(vectors, *, ids, payloads=None)` | Insert or replace by ID |
+| `search` | `(query, k=10, *, ef=100, n_probes=4, filters=None, explain=False)` | Main query path |
+| `search_text` | `(text, k=10, *, ef=100, filters=None, explain=False)` | Uses `embedding_fn` |
+| `search_batch` | `(queries, k=10, *, ef=100, n_probes=4, filters=None)` | Batch query path |
+| `delete` | `(ids)` | Tombstone documents by ID |
+| `update_payload` | `(doc_id, payload)` | Payload-only update |
+| `get` | `(ids)` | Retrieve stored payloads |
+| `scroll` | `(limit=100, offset=0, *, filters=None)` | Pagination |
+| `stats` | `()` | Returns `IndexStats` |
+| `snapshot` | `(output_path)` | Tarball snapshot |
 | `flush` | `()` | Force pending writes to disk |
 | `close` | `()` | Release resources |
-| `set_metrics_hook` | `(hook: Callable[[str, float], None])` | Register metrics callback |
-
-**Filter behavior**: `search()` applies filters natively during graph traversal
-via cluster-level bitmap pruning (Roaring bitmaps). `search_batch()` applies
-filters post-hoc in Python. Use `search()` for production filter workloads.
+| `set_metrics_hook` | `(hook)` | Metrics callback |
 
 ### Properties
 
-| Property | Type | Description |
-|---|---|---|
-| `path` | `Path` | Index directory |
-| `dim` | `int` | Vector dimension |
-| `engine` | `str` | Backend engine name (`"gem"` or `"hnsw"`) |
+| Property | Type |
+|---|---|
+| `path` | `Path` |
+| `dim` | `int` |
+| `engine` | `str` |
 
----
+### Example
+
+```python
+from voyager_index import Index
+
+idx = Index(
+    "my-index",
+    dim=128,
+    engine="shard",
+    n_shards=64,
+    k_candidates=512,
+    compression="fp16",
+    quantization_mode="fp8",
+)
+```
 
 ## `voyager_index.IndexBuilder`
 
-Fluent builder for custom Index configuration.
+Fluent builder for the same surface.
 
 ```python
 from voyager_index import IndexBuilder
 
-idx = (IndexBuilder("my_index", dim=128)
-       .with_gem(seed_batch_size=64, n_fine=128)
-       .with_gpu_rerank(device="cuda")
-       .with_wal(enabled=True)
-       .with_quantization(n_fine=256, n_coarse=32)
-       .build())
+idx = (
+    IndexBuilder("my-index", dim=128)
+    .with_shard(
+        n_shards=64,
+        k_candidates=512,
+        compression="fp16",
+        quantization_mode="fp8",
+        transfer_mode="pinned",
+    )
+    .with_wal(enabled=True)
+    .build()
+)
 ```
 
-| Method | Description |
+| Method | Meaning |
 |---|---|
-| `with_gem(**kwargs)` | Select GEM engine with optional overrides |
-| `with_hnsw(**kwargs)` | Select HNSW engine (legacy) |
-| `with_wal(enabled=True)` | Enable/disable write-ahead log |
-| `with_quantization(n_fine=256, n_coarse=32)` | Configure codebook |
-| `with_gpu_rerank(device="cuda")` | Enable GPU MaxSim reranking |
-| `with_roq(bits=4, device="cuda")` | Enable ROQ compressed reranking |
-| `build()` | Create and return the `Index` |
+| `with_shard(**kwargs)` | Select shard engine; recommended path |
+| `with_wal(enabled=True)` | Enable WAL-backed mutation safety |
+| `with_quantization(n_fine=256, n_coarse=32)` | Codebook config helper |
+| `with_gpu_rerank(device="cuda")` | Legacy compatibility helper |
+| `with_roq(bits=4, device="cuda")` | Legacy compatibility helper |
+| `with_gem(**kwargs)` | Compatibility backend, not the documented mainline |
+| `with_hnsw(**kwargs)` | Compatibility backend, not the documented mainline |
+| `build()` | Returns `Index` |
 
----
+## Transport Helpers
+
+Use these helpers for the preferred HTTP wire format:
+
+```python
+from voyager_index import VectorPayload, decode_payload, encode_roq_payload, encode_vector_payload
+```
+
+| Helper | Meaning |
+|---|---|
+| `encode_vector_payload(vectors, dtype="float32")` | Encode float vectors to JSON-ready base64 |
+| `encode_roq_payload(vectors, num_bits=4, seed=42)` | Encode ROQ payloads |
+| `decode_payload(payload)` | Decode a transport payload back to `numpy.ndarray` |
+| `VectorPayload` | Public transport payload type |
 
 ## Data Classes
 
@@ -104,11 +156,11 @@ idx = (IndexBuilder("my_index", dim=128)
 ```python
 @dataclass
 class SearchResult:
-    doc_id: int                                  # document ID
-    score: float                                 # similarity score
-    payload: Optional[Dict[str, Any]] = None     # document metadata
-    token_scores: Optional[List[float]] = None   # per-query-token attribution (explain=True)
-    matched_tokens: Optional[List[int]] = None   # matched token indices (explain=True)
+    doc_id: int
+    score: float
+    payload: Optional[Dict[str, Any]] = None
+    token_scores: Optional[List[float]] = None
+    matched_tokens: Optional[List[int]] = None
 ```
 
 ### `voyager_index.ScrollPage`
@@ -117,7 +169,7 @@ class SearchResult:
 @dataclass
 class ScrollPage:
     results: List[SearchResult]
-    next_offset: Optional[int] = None  # None when no more pages
+    next_offset: Optional[int] = None
 ```
 
 ### `voyager_index.IndexStats`
@@ -125,25 +177,23 @@ class ScrollPage:
 ```python
 @dataclass
 class IndexStats:
-    total_documents: int   # total docs across all segments
-    sealed_segments: int   # number of sealed read-only segments
-    active_documents: int  # docs in the mutable segment
-    dim: int               # vector dimension
-    engine: str            # "gem" or "hnsw"
+    total_documents: int = 0
+    sealed_segments: int = 0
+    active_documents: int = 0
+    dim: int = 0
+    engine: str = ""
 ```
 
----
-
-## Configuration
+## Search And Config Exports
 
 ### `voyager_index.BM25Config`
 
 ```python
 @dataclass
 class BM25Config:
-    k1: float = 1.5       # term frequency saturation (1.2–2.0)
-    b: float = 0.75        # length normalization
-    epsilon: float = 0.25  # IDF floor
+    k1: float = 1.5
+    b: float = 0.75
+    epsilon: float = 0.25
 ```
 
 ### `voyager_index.FusionConfig`
@@ -151,20 +201,16 @@ class BM25Config:
 ```python
 @dataclass
 class FusionConfig:
-    strategy: str = "rrf"                      # "rrf", "weighted", "dbsf"
-    weights: Optional[Dict[str, float]] = None # per-engine weights (sum to 1.0)
-    normalization: str = "minmax"              # "minmax", "zscore", "none"
+    strategy: str = "rrf"
+    weights: Optional[Dict[str, float]] = None
+    normalization: str = "minmax"
     top_k: int = 10
     min_score: float = 0.0
 ```
 
 ### `voyager_index.IndexConfig`
 
-Controls ColBERT index behavior including three modes:
-
-- **Real-time** (< 1K docs): pure Triton, cached in VRAM, 50+ QPS
-- **High quality** (1K–50K docs): Triton + mmap streaming, exact search
-- **Balanced** (> 50K docs): GEM graph traversal + MaxSim rerank
+Higher-level configuration surface used by package helpers.
 
 ### `voyager_index.Neo4jConfig`
 
@@ -179,266 +225,75 @@ class Neo4jConfig:
     relationship_types: Optional[List[str]] = None
 ```
 
----
+### `voyager_index.SearchPipeline`
 
-## `voyager_index.SearchPipeline`
+Programmatic dense + BM25 retrieval surface.
 
-Hybrid dense+sparse (BM25 + vector) retrieval pipeline with RRF fusion.
+### `voyager_index.ColbertIndex`
 
-```python
-from voyager_index import SearchPipeline, BM25Config, FusionConfig
+Higher-level late-interaction text helper exported by the package.
 
-pipeline = SearchPipeline(
-    index=idx,
-    bm25_config=BM25Config(k1=1.5, b=0.75),
-    fusion_config=FusionConfig(strategy="rrf", top_k=10),
-)
-results = pipeline.search("query text", k=10)
-```
+### `voyager_index.ColPaliEngine`
 
----
+Multimodal retrieval engine for ColPali-family embeddings.
 
-## `voyager_index.ColbertIndex`
+### `voyager_index.MultiModalEngine`
 
-Production-grade ColBERT index with automatic scaling. Selects the optimal
-search strategy (Triton-only, mmap, or GEM graph) based on corpus size.
+Combined multimodal retrieval surface.
 
-```python
-from voyager_index import ColbertIndex
-
-cidx = ColbertIndex(path="colbert_idx", dim=128)
-cidx.add_documents(embeddings, ids)
-results = cidx.search(query, k=10)
-```
-
----
-
-## `voyager_index.ColPaliEngine`
-
-Visual document search engine using ColPali-family models.
-
-```python
-from voyager_index import ColPaliEngine, ColPaliConfig
-
-config = ColPaliConfig(
-    screening_backend="gem_router",
-    n_fine=128,
-)
-engine = ColPaliEngine(config=config)
-```
-
----
-
-## `voyager_index.MultiModalEngine`
-
-Multi-modal search combining ColBERT (text) and ColPali (visual) with
-shared MaxSim scoring.
-
----
-
-## Multimodal
+## Multimodal And Preprocessing Exports
 
 ### `voyager_index.MultimodalModelSpec`
 
 ```python
 @dataclass(frozen=True)
 class MultimodalModelSpec:
-    plugin_name: str          # short alias ("collfm2", "colqwen3")
-    model_id: str             # HuggingFace model ID
-    architecture: str         # backbone description
-    embedding_style: str      # "colpali" or "colbert"
-    modalities: tuple[str, ...] # ("text", "image")
-    pooling_task: str         # vLLM pooling task name
-    serve_command: str        # example vLLM launch command
+    plugin_name: str
+    model_id: str
+    architecture: str
+    embedding_style: str
+    modalities: tuple[str, ...]
+    pooling_task: str
+    serve_command: str
 ```
 
 ### `voyager_index.VllmPoolingProvider`
 
-```python
-from voyager_index import VllmPoolingProvider
-
-provider = VllmPoolingProvider(
-    endpoint="http://localhost:8200",
-    model="VAGOsolutions/SauerkrautLM-ColLFM2-450M-v0.1",
-)
-result = provider.pool(input_data)             # single request
-results = provider.batch_pool([data1, data2])  # sequential batch
-```
-
----
-
-## Preprocessing
+Shared vLLM-compatible embedding provider for multimodal flows.
 
 ### `voyager_index.enumerate_renderable_documents`
 
-```python
-enumerate_renderable_documents(
-    root: Path | str,
-    *,
-    exclude_paths: Sequence[Path | str] | None = None,
-    recursive: bool = True,
-) -> dict[str, Any]
-```
-
-Returns: `{"root": str, "documents": List[Path], "skipped": List[{"path", "reason"}]}`
-
-Supported formats: PDF, DOCX, XLSX, PNG, JPG, WebP, GIF.
+Discovers supported source documents under a directory tree.
 
 ### `voyager_index.render_documents`
 
-```python
-render_documents(
-    documents: Sequence[Path | str],
-    output_dir: Path | str,
-    *,
-    source_root: Path | str | None = None,
-) -> dict[str, Any]
-```
+Renders those documents into page-level assets for embedding and indexing.
 
-Returns:
-- `status`: `"passed"` or `"skipped"`
-- `output_dir`: resolved output path
-- `bundles`: per-document bundles with `doc_id`, `pages`, metadata
-- `rendered`: flat list of page dicts (`image_path`, `page_number`, `doc_id`, `renderer`, `text`, `width`, `height`)
-- `skipped`: files that couldn't be rendered
-- `summary`: aggregate counts
+## Triton Kernel Exports
 
----
-
-## Triton Kernels
-
-All GPU kernels require `voyager-index[gpu]` (Triton). They are optional —
-the system falls back to CPU scoring when unavailable.
+All GPU kernels require the `gpu` extra and are optional.
 
 ### `voyager_index.fast_colbert_scores`
 
-Exact MaxSim late-interaction scoring via fused Triton kernel.
+Exact MaxSim late-interaction scoring.
 
-```python
-from voyager_index import fast_colbert_scores
+### `voyager_index.roq_maxsim_1bit`
+### `voyager_index.roq_maxsim_2bit`
+### `voyager_index.roq_maxsim_4bit`
+### `voyager_index.roq_maxsim_8bit`
 
-scores = fast_colbert_scores(
-    queries,           # (n_queries, n_q_tokens, dim) float16
-    documents,         # (n_docs, n_d_tokens, dim) float16
-    documents_mask=mask,  # (n_docs, n_d_tokens) float — 1.0 for real tokens
-)  # → (n_queries, n_docs)
-```
-
-### ROQ MaxSim Kernels
-
-```python
-from voyager_index import roq_maxsim_4bit, roq_maxsim_8bit, roq_maxsim_2bit, roq_maxsim_1bit
-
-scores = roq_maxsim_4bit(
-    query_codes, query_meta,
-    doc_codes, doc_meta,
-    documents_mask=mask,
-)  # → (n_queries, n_docs)
-```
-
-Full ROQ ladder: `roq_maxsim_1bit`, `roq_maxsim_2bit`, `roq_maxsim_4bit`, `roq_maxsim_8bit`.
+ROQ scoring kernels exported through the public package.
 
 ### `voyager_index.TRITON_AVAILABLE`
 
-Boolean flag: `True` if Triton is installed and operational.
+Boolean flag indicating whether Triton is available.
 
----
+## Server Export
 
-## Low-Level: `latence_gem_index`
-
-For power users who need direct access to the Rust GEM segments.
-
-### `GemSegment` (sealed, read-only)
-
-| Method | Description |
-|---|---|
-| `build(all_vectors, doc_ids, doc_offsets, n_fine=0, n_coarse=32, max_degree=32, ef_construction=200, max_kmeans_iter=15, ctop_r=3, payload_clusters=None, use_emd=True, dual_graph=True, store_raw_vectors=True)` | Build graph from vectors |
-| `search(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False, filter=None, min_cluster_ratio=0.01)` | Search → `List[(doc_id, score)]` |
-| `search_with_stats(query_vectors, k=10, ef=100, n_probes=4, enable_shortcuts=False, filter=None, min_cluster_ratio=0.01)` | Search + `(nodes_visited, distance_computations)` |
-| `search_batch(queries, k=10, ef=100, n_probes=4, enable_shortcuts=False)` | Batch search |
-| `brute_force_proxy(query_vectors, k=10)` | Exhaustive qCH proxy ranking (oracle baseline) |
-| `brute_force_maxsim(query_vectors, k=10)` | Exhaustive exact MaxSim ranking (requires `store_raw_vectors=True`) |
-| `save(path)` / `load(path)` | Persist with CRC32 integrity |
-| `set_doc_payloads(payloads)` | Build Roaring bitmap filter index for filtered search |
-| `inject_shortcuts(training_pairs, max_shortcuts_per_node=4)` | Add learned shortcut edges |
-| `prune_stale_shortcuts(deleted_flags, max_age=None, current_generation=0)` | Remove stale shortcuts |
-| `graph_connectivity_report()` | BFS connectivity → `(n_components, giant_frac, cross_cluster_ratio)` |
-| `get_codebook_centroids()` | → `ndarray (n_fine, dim)` |
-| `get_idf()` | → `ndarray (n_fine,)` — IDF weights per centroid |
-| `get_flat_codes()` | → `(codes, offsets, lengths)` — per-document centroid codes |
-| `n_docs()` / `n_nodes()` / `n_edges()` / `dim()` | Graph stats |
-| `is_ready()` / `total_shortcuts()` | Segment state |
-
-**`build()` key parameters:**
-- `store_raw_vectors`: Keep raw FP32 vectors for in-segment `brute_force_maxsim`. Set `False` to save ~50% memory when using external GPU reranking.
-- `use_emd`: Use qEMD (Sinkhorn OT, metric) for graph edge construction. Default `True`. Set `False` to use qCH (faster, non-metric).
-- `filter`: List of `(field, value)` tuples for filter-aware routing (AND semantics with cluster-level bitmap pruning).
-- `min_cluster_ratio`: Skip clusters with fewer than this fraction of matching docs (default 0.01).
-
-### `PyMutableGemSegment` (writable)
-
-| Method | Description |
-|---|---|
-| `build(...)` | Build initial graph |
-| `search(query_vectors, k, ef, n_probes)` | Search |
-| `insert(vectors, doc_id)` | Insert one document |
-| `insert_batch(vectors_list, doc_ids)` | Batch insert |
-| `delete(doc_id)` → `bool` | Soft-delete |
-| `upsert(vectors, doc_id)` | Delete + insert |
-| `compact()` | Rebuild without deleted nodes |
-| `heal()` | Local graph repair |
-| `needs_healing()` → `bool` | Drift detection |
-| `graph_quality_metrics()` | → `(delete_ratio, avg_degree, isolated_ratio, stale_rep_ratio)` |
-
-### `PyEnsembleGemSegment` (multi-modal)
-
-| Method | Description |
-|---|---|
-| `build(..., modality_tags, n_modalities)` | Build per-modality graphs |
-| `search(query_vectors, query_modality_tags, k, ef, n_probes)` | Search with RRF fusion |
-
-### `GpuQchScorer` (GPU brute-force proxy)
-
-For small-to-medium corpora (<50K), brute-force qCH on GPU can be faster than
-graph traversal. This scorer computes proxy distances for all documents in a
-single GPU launch.
+The public server module is:
 
 ```python
-from voyager_index._internal.inference.index_core.gpu_qch import GpuQchScorer
-
-scorer = GpuQchScorer.from_gem_segment(segment, device="cuda")
-scores = scorer.score_query(query_vecs)            # → (n_docs,) lower = closer
-scores = scorer.score_query_filtered(query_vecs, mask)  # masked scoring
+from voyager_index.server import app, create_app, main
 ```
 
-**Typical pipeline (brute-force qCH → MaxSim rerank):**
-
-```python
-from voyager_index._internal.inference.index_core.gpu_qch import GpuQchScorer
-from voyager_index import fast_colbert_scores
-import torch
-
-scorer = GpuQchScorer.from_gem_segment(segment, device="cuda")
-proxy = scorer.score_query(query_gpu)               # qCH proxy for all docs
-_, top_idxs = proxy.topk(500, largest=False)         # top-500 candidates
-# ... gather candidate vectors, rerank with fast_colbert_scores ...
-```
-
----
-
-## Feature Matrix: What's Available Where
-
-| Feature | `Index` (high-level) | `GemSegment` (low-level) | Notes |
-|---|---|---|---|
-| Graph search (qCH proxy) | `search(ef=..., n_probes=...)` | `search(...)` | |
-| GPU MaxSim reranking | `rerank_device="cuda"` | External via `fast_colbert_scores` | Auto-applied after proxy search |
-| ROQ 4-bit reranking | `roq_rerank=True` | External via `roq_maxsim_4bit` | Fused Triton kernel |
-| Brute-force qCH (GPU) | — | `GpuQchScorer.score_query()` | Low-level only |
-| Brute-force MaxSim | — | `brute_force_maxsim()` | Requires `store_raw_vectors=True` |
-| Brute-force proxy (CPU) | — | `brute_force_proxy()` | |
-| Search stats | — | `search_with_stats()` | Returns `(nodes_visited, dist_computations)` |
-| Filter-aware search | `search(filters={...})` | `search(filter=[...])` | Cluster-level bitmap pruning |
-| Kernel warmup | `warmup_kernels=True` | — | vLLM-style pre-compilation |
-| Semantic shortcuts | `enable_shortcuts=True` | `inject_shortcuts()` | Learned edges |
-| Self-healing | Automatic (background) | `heal()`, `needs_healing()` | Mutable segment only |
-| Multi-modal ensemble | — | `PyEnsembleGemSegment` | Per-modality RRF fusion |
+Use `voyager-index-server` for the packaged CLI entry point.

@@ -1,59 +1,50 @@
-# voyager-index
+# voyager-index Docs
 
-**The first open-source native multi-vector index.**
+`voyager-index` is a shard-first late-interaction retrieval system for
+multivector text and multimodal search.
 
-voyager-index ships a Rust-native GEM graph index that replaces traditional HNSW
-for multi-vector workloads like ColBERT and ColPali. Search is **52x faster**
-than HNSW at 1024-token sequence length.
+The public story is:
 
-## Why voyager-index?
+- shard engine as the production retrieval path
+- CPU fallback and GPU acceleration from the same collection format
+- Triton MaxSim, ColBANDIT, and quantization as layered performance options
+- CRUD, WAL, checkpoint, and recovery as standard features
+- base64 vector transport as the preferred HTTP contract
+- BM25 hybrid search with `rrf` or `tabu`
 
-| Feature | voyager-index | Traditional HNSW |
-|---|---|---|
-| Multi-vector native | Yes (document-level graph) | No (single-vector) |
-| Search @ 1024 tokens | **1.3 ms** | 67 ms |
-| CRUD operations | Insert, delete, upsert, compact | Varies |
-| Crash recovery | WAL + checkpointing | Varies |
-| Segment lifecycle | Sealed + active with auto-healing | Varies |
-| Filtered search | Cluster-level bitmap pruning | Post-filter only |
-| GPU scoring | Optional Triton qCH kernel | N/A |
-| Multi-modal | Ensemble with per-modality graphs | N/A |
+## Start Here
 
-## Quick Example
+- [Quickstart](getting-started/quickstart.md): first local shard index
+- [Installation](getting-started/installation.md): package extras and source install
+- [Python API Reference](api/python.md): `Index`, `IndexBuilder`, transport helpers, and public classes
+- [Reference API Tutorial](reference_api_tutorial.md): first HTTP collections and queries
+- [Max-Performance Reference API Guide](guides/max-performance-reference-api.md): worker scaling, base64, GPU modes
+- [Shard Engine Guide](guides/shard-engine.md): routing, scoring, durability, and admin endpoints
+- [Benchmarks](benchmarks.md): methodology, caveats, and 100k placeholder table
 
-```python
-from voyager_index import Index
+## Who This Fits
 
-idx = Index("my_index", dim=128, engine="gem", seed_batch_size=64)
-idx.add(embeddings, ids=[1, 2, 3])
-results = idx.search(query_vectors, k=10)
-for r in results:
-    print(f"Doc {r.doc_id}: score={r.score:.4f}")
-idx.close()
-```
+This repo is a good fit if you are shipping:
 
-## Architecture
+- ColBERT-style token retrieval
+- ColPali-style page or patch retrieval
+- a single-host service that needs multi-worker QPS scaling
+- a retrieval stack where exact MaxSim quality matters more than generic vector DB breadth
 
-```
-┌─────────────────────────────────────────────┐
-│                 Index (Python)               │
-│  add() / search() / delete() / scroll()     │
-├─────────────────────────────────────────────┤
-│          GemNativeSegmentManager            │
-│  WAL / checkpoint / compaction / healing    │
-├──────────────────┬──────────────────────────┤
-│  Active Mutable  │  Sealed GEM Segments     │
-│  insert / delete │  read-only / optimized   │
-│  heal / compact  │  filter-aware search     │
-├──────────────────┴──────────────────────────┤
-│         latence_gem_index (Rust/PyO3)       │
-│  GemSegment · MutableGemSegment · Ensemble  │
-│  graph · search · heal · persistence        │
-├─────────────────────────────────────────────┤
-│         latence_gem_router (Rust/PyO3)      │
-│  codebook · qCH scoring · filter bitmaps   │
-├─────────────────────────────────────────────┤
-│        Optional: GPU qCH (Triton/PyTorch)   │
-│        GpuQchScorer · autotuned kernel      │
-└─────────────────────────────────────────────┘
-```
+## Product Shape
+
+| Surface | What it does |
+|---|---|
+| `Index(engine="shard")` | Local shard collections with CRUD and search |
+| `voyager-index-server` | Reference HTTP API with dense, late-interaction, multimodal, and shard collections |
+| `encode_vector_payload()` | Preferred base64 serializer for dense and multivector requests |
+| `SearchPipeline` | In-process dense + BM25 fusion |
+| `latence_solver` | Optional Tabu Search solver for `tabu` refinement and `/reference/optimize` |
+
+## Design Principles
+
+- Late interaction first
+- Multimodal as a continuation of the same retrieval story
+- Honest CPU and GPU modes
+- Simple deployment over single-host sprawl
+- Benchmark claims tied to recall and methodology

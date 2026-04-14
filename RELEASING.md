@@ -1,106 +1,99 @@
 # Releasing voyager-index
 
-Step-by-step release checklist for maintainers.
+This project now has one release narrative:
 
-## Standard release
+- shard-first public product
+- optional `latence_solver` native add-on
+- shard-only CI and validation lanes for the production story
 
-1. **Decide the version** — follow [semver](https://semver.org/):
-   - patch (`0.1.1`): bug fix, docs, dependency bump
-   - minor (`0.2.0`): new feature, non-breaking API addition
-   - major (`1.0.0`): breaking API change
+## Before You Cut A Release
 
-2. **Update `pyproject.toml`**:
-   ```toml
-   version = "0.X.Y"
-   ```
+Make sure these are true:
 
-3. **Update `CHANGELOG.md`** — add a new section at the top:
-   ```markdown
-   ## 0.X.Y
+- `README.md`, `docs/`, and the package surface agree on the shard-first story
+- `CHANGELOG.md` has a new top entry for the release version
+- `pyproject.toml` version matches that entry
+- package build, wheel inspection, and shard CI lanes are green
 
-   - description of changes
-   ```
+## Supported Package Story
 
-4. **Commit**:
-   ```bash
-   git add pyproject.toml CHANGELOG.md
-   git commit -m "release: v0.X.Y"
-   ```
+The release surface should match this install matrix:
 
-5. **Push to main**:
-   ```bash
-   git push origin main
-   ```
+- `voyager-index[shard]`
+- `voyager-index[server,shard]`
+- `voyager-index[server,shard,gpu]`
+- `voyager-index[server,shard,native]`
 
-6. **Wait for CI** — confirm the green checkmark on the commit.
+`native` currently means the solver wheel only.
 
-7. **Create the GitHub release**:
-   ```bash
-   gh release create v0.X.Y --title "0.X.Y" --notes "See CHANGELOG.md for details."
-   ```
+## Standard Release Checklist
 
-8. **Trusted publisher auto-publishes to PyPI** — the `release.yml` workflow
-   triggers on the published release event and uploads to PyPI via OIDC. This
-   typically completes within 2 minutes.
-
-9. **Verify**:
-   ```bash
-   pip install voyager-index==0.X.Y
-   python -c "import voyager_index; print(voyager_index.__version__)"
-   ```
-
-## Pre-release (release candidate)
-
-Use a pre-release version tag to test before the final release:
+1. Decide the version using semver.
+2. Update `pyproject.toml`.
+3. Add a top changelog entry in `CHANGELOG.md`.
+4. Run the release validation commands:
 
 ```bash
-# In pyproject.toml: version = "0.2.0rc1"
-git commit -m "release: v0.2.0rc1"
-git push origin main
-gh release create v0.2.0rc1 --title "0.2.0rc1" --prerelease --notes "Release candidate."
+python -m pip install --upgrade pip
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+pytest tests/test_oss_release_hygiene.py tests/test_release_polish_surface.py -v --tb=short
 ```
 
-Pre-releases appear on PyPI but are not installed by default (`pip install voyager-index` skips them). Install with:
+5. Verify the shard-only CI story locally when relevant:
 
 ```bash
-pip install voyager-index==0.2.0rc1
+python scripts/full_feature_validation.py --tmp-data-dir ./tmp_data
+python benchmarks/oss_reference_benchmark.py --device cpu --points 16 --top-k 3
 ```
 
-## Hotfix
-
-1. Fix the issue on `main`.
-2. Bump the patch version (e.g., `0.1.0` → `0.1.1`).
-3. Follow the standard release steps above.
-
-## Yanking a broken release
-
-If a release has a critical defect:
+6. Commit the version and changelog changes.
+7. Push to `main`.
+8. Wait for CI.
+9. Create the GitHub release:
 
 ```bash
-# Yank on PyPI (package stays downloadable by exact version, but hidden from resolution)
+gh release create v0.X.Y --title "0.X.Y" --notes-file CHANGELOG.md
+```
+
+10. Verify the published package:
+
+```bash
+pip install voyager-index==0.X.Y
+python -c "import voyager_index; print(voyager_index.__version__)"
+```
+
+## Release Notes Framing
+
+Prefer notes in this order:
+
+1. user-facing product changes
+2. API or SDK changes
+3. benchmark or performance notes with caveats
+4. docs, CI, and packaging cleanup
+
+## Pre-releases
+
+Use tags like `0.X.Yrc1` when you want to validate packaging or docs before the
+final release.
+
+```bash
+gh release create v0.X.Yrc1 --title "0.X.Yrc1" --prerelease --notes "Release candidate."
+```
+
+## Hotfixes And Yanks
+
+If a release is broken:
+
+```bash
 pip install twine
 twine yank voyager-index 0.X.Y
-
-# Or via the PyPI web UI: go to the release page and click "Yank"
 ```
 
-Then publish a hotfix release immediately.
+Then publish a patch release immediately.
 
 ## Prerequisites
 
-- GitHub CLI (`gh`) authenticated with repo access.
-- PyPI trusted publisher configured (see below).
-
-### PyPI trusted publisher setup (one-time)
-
-1. Go to <https://pypi.org/manage/account/publishing/>.
-2. Under **Add a new pending publisher**, enter:
-   - PyPI project name: `voyager-index`
-   - Owner: `ddickmann`
-   - Repository: `voyager-index`
-   - Workflow name: `release.yml`
-   - Environment name: `pypi`
-3. Click **Add**.
-
-After the first successful publish, the pending publisher converts to an active
-trusted publisher automatically.
+- GitHub CLI authenticated for release creation
+- PyPI trusted publisher configured for `release.yml`

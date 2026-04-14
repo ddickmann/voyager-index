@@ -6,6 +6,18 @@ construction entirely, relying instead on a learned routing MLP (LEMUR) to
 reduce multi-vector candidate generation to single-vector MIPS, then scoring
 candidates with Triton on CUDA or exact/full-precision fallback paths on CPU.
 
+## Who this is for
+
+Use the shard engine when you want:
+
+- the mainline `voyager-index` production path
+- a simpler mental model than graph-native retrieval
+- CPU fallback and GPU acceleration from the same collection layout
+- durable CRUD, WAL, checkpoint, and recovery
+
+Not the best fit when you only need pooled dense vectors and do not care about
+late interaction.
+
 ## Architecture
 
 ```
@@ -32,7 +44,7 @@ Key properties:
 - **Production ColBANDIT path**: query-time pruning is wired into the real
   shard serving flow instead of being a side experiment
 - **Full CRUD**: insert, delete, upsert via WAL + memtable, identical
-  durability model to the GEM engine
+  durability guarantees to the rest of the shipped product surface
 
 ## Quick Start
 
@@ -143,7 +155,7 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 
 ## CRUD and Durability
 
-The shard engine uses the same WAL + memtable pattern as the GEM engine:
+The shard engine uses a WAL + memtable pattern:
 
 1. **Write-Ahead Log**: every insert/delete/upsert/update_payload is logged
    to a binary WAL before being applied to the in-memory memtable.
@@ -212,17 +224,9 @@ VRAM = n_docs × max_tokens × dim × 2 bytes (FP16)
 
 Example: 100K docs × 128 tokens × 128 dim = ~3.3 GB.
 
-## Comparison with GEM
+## Production Notes
 
-| Feature | GEM | Shard |
-|---------|-----|-------|
-| Build method | Rust proximity graph | LEMUR MLP + FAISS |
-| Search method | Graph traversal + qCH proxy | ANN routing + exact MaxSim |
-| Build time (100K) | Minutes | Seconds |
-| Search latency | Sub-linear in N | Linear in candidates (capped) |
-| Dependencies | Rust crate required | Python + native deps (PyTorch, FAISS, safetensors, Triton) |
-| Scale sweet spot | 100K–10M+ | 10K–500K |
-| WAL + CRUD | Yes | Yes |
-| ROQ 4-bit | Yes | Yes |
-| Filters | Roaring bitmap | Payload scan |
-| Hybrid search | BM25 + Tabu | Programmatic BM25 + RRF/Tabu |
+- shard is the documented production retrieval path in this repo
+- HTTP shard search is vector-only
+- dense BM25 hybrid remains on `dense` collections over HTTP
+- `latence_solver` is the optional native add-on for `tabu`

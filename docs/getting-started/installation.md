@@ -1,16 +1,34 @@
 # Installation
 
-## pip (recommended)
+## Recommended Extras
 
 ```bash
-pip install voyager-index                # pure Python
-pip install voyager-index[native]        # + Rust accelerated kernels
-pip install voyager-index[native,server] # + FastAPI reference server
+pip install "voyager-index[shard]"
+pip install "voyager-index[shard,gpu]"
+pip install "voyager-index[server,shard]"
+pip install "voyager-index[server,shard,native]"
 ```
+
+What they mean:
+
+- `shard`: FAISS + safetensors for the shard retrieval path
+- `gpu`: Triton GPU kernels
+- `server`: FastAPI reference API plus document rendering dependencies
+- `native`: optional `latence_solver` wheel for `tabu` refinement and `/reference/optimize`
+
+## Mainline Install Profiles
+
+| Goal | Install |
+|---|---|
+| Local shard retrieval on CPU | `pip install "voyager-index[shard]"` |
+| Shard retrieval with Triton MaxSim | `pip install "voyager-index[shard,gpu]"` |
+| Reference API on CPU | `pip install "voyager-index[server,shard]"` |
+| Reference API + solver refinement | `pip install "voyager-index[server,shard,native]"` |
 
 ## From Source
 
-Requires Python >= 3.10 and a Rust toolchain:
+Requires Python 3.10+ and a Rust toolchain only if you want to build the solver
+wheel from source.
 
 ```bash
 git clone https://github.com/ddickmann/voyager-index.git
@@ -18,28 +36,26 @@ cd voyager-index
 bash scripts/install_from_source.sh --cpu
 ```
 
-## Native Crates
+## Optional Native Package
 
-The Rust crates are built with [maturin](https://github.com/PyO3/maturin):
+The only native package in the supported PyPI story today is:
 
-| Crate | Description |
+| Package | Purpose |
 |---|---|
-| `latence-gem-index` | Native GEM graph index (core) |
-| `latence-gem-router` | Codebook, clustering, qCH scoring |
-| `latence-hnsw` | HNSW segment wrapper (legacy) |
-| `latence-solver` | Tabu Search knapsack solver |
+| `latence-solver` | Tabu Search solver for `dense_hybrid_mode="tabu"` and `/reference/optimize` |
 
-Build individually:
+Build it directly if needed:
 
 ```bash
-cd src/kernels/gem_index && maturin develop --release
-cd src/kernels/gem_router && maturin develop --release
+python -m pip install ./src/kernels/knapsack_solver
 ```
 
 ## Verify
 
 ```python
-import latence_gem_index
-import latence_gem_router
-print("Native modules OK")
+import voyager_index
+from voyager_index import Index, encode_vector_payload
+
+print(voyager_index.__version__)
+print(Index, encode_vector_payload)
 ```

@@ -1,6 +1,6 @@
 # Full-Feature Cookbook
 
-This guide is the complete OSS exploration path for `voyager-index`.
+This guide is the complete shard-first OSS exploration path for `voyager-index`.
 
 It is designed so a user can walk the whole stack step by step, or skip directly
 to the sections they care about.
@@ -53,7 +53,7 @@ with the results, skips, and boundary checks.
 Install from PyPI (recommended):
 
 ```bash
-pip install voyager-index[server]
+pip install "voyager-index[server,shard]"
 ```
 
 That install includes the supported PDF, DOCX, XLSX, and image rendering stack
@@ -64,15 +64,13 @@ For the full install matrix and product overview, start with `README.md`.
 Optional extras:
 
 ```bash
-pip install voyager-index[server,multimodal]     # + multimodal helpers
-pip install voyager-index[native,server]          # + prebuilt Rust kernels
+pip install "voyager-index[server,shard,multimodal]"  # + multimodal helpers
+pip install "voyager-index[server,shard,native]"      # + Tabu Search solver
 ```
 
 What the native extras add:
 
-- `latence_hnsw`: optional native dense/HNSW acceleration
 - `latence_solver`: canonical OSS solver package for dense refinement and `/reference/optimize`
-- `latence_gem_router`: GEM-inspired set-native multi-vector routing core
 
 ### Install from source (contributors)
 
@@ -83,8 +81,8 @@ bash scripts/install_from_source.sh --cpu
 ```
 - multimodal extras: optional provider-side helpers and example flows
 
-If you are preparing a release build today, this source-checkout install flow is the supported story.
-Publishing wheels or a PyPI package can be added later without changing the HTTP contract documented here.
+This source-checkout install flow is mainly for contributors. The supported user
+story is the published PyPI package.
 
 ## Step 1. Start The Reference Service
 
@@ -566,7 +564,7 @@ What is and is not configurable from the HTTP API today:
 - yes: opting into `strategy="optimized"`
 - yes: selecting `multimodal_optimize_mode`
 - yes: setting `multimodal_candidate_budget`, `multimodal_prefilter_k`, and `multimodal_maxsim_frontier_k`
-- no: selecting `prototype_hnsw` vs `centroid` through an HTTP field
+- no: selecting internal screening backend experiments through an HTTP field
 
 Current measured guidance on the rendered `tmp_data` benchmark (`547` pages, `8`
 real-model queries):

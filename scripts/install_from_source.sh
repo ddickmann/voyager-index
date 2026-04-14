@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# install_from_source.sh — one-command full build of voyager-index
+# install_from_source.sh — one-command source install of voyager-index
 #
 # Installs system dependencies, Rust toolchain, the Python package in
-# editable mode, and all three native Rust/PyO3 extensions:
-#   - latence_hnsw      (Qdrant HNSW segment wrapper)
-#   - latence_solver     (Tabu Search knapsack solver)
-#   - latence_gem_router (GEM-inspired multi-vector router)
+# editable mode, and the optional supported native solver package:
+#   - latence_solver    (Tabu Search knapsack solver)
 #
 # Usage:
 #   bash scripts/install_from_source.sh          # full install
@@ -77,18 +75,16 @@ fi
 
 # ── 5. Main Python package (editable) ────────────────────────────────
 echo ""
-echo "▶ Installing voyager-index in editable mode with all extras..."
+echo "▶ Installing voyager-index in editable mode with shard/server extras..."
 cd "$REPO_ROOT"
-python -m pip install -e ".[server,multimodal,preprocessing,dev,native-build]"
+python -m pip install -e ".[server,shard,multimodal,preprocessing,dev,native-solver-build]"
 
 # ── 6. Native Rust extensions ────────────────────────────────────────
 echo ""
-echo "▶ Building native Rust extensions..."
+echo "▶ Building optional native solver package..."
 
 NATIVE_CRATES=(
-  "src/kernels/hnsw_indexer"
   "src/kernels/knapsack_solver"
-  "src/kernels/gem_router"
 )
 
 for crate in "${NATIVE_CRATES[@]}"; do
@@ -109,22 +105,10 @@ import voyager_index
 print(f'  ✓ voyager_index loaded ({voyager_index.__file__})')
 
 try:
-    import latence_hnsw
-    print(f'  ✓ latence_hnsw loaded ({latence_hnsw.__file__})')
-except ImportError as e:
-    print(f'  ✗ latence_hnsw: {e}')
-
-try:
     import latence_solver
     print(f'  ✓ latence_solver loaded ({latence_solver.__file__})')
 except ImportError as e:
     print(f'  ✗ latence_solver: {e}')
-
-try:
-    import latence_gem_router
-    print(f'  ✓ latence_gem_router loaded ({latence_gem_router.__file__})')
-except ImportError as e:
-    print(f'  ✗ latence_gem_router: {e}')
 "
 
 echo ""
