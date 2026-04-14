@@ -10,8 +10,14 @@ import numpy as np
 
 from voyager_index._internal.inference.stateless_optimizer import (
     VectorPayload,
+)
+from voyager_index._internal.inference.stateless_optimizer import (
     decode_vector_payload as _decode_vector_payload,
+)
+from voyager_index._internal.inference.stateless_optimizer import (
     encode_float_vectors as _encode_float_vectors,
+)
+from voyager_index._internal.inference.stateless_optimizer import (
     encode_roq_vectors as _encode_roq_vectors,
 )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -421,3 +421,126 @@ def test_hybrid_manager_confidence_gate_skips_expensive_rerank(
     assert manager._last_refine_context["confidence_gate"]["applied"] is True
     assert manager._last_refine_context["rerank"]["reason"] == "confidence_gate_skip"
     assert manager._last_refine_context["nli"]["reason"] == "confidence_gate_skip"
+
+
+def test_hybrid_manager_refine_skips_solver_when_production_gate_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = HybridSearchManager.__new__(HybridSearchManager)
+    manager.solver = types.SimpleNamespace(
+        config=types.SimpleNamespace(lambda_=0.32, iterations=48),
+    )
+    manager._optimizer_pipeline = types.SimpleNamespace(
+        optimize_in_process=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("solver should not run when production gate skips refinement")
+        )
+    )
+    manager._last_search_context = None
+    manager._last_refine_context = {}
+
+    monkeypatch.setattr(
+        manager,
+        "_build_solver_candidates",
+        lambda *args, **kwargs: [
+            {
+                "chunk_id": "11",
+                "content": "alpha target",
+                "embedding": [1.0, 0.0],
+                "token_count": 80,
+                "fact_density": 0.4,
+                "centrality_score": 0.6,
+                "recency_score": 0.2,
+                "auxiliary_score": 0.3,
+                "rhetorical_role": "evidence",
+                "cluster_id": 0,
+                "base_relevance": 0.95,
+                "rrf_score": 0.95,
+            },
+            {
+                "chunk_id": "12",
+                "content": "beta support",
+                "embedding": [0.8, 0.2],
+                "token_count": 90,
+                "fact_density": 0.3,
+                "centrality_score": 0.4,
+                "recency_score": 0.2,
+                "auxiliary_score": 0.2,
+                "rhetorical_role": "support",
+                "cluster_id": 1,
+                "base_relevance": 0.10,
+                "rrf_score": 0.10,
+            },
+        ],
+    )
+
+    refined = manager.refine(
+        query_vector=np.asarray([1.0, 0.0], dtype=np.float32),
+        candidate_ids=[11, 12],
+        query_text="alpha target",
+        constraints={"max_tokens": 220, "max_chunks": 1},
+    )
+
+    assert refined["backend_kind"] == "rrf_gate"
+    assert refined["selected_internal_ids"] == [11]
+    assert refined["solver_output"]["skipped_by_gate"] is True
+    assert "candidate_count_below_min" in refined["solver_output"]["gate"]["reasons"]
+    assert refined["feature_summary"]["skipped_by_gate"] is True
+
+
+def test_hybrid_manager_refine_caps_lambda_for_large_production_pools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = HybridSearchManager.__new__(HybridSearchManager)
+    manager.solver = types.SimpleNamespace(
+        config=types.SimpleNamespace(lambda_=0.32, iterations=48),
+    )
+    manager._last_search_context = None
+    manager._last_refine_context = {}
+    captured: dict[str, object] = {}
+
+    def fake_optimize_in_process(**kwargs):
+        captured["solver_config"] = dict(kwargs["solver_config"])
+        return {
+            "selected_ids": ["100", "101"],
+            "solver_output": {"objective_score": 1.25, "total_tokens": 160},
+            "feature_summary": {"candidate_count": 60},
+            "backend_kind": "cpu_reference",
+            "solver_backend_kind": "cpu_reference",
+        }
+
+    manager._optimizer_pipeline = types.SimpleNamespace(optimize_in_process=fake_optimize_in_process)
+
+    def build_candidates(*args, **kwargs):
+        candidates = []
+        for idx in range(60):
+            candidates.append(
+                {
+                    "chunk_id": str(100 + idx),
+                    "content": f"candidate {idx}",
+                    "embedding": [1.0, 0.0],
+                    "token_count": 64,
+                    "fact_density": 0.4,
+                    "centrality_score": 0.5,
+                    "recency_score": 0.2,
+                    "auxiliary_score": 0.3,
+                    "rhetorical_role": "evidence",
+                    "cluster_id": idx % 4,
+                    "base_relevance": 1.0 - (0.001 * idx),
+                    "rrf_score": 1.0 - (0.001 * idx),
+                }
+            )
+        return candidates
+
+    monkeypatch.setattr(manager, "_build_solver_candidates", build_candidates)
+
+    refined = manager.refine(
+        query_vector=np.asarray([1.0, 0.0], dtype=np.float32),
+        candidate_ids=list(range(100, 160)),
+        query_text="voyager target",
+        constraints={"max_tokens": 1000, "max_chunks": 8},
+    )
+
+    assert refined["backend_kind"] == "cpu_reference"
+    assert captured["solver_config"]["lambda"] == pytest.approx(0.05)
+    assert refined["feature_summary"]["production_solver_profile"]["applied"] is True
+    assert refined["feature_summary"]["refine_solver_gate"]["run_solver"] is True

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SearchResult:
     """A single search result with document ID, score, and optional payload."""
+
     doc_id: int
     score: float
     payload: Optional[Dict[str, Any]] = None
@@ -37,6 +38,7 @@ class SearchResult:
 @dataclass
 class ScrollPage:
     """A page of results from scroll iteration."""
+
     results: List[SearchResult]
     next_offset: Optional[int] = None
 
@@ -44,6 +46,7 @@ class ScrollPage:
 @dataclass
 class IndexStats:
     """Summary statistics for an Index."""
+
     total_documents: int = 0
     sealed_segments: int = 0
     active_documents: int = 0
@@ -56,9 +59,11 @@ def _check_gem_available() -> bool:
         from voyager_index._internal.inference.index_core.gem_manager import (
             GemNativeSegmentManager,
         )
+
         if GemNativeSegmentManager is None:
             return False
         from latence_gem_index import GemSegment, PyMutableGemSegment
+
         return GemSegment is not None and PyMutableGemSegment is not None
     except ImportError:
         return False
@@ -69,6 +74,7 @@ def _check_hnsw_available() -> bool:
         from voyager_index._internal.inference.index_core.hnsw_manager import (
             HnswSegmentManager,
         )
+
         return HnswSegmentManager is not None
     except ImportError:
         return False
@@ -79,6 +85,7 @@ def _check_shard_available() -> bool:
         from voyager_index._internal.inference.shard_engine.manager import (
             ShardSegmentManager,
         )
+
         return ShardSegmentManager is not None
     except ImportError:
         return False
@@ -196,6 +203,7 @@ class Index:
             from voyager_index._internal.inference.index_core.gem_manager import (
                 GemNativeSegmentManager,
             )
+
             mgr_kwargs = dict(kwargs)
             mgr_kwargs["enable_wal"] = enable_wal
             self._manager = GemNativeSegmentManager(
@@ -210,22 +218,41 @@ class Index:
             )
         elif resolved_engine == "shard":
             from voyager_index._internal.inference.shard_engine.manager import (
-                ShardSegmentManager,
                 ShardEngineConfig,
+                ShardSegmentManager,
             )
-            shard_kwargs = {k: v for k, v in kwargs.items() if k in {
-                "n_shards", "compression", "layout", "router_type",
-                "ann_backend", "lemur_epochs", "k_candidates",
-                "max_docs_exact", "lemur_search_k_cap", "n_full_scores",
-                "transfer_mode", "pinned_pool_buffers",
-                "pinned_buffer_max_tokens", "use_colbandit",
-                "quantization_mode", "variable_length_strategy",
-                "gpu_corpus_rerank_topn", "n_centroid_approx",
-                "router_device",
-                "uniform_shard_tokens", "seed",
-            }}
+
+            shard_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k
+                in {
+                    "n_shards",
+                    "compression",
+                    "layout",
+                    "router_type",
+                    "ann_backend",
+                    "lemur_epochs",
+                    "k_candidates",
+                    "max_docs_exact",
+                    "lemur_search_k_cap",
+                    "n_full_scores",
+                    "transfer_mode",
+                    "pinned_pool_buffers",
+                    "pinned_buffer_max_tokens",
+                    "use_colbandit",
+                    "quantization_mode",
+                    "variable_length_strategy",
+                    "gpu_corpus_rerank_topn",
+                    "n_centroid_approx",
+                    "router_device",
+                    "uniform_shard_tokens",
+                    "seed",
+                }
+            }
             shard_config = kwargs.get("shard_config") or ShardEngineConfig(
-                dim=dim, **shard_kwargs,
+                dim=dim,
+                **shard_kwargs,
             )
             device = kwargs.get("device", "cuda")
             self._manager = ShardSegmentManager(
@@ -237,6 +264,7 @@ class Index:
             from voyager_index._internal.inference.index_core.hnsw_manager import (
                 HnswSegmentManager,
             )
+
             self._manager = HnswSegmentManager(
                 shard_path=str(self._path / "shard"),
                 dim=dim,
@@ -245,7 +273,7 @@ class Index:
         else:
             raise ValueError(f"Unknown engine: {engine!r}. Use 'gem', 'hnsw', 'shard', or 'auto'.")
 
-        if hasattr(self._manager, '_payloads'):
+        if hasattr(self._manager, "_payloads"):
             self._payloads = dict(self._manager._payloads)
 
     def _check_open(self):
@@ -262,8 +290,7 @@ class Index:
         """Add documents by text, using the configured embedding_fn."""
         if self._embedding_fn is None:
             raise RuntimeError(
-                "No embedding_fn configured. Pass embedding_fn= to Index() "
-                "or use add() with pre-computed vectors."
+                "No embedding_fn configured. Pass embedding_fn= to Index() or use add() with pre-computed vectors."
             )
         vecs = self._embedding_fn.embed_documents(texts)
         self.add(vecs, ids=ids, payloads=payloads)
@@ -314,21 +341,15 @@ class Index:
 
             for v in vecs_list:
                 if v.shape[-1] != self._dim:
-                    raise ValueError(
-                        f"dimension mismatch: expected {self._dim}, got {v.shape[-1]}"
-                    )
+                    raise ValueError(f"dimension mismatch: expected {self._dim}, got {v.shape[-1]}")
 
             if ids is not None and len(ids) != n_docs:
-                raise ValueError(
-                    f"ids length ({len(ids)}) != vectors count ({n_docs})"
-                )
+                raise ValueError(f"ids length ({len(ids)}) != vectors count ({n_docs})")
             if payloads is not None and len(payloads) != n_docs:
-                raise ValueError(
-                    f"payloads length ({len(payloads)}) != vectors count ({n_docs})"
-                )
+                raise ValueError(f"payloads length ({len(payloads)}) != vectors count ({n_docs})")
 
             if ids is None:
-                if hasattr(self._manager, 'allocate_ids'):
+                if hasattr(self._manager, "allocate_ids"):
                     ids = self._manager.allocate_ids(n_docs)
                 else:
                     assigned = []
@@ -390,18 +411,12 @@ class Index:
 
             for v in vecs_list:
                 if v.shape[-1] != self._dim:
-                    raise ValueError(
-                        f"dimension mismatch: expected {self._dim}, got {v.shape[-1]}"
-                    )
+                    raise ValueError(f"dimension mismatch: expected {self._dim}, got {v.shape[-1]}")
 
             if len(ids) != n_docs:
-                raise ValueError(
-                    f"ids length ({len(ids)}) != vectors count ({n_docs})"
-                )
+                raise ValueError(f"ids length ({len(ids)}) != vectors count ({n_docs})")
             if payloads is not None and len(payloads) != n_docs:
-                raise ValueError(
-                    f"payloads length ({len(payloads)}) != vectors count ({n_docs})"
-                )
+                raise ValueError(f"payloads length ({len(payloads)}) != vectors count ({n_docs})")
 
             if payloads is None:
                 payloads = [{} for _ in range(n_docs)]
@@ -464,11 +479,15 @@ class Index:
         self._check_open()
 
         search_kwargs_inner = {"k": k, "ef": ef, "filters": filters}
-        if hasattr(self._manager, 'search_multivector'):
+        if hasattr(self._manager, "search_multivector"):
             qv = query.astype(np.float32, copy=False)
             qv = qv if qv.ndim == 2 else qv.reshape(1, -1)
             raw = self._manager.search_multivector(
-                qv, k=k, ef=ef, n_probes=n_probes, filters=filters,
+                qv,
+                k=k,
+                ef=ef,
+                n_probes=n_probes,
+                filters=filters,
             )
         else:
             raw = self._manager.search(
@@ -484,15 +503,20 @@ class Index:
             payload = payloads_snap.get(doc_id)
             tok_scores = None
             matched = None
-            if explain and hasattr(self._manager, 'explain_score'):
+            if explain and hasattr(self._manager, "explain_score"):
                 tok_scores, matched = self._manager.explain_score(
-                    query.astype(np.float32, copy=False), doc_id,
+                    query.astype(np.float32, copy=False),
+                    doc_id,
                 )
-            results.append(SearchResult(
-                doc_id=int(doc_id), score=float(score),
-                payload=payload,
-                token_scores=tok_scores, matched_tokens=matched,
-            ))
+            results.append(
+                SearchResult(
+                    doc_id=int(doc_id),
+                    score=float(score),
+                    payload=payload,
+                    token_scores=tok_scores,
+                    matched_tokens=matched,
+                )
+            )
 
         return results
 
@@ -522,7 +546,9 @@ class Index:
 
         raw_batched = self._manager.search_batch(
             [q.astype(np.float32, copy=False) for q in queries],
-            k=k, ef=ef, n_probes=n_probes,
+            k=k,
+            ef=ef,
+            n_probes=n_probes,
         )
 
         with self._lock:
@@ -533,15 +559,16 @@ class Index:
             results = []
             for doc_id, score in raw:
                 payload = payloads_snap.get(doc_id)
-                if filters and hasattr(self._manager, '_evaluate_filter'):
-                    if not self._manager._evaluate_filter(
-                        payload or {}, filters
-                    ):
+                if filters and hasattr(self._manager, "_evaluate_filter"):
+                    if not self._manager._evaluate_filter(payload or {}, filters):
                         continue
-                results.append(SearchResult(
-                    doc_id=int(doc_id), score=float(score),
-                    payload=payload,
-                ))
+                results.append(
+                    SearchResult(
+                        doc_id=int(doc_id),
+                        score=float(score),
+                        payload=payload,
+                    )
+                )
             all_results.append(results[:k])
 
         return all_results
@@ -567,19 +594,15 @@ class Index:
         self._check_open()
 
         with self._lock:
-            if filters and hasattr(self._manager, '_match_filter'):
-                all_ids = sorted(
-                    doc_id for doc_id in self._payloads
-                    if self._manager._match_filter(doc_id, filters)
-                )
+            if filters and hasattr(self._manager, "_match_filter"):
+                all_ids = sorted(doc_id for doc_id in self._payloads if self._manager._match_filter(doc_id, filters))
                 page_ids = all_ids[offset : offset + limit]
             else:
                 ids_list = sorted(self._payloads)
                 page_ids = ids_list[offset : offset + limit]
                 all_ids = ids_list
             results = [
-                SearchResult(doc_id=doc_id, score=0.0, payload=self._payloads.get(doc_id))
-                for doc_id in page_ids
+                SearchResult(doc_id=doc_id, score=0.0, payload=self._payloads.get(doc_id)) for doc_id in page_ids
             ]
 
             next_off = offset + limit if offset + limit < len(all_ids) else None
@@ -638,7 +661,7 @@ class Index:
             hook: Callable accepting ``(name: str, value: float)``.
         """
         self._metrics_hook = hook
-        if hasattr(self._manager, 'set_metrics_hook'):
+        if hasattr(self._manager, "set_metrics_hook"):
             self._manager.set_metrics_hook(hook)
 
     def flush(self):

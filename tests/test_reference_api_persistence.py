@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 
-from fastapi.testclient import TestClient
 import numpy as np
 import torch
+from fastapi.testclient import TestClient
 
-from voyager_index._internal.server.api.models import CollectionKind, CreateCollectionRequest, PointVector, SearchRequest
+from voyager_index._internal.server.api.models import (
+    CollectionKind,
+    CreateCollectionRequest,
+    PointVector,
+    SearchRequest,
+)
 from voyager_index._internal.server.api.service import SearchService
 from voyager_index._internal.server.main import create_app
 
@@ -18,18 +23,20 @@ def _create_client(index_path: Path) -> TestClient:
 
 def test_dense_collection_persists_across_restart(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 4, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": "doc-1", "vector": [1, 0, 0, 0], "payload": {"text": "alpha"}}
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 4, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={"points": [{"id": "doc-1", "vector": [1, 0, 0, 0], "payload": {"text": "alpha"}}]},
+            ).status_code
+            == 200
+        )
 
     with _create_client(tmp_path) as client:
         info = client.get("/collections/dense/info")
@@ -51,22 +58,28 @@ def test_dense_collection_persists_across_restart(tmp_path: Path) -> None:
 
 def test_late_interaction_collection_persists_across_restart(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/li",
-            json={"dimension": 4, "kind": "late_interaction"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/li/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-1",
-                        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-                        "payload": {"text": "alpha"},
-                    }
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/li",
+                json={"dimension": 4, "kind": "late_interaction"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/li/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-1",
+                            "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
+                            "payload": {"text": "alpha"},
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
     with _create_client(tmp_path) as client:
         info = client.get("/collections/li/info")
@@ -86,10 +99,13 @@ def test_dense_mutations_become_visible_across_service_instances(tmp_path: Path)
     service_b = SearchService(str(tmp_path))
 
     try:
-        assert service_a.add_points(
-            "dense",
-            [PointVector(id="doc-1", vector=[1, 0, 0, 0], payload={"text": "alpha"})],
-        ) == 1
+        assert (
+            service_a.add_points(
+                "dense",
+                [PointVector(id="doc-1", vector=[1, 0, 0, 0], payload={"text": "alpha"})],
+            )
+            == 1
+        )
 
         first = service_b.search(
             "dense",
@@ -97,10 +113,13 @@ def test_dense_mutations_become_visible_across_service_instances(tmp_path: Path)
         )
         assert [item.id for item in first.results] == ["doc-1"]
 
-        assert service_a.add_points(
-            "dense",
-            [PointVector(id="doc-2", vector=[0, 1, 0, 0], payload={"text": "beta"})],
-        ) == 1
+        assert (
+            service_a.add_points(
+                "dense",
+                [PointVector(id="doc-2", vector=[0, 1, 0, 0], payload={"text": "beta"})],
+            )
+            == 1
+        )
 
         second = service_b.search(
             "dense",
@@ -114,22 +133,28 @@ def test_dense_mutations_become_visible_across_service_instances(tmp_path: Path)
 
 def test_multimodal_collection_persists_across_restart(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 4, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "page-1",
-                        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-                        "payload": {"page_number": 1},
-                    }
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 4, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "page-1",
+                            "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
+                            "payload": {"page_number": 1},
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
     with _create_client(tmp_path) as client:
         info = client.get("/collections/mm/info")
@@ -145,22 +170,28 @@ def test_multimodal_collection_persists_across_restart(tmp_path: Path) -> None:
 
 def test_corrupted_multimodal_screening_state_surfaces_as_load_failure(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 4, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "page-1",
-                        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-                        "payload": {"page_number": 1},
-                    }
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 4, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "page-1",
+                            "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
+                            "payload": {"page_number": 1},
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
     screening_state_path = tmp_path / "mm" / "colpali" / "screening_state.json"
     screening_state_path.write_text("{not-valid-json", encoding="utf-8")
@@ -173,35 +204,40 @@ def test_corrupted_multimodal_screening_state_surfaces_as_load_failure(tmp_path:
     assert ready.json()["status"] == "degraded"
     assert "mm" in ready.json()["failed_collection_loads"]
     assert any(
-        issue["reason"] == "collection_load_failed" and issue["name"] == "mm"
-        for issue in ready.json()["issues"]
+        issue["reason"] == "collection_load_failed" and issue["name"] == "mm" for issue in ready.json()["issues"]
     )
     assert info.status_code == 404
 
 
 def test_late_interaction_with_vector_handles_unsorted_internal_ids(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/li",
-            json={"dimension": 4, "kind": "late_interaction"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/li/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-1",
-                        "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
-                        "payload": {"text": "alpha"},
-                    },
-                    {
-                        "id": "doc-2",
-                        "vectors": [[0, 1, 0, 0], [0, 1, 0, 0]],
-                        "payload": {"text": "beta"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/li",
+                json={"dimension": 4, "kind": "late_interaction"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/li/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-1",
+                            "vectors": [[1, 0, 0, 0], [1, 0, 0, 0]],
+                            "payload": {"text": "alpha"},
+                        },
+                        {
+                            "id": "doc-2",
+                            "vectors": [[0, 1, 0, 0], [0, 1, 0, 0]],
+                            "payload": {"text": "beta"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
     with _create_client(tmp_path) as client:
         response = client.post(
@@ -218,10 +254,13 @@ def test_late_interaction_with_vector_handles_unsorted_internal_ids(tmp_path: Pa
 def test_uncommitted_dense_mutation_recovers_on_restart(tmp_path: Path) -> None:
     service = SearchService(str(tmp_path))
     service.create_collection("dense", CreateCollectionRequest(dimension=2, kind="dense"))
-    assert service.add_points(
-        "dense",
-        [PointVector(id="doc-1", vector=[1, 0], payload={"text": "alpha"})],
-    ) == 1
+    assert (
+        service.add_points(
+            "dense",
+            [PointVector(id="doc-1", vector=[1, 0], payload={"text": "alpha"})],
+        )
+        == 1
+    )
 
     runtime = service.get_collection("dense")
     backup = service._begin_collection_mutation(runtime, operation="add_points")
@@ -254,10 +293,13 @@ def test_uncommitted_dense_mutation_recovers_on_restart(tmp_path: Path) -> None:
 def test_uncommitted_late_interaction_mutation_recovers_on_restart(tmp_path: Path) -> None:
     service = SearchService(str(tmp_path))
     service.create_collection("li", CreateCollectionRequest(dimension=2, kind="late_interaction"))
-    assert service.add_points(
-        "li",
-        [PointVector(id="doc-1", vectors=[[1, 0], [1, 0]], payload={"text": "alpha"})],
-    ) == 1
+    assert (
+        service.add_points(
+            "li",
+            [PointVector(id="doc-1", vectors=[[1, 0], [1, 0]], payload={"text": "alpha"})],
+        )
+        == 1
+    )
 
     runtime = service.get_collection("li")
     backup = service._begin_collection_mutation(runtime, operation="add_points")
@@ -289,10 +331,13 @@ def test_uncommitted_late_interaction_mutation_recovers_on_restart(tmp_path: Pat
 def test_uncommitted_multimodal_mutation_recovers_on_restart(tmp_path: Path) -> None:
     service = SearchService(str(tmp_path))
     service.create_collection("mm", CreateCollectionRequest(dimension=2, kind="multimodal"))
-    assert service.add_points(
-        "mm",
-        [PointVector(id="page-1", vectors=[[1, 0], [1, 0]], payload={"page_number": 1})],
-    ) == 1
+    assert (
+        service.add_points(
+            "mm",
+            [PointVector(id="page-1", vectors=[[1, 0], [1, 0]], payload={"page_number": 1})],
+        )
+        == 1
+    )
 
     runtime = service.get_collection("mm")
     backup = service._begin_collection_mutation(runtime, operation="add_points")
@@ -326,10 +371,13 @@ def test_uncommitted_multimodal_mutation_recovers_on_restart(tmp_path: Path) -> 
 def test_late_interaction_runtime_profiles_are_populated(tmp_path: Path) -> None:
     service = SearchService(str(tmp_path))
     service.create_collection("li", CreateCollectionRequest(dimension=2, kind="late_interaction"))
-    assert service.add_points(
-        "li",
-        [PointVector(id="doc-1", vectors=[[1, 0], [1, 0]], payload={"text": "alpha"})],
-    ) == 1
+    assert (
+        service.add_points(
+            "li",
+            [PointVector(id="doc-1", vectors=[[1, 0], [1, 0]], payload={"text": "alpha"})],
+        )
+        == 1
+    )
 
     runtime = service.get_collection("li")
     response = service.search(
@@ -346,18 +394,17 @@ def test_late_interaction_runtime_profiles_are_populated(tmp_path: Path) -> None
 
 def test_async_task_status_is_shared_across_clients(tmp_path: Path) -> None:
     with _create_client(tmp_path) as writer, _create_client(tmp_path) as reader:
-        assert writer.post(
-            "/collections/dense",
-            json={"dimension": 4, "kind": "dense"},
-        ).status_code == 200
+        assert (
+            writer.post(
+                "/collections/dense",
+                json={"dimension": 4, "kind": "dense"},
+            ).status_code
+            == 200
+        )
 
         accepted = writer.post(
             "/collections/dense/points/async",
-            json={
-                "points": [
-                    {"id": "doc-1", "vector": [1, 0, 0, 0], "payload": {"text": "alpha"}}
-                ]
-            },
+            json={"points": [{"id": "doc-1", "vector": [1, 0, 0, 0], "payload": {"text": "alpha"}}]},
         )
         assert accepted.status_code == 202
         task_id = accepted.json()["task_id"]

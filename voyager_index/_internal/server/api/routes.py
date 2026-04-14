@@ -1,12 +1,12 @@
 """
 API routes for the voyager-index reference server.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .models import (
@@ -437,6 +437,7 @@ async def get_task_status(task_id: str, service: SearchService = Depends(get_ser
 # Metadata / Payload CRUD
 # ------------------------------------------------------------------
 
+
 @router.post("/collections/{name}/points/payload", tags=["Payload"])
 async def set_payload(
     name: str,
@@ -497,6 +498,7 @@ async def get_point_payload(
 # Encode / Rerank
 # ------------------------------------------------------------------
 
+
 @router.post("/encode", response_model=EncodeResponse, tags=["Inference"])
 async def encode(
     request_body: EncodeRequest,
@@ -519,4 +521,3 @@ async def rerank(
         return service.rerank(request_body)
     except ServiceError as exc:
         _raise_service_error(exc)
-

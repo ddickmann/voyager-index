@@ -5,10 +5,9 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-import numpy as np
 import pytest
 import torch
+from fastapi.testclient import TestClient
 
 from voyager_index import __version__ as package_version
 from voyager_index import encode_vector_payload
@@ -28,10 +27,7 @@ def _optimizer_vector_payload(vectors) -> dict[str, object]:
 
 def _write_png(path: Path) -> Path:
     path.write_bytes(
-        base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
-            "/w8AAn8B9pVHtVQAAAAASUVORK5CYII="
-        )
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAn8B9pVHtVQAAAAASUVORK5CYII=")
     )
     return path
 
@@ -77,7 +73,9 @@ def test_reference_optimize_openapi_schema_is_typed(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     schema = response.json()
-    optimize_schema = schema["paths"]["/reference/optimize"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    optimize_schema = schema["paths"]["/reference/optimize"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
     assert optimize_schema["$ref"].endswith("/ReferenceOptimizeRequest")
 
 
@@ -298,10 +296,13 @@ def test_collection_optimize_route_points_to_reference_optimize(tmp_path: Path) 
 
 def test_scroll_and_retrieve_require_shard_collections(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
 
         scroll = client.post("/collections/dense/scroll", json={"limit": 10, "offset": 0})
         retrieve = client.post("/collections/dense/retrieve", json={"ids": [1]})
@@ -348,19 +349,25 @@ def test_shard_collection_info_exposes_extended_runtime_knobs(tmp_path: Path) ->
 
 def test_dense_collection_applies_dot_distance_metric(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dot",
-            json={"dimension": 2, "kind": "dense", "distance": "dot"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dot/points",
-            json={
-                "points": [
-                    {"id": "wide", "vector": [10, 0], "payload": {"text": "wide alpha"}},
-                    {"id": "unit", "vector": [1, 1], "payload": {"text": "unit beta"}},
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dot",
+                json={"dimension": 2, "kind": "dense", "distance": "dot"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dot/points",
+                json={
+                    "points": [
+                        {"id": "wide", "vector": [10, 0], "payload": {"text": "wide alpha"}},
+                        {"id": "unit", "vector": [1, 1], "payload": {"text": "unit beta"}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/dot/search",
@@ -373,27 +380,33 @@ def test_dense_collection_applies_dot_distance_metric(tmp_path: Path) -> None:
 
 def test_dense_text_only_search_is_sparse_only_and_filtered(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {
-                        "id": "keep",
-                        "vector": [1, 0],
-                        "payload": {"text": "beta ontology keep", "label": "keep"},
-                    },
-                    {
-                        "id": "drop",
-                        "vector": [0, 1],
-                        "payload": {"text": "beta ontology drop", "label": "drop"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "keep",
+                            "vector": [1, 0],
+                            "payload": {"text": "beta ontology keep", "label": "keep"},
+                        },
+                        {
+                            "id": "drop",
+                            "vector": [0, 1],
+                            "payload": {"text": "beta ontology drop", "label": "drop"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/dense/search",
@@ -409,22 +422,28 @@ def test_dense_text_only_search_is_sparse_only_and_filtered(tmp_path: Path) -> N
 
 def test_dense_collection_accepts_base64_vector_transport(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {
-                        "id": "alpha",
-                        "vector": _optimizer_vector_payload([1.0, 0.0]),
-                        "payload": {"text": "alpha"},
-                    }
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": _optimizer_vector_payload([1.0, 0.0]),
+                            "payload": {"text": "alpha"},
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/dense/search",
@@ -440,20 +459,34 @@ def test_dense_optimized_search_returns_solver_metadata(tmp_path: Path) -> None:
     _ = latence_solver
 
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": "alpha", "vector": [1, 0], "payload": {"text": "voyager target alpha", "token_count": 80}},
-                    {"id": "beta", "vector": [0.8, 0.2], "payload": {"text": "voyager supporting beta", "token_count": 90}},
-                    {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": [1, 0],
+                            "payload": {"text": "voyager target alpha", "token_count": 80},
+                        },
+                        {
+                            "id": "beta",
+                            "vector": [0.8, 0.2],
+                            "payload": {"text": "voyager supporting beta", "token_count": 90},
+                        },
+                        {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/dense/search",
@@ -475,22 +508,98 @@ def test_dense_optimized_search_returns_solver_metadata(tmp_path: Path) -> None:
     assert payload["total"] <= 2
 
 
+def test_dense_optimized_search_gate_skips_solver_for_small_live_pools(tmp_path: Path) -> None:
+    latence_solver = pytest.importorskip("latence_solver")
+    _ = latence_solver
+
+    class FailPipeline:
+        def optimize_in_process(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("production gate should skip solver on small candidate pools")
+
+    with _create_client(tmp_path) as client:
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": [1, 0],
+                            "payload": {"text": "voyager target alpha", "token_count": 80},
+                        },
+                        {
+                            "id": "beta",
+                            "vector": [0.8, 0.2],
+                            "payload": {"text": "voyager supporting beta", "token_count": 90},
+                        },
+                        {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
+
+        runtime = client.app.state.search_service.get_collection("dense")
+        runtime.engine._optimizer_pipeline = FailPipeline()
+
+        response = client.post(
+            "/collections/dense/search",
+            json={
+                "vector": [1, 0],
+                "query_text": "voyager target alpha",
+                "top_k": 3,
+                "strategy": "optimized",
+                "max_tokens": 220,
+                "max_chunks": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["id"] == "alpha"
+    assert payload["objective_score"] == pytest.approx(0.0)
+    assert payload["total_tokens"] is not None
+    assert payload["total"] <= 2
+
+
 def test_dense_optimized_search_accepts_policy_and_solver_overrides(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": "alpha", "vector": [1, 0], "payload": {"text": "voyager target alpha", "token_count": 80}},
-                    {"id": "beta", "vector": [0.8, 0.2], "payload": {"text": "voyager supporting beta", "token_count": 90}},
-                    {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": [1, 0],
+                            "payload": {"text": "voyager target alpha", "token_count": 80},
+                        },
+                        {
+                            "id": "beta",
+                            "vector": [0.8, 0.2],
+                            "payload": {"text": "voyager supporting beta", "token_count": 90},
+                        },
+                        {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         runtime = client.app.state.search_service.get_collection("dense")
         original_solver_available = runtime.engine.solver_available
@@ -550,20 +659,34 @@ def test_dense_optimized_search_accepts_policy_and_solver_overrides(tmp_path: Pa
 
 def test_dense_optimized_search_accepts_cross_encoder_refine_flag(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": "alpha", "vector": [1, 0], "payload": {"text": "voyager target alpha", "token_count": 80}},
-                    {"id": "beta", "vector": [0.8, 0.2], "payload": {"text": "voyager supporting beta", "token_count": 90}},
-                    {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": [1, 0],
+                            "payload": {"text": "voyager target alpha", "token_count": 80},
+                        },
+                        {
+                            "id": "beta",
+                            "vector": [0.8, 0.2],
+                            "payload": {"text": "voyager supporting beta", "token_count": 90},
+                        },
+                        {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         runtime = client.app.state.search_service.get_collection("dense")
         original_solver_available = runtime.engine.solver_available
@@ -624,20 +747,34 @@ def test_dense_optimized_search_accepts_cross_encoder_refine_flag(tmp_path: Path
 
 def test_dense_optimized_search_accepts_nli_refine_flags(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": "alpha", "vector": [1, 0], "payload": {"text": "voyager target alpha", "token_count": 80}},
-                    {"id": "beta", "vector": [0.8, 0.2], "payload": {"text": "voyager supporting beta", "token_count": 90}},
-                    {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": "alpha",
+                            "vector": [1, 0],
+                            "payload": {"text": "voyager target alpha", "token_count": 80},
+                        },
+                        {
+                            "id": "beta",
+                            "vector": [0.8, 0.2],
+                            "payload": {"text": "voyager supporting beta", "token_count": 90},
+                        },
+                        {"id": "gamma", "vector": [0, 1], "payload": {"text": "unrelated gamma", "token_count": 120}},
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         runtime = client.app.state.search_service.get_collection("dense")
         original_solver_available = runtime.engine.solver_available
@@ -710,19 +847,29 @@ def test_dense_optimized_search_uses_wider_candidate_pool(tmp_path: Path) -> Non
     pytest.importorskip("latence_solver")
 
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/dense/points",
-            json={
-                "points": [
-                    {"id": f"doc-{idx}", "vector": [1.0, 0.0] if idx == 0 else [0.1 * idx, 1.0], "payload": {"text": f"voyager {idx}", "token_count": 64 + idx}}
-                    for idx in range(8)
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/dense/points",
+                json={
+                    "points": [
+                        {
+                            "id": f"doc-{idx}",
+                            "vector": [1.0, 0.0] if idx == 0 else [0.1 * idx, 1.0],
+                            "payload": {"text": f"voyager {idx}", "token_count": 64 + idx},
+                        }
+                        for idx in range(8)
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("dense")
@@ -755,7 +902,10 @@ def test_dense_optimized_search_uses_wider_candidate_pool(tmp_path: Path) -> Non
                 "backend_kind": "cpu_reference",
             }
 
-        with patch.object(runtime.engine, "search", side_effect=fake_search), patch.object(runtime.engine, "refine", side_effect=fake_refine):
+        with (
+            patch.object(runtime.engine, "search", side_effect=fake_search),
+            patch.object(runtime.engine, "refine", side_effect=fake_refine),
+        ):
             response = client.post(
                 "/collections/dense/search",
                 json={
@@ -776,27 +926,33 @@ def test_dense_optimized_search_uses_wider_candidate_pool(tmp_path: Path) -> Non
 
 def test_late_interaction_filter_and_with_vector_are_truthful(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/li",
-            json={"dimension": 2, "kind": "late_interaction"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/li/points",
-            json={
-                "points": [
-                    {
-                        "id": "keep",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"label": "keep", "text": "alpha keep"},
-                    },
-                    {
-                        "id": "drop",
-                        "vectors": [[0, 1], [0, 1]],
-                        "payload": {"label": "drop", "text": "beta drop"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/li",
+                json={"dimension": 2, "kind": "late_interaction"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/li/points",
+                json={
+                    "points": [
+                        {
+                            "id": "keep",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"label": "keep", "text": "alpha keep"},
+                        },
+                        {
+                            "id": "drop",
+                            "vectors": [[0, 1], [0, 1]],
+                            "payload": {"label": "drop", "text": "beta drop"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("li")
@@ -831,22 +987,28 @@ def test_late_interaction_filter_and_with_vector_are_truthful(tmp_path: Path) ->
 
 def test_late_interaction_accepts_base64_multivector_transport(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/li",
-            json={"dimension": 2, "kind": "late_interaction"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/li/points",
-            json={
-                "points": [
-                    {
-                        "id": "keep",
-                        "vectors": _optimizer_vector_payload([[1.0, 0.0], [1.0, 0.0]]),
-                        "payload": {"label": "keep", "text": "alpha keep"},
-                    }
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/li",
+                json={"dimension": 2, "kind": "late_interaction"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/li/points",
+                json={
+                    "points": [
+                        {
+                            "id": "keep",
+                            "vectors": _optimizer_vector_payload([[1.0, 0.0], [1.0, 0.0]]),
+                            "payload": {"label": "keep", "text": "alpha keep"},
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/li/search",
@@ -865,27 +1027,33 @@ def test_late_interaction_accepts_base64_multivector_transport(tmp_path: Path) -
 
 def test_multimodal_filter_and_with_vector_are_truthful(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 2, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "keep",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"label": "keep", "page_number": 1},
-                    },
-                    {
-                        "id": "drop",
-                        "vectors": [[0, 1], [0, 1]],
-                        "payload": {"label": "drop", "page_number": 2},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 2, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "keep",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"label": "keep", "page_number": 1},
+                        },
+                        {
+                            "id": "drop",
+                            "vectors": [[0, 1], [0, 1]],
+                            "payload": {"label": "drop", "page_number": 2},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("mm")
@@ -937,27 +1105,33 @@ def test_multimodal_solver_prefilter_mode_applies_solver_subset(tmp_path: Path) 
             }
 
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 2, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-a",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"text": "alpha keep", "token_count": 64},
-                    },
-                    {
-                        "id": "doc-b",
-                        "vectors": [[0, 1], [0, 1]],
-                        "payload": {"text": "beta forced", "token_count": 72},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 2, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-a",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"text": "alpha keep", "token_count": 64},
+                        },
+                        {
+                            "id": "doc-b",
+                            "vectors": [[0, 1], [0, 1]],
+                            "payload": {"text": "beta forced", "token_count": 72},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("mm")
@@ -999,27 +1173,33 @@ def test_multimodal_maxsim_then_solver_mode_packs_exact_frontier(tmp_path: Path)
             }
 
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 2, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-a",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"text": "alpha top", "token_count": 64},
-                    },
-                    {
-                        "id": "doc-b",
-                        "vectors": [[0.8, 0.2], [0.8, 0.2]],
-                        "payload": {"text": "beta packed", "token_count": 72},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 2, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-a",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"text": "alpha top", "token_count": 64},
+                        },
+                        {
+                            "id": "doc-b",
+                            "vectors": [[0.8, 0.2], [0.8, 0.2]],
+                            "payload": {"text": "beta packed", "token_count": 72},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("mm")
@@ -1049,27 +1229,33 @@ def test_multimodal_maxsim_then_solver_mode_packs_exact_frontier(tmp_path: Path)
 
 def test_multimodal_optimized_auto_falls_back_to_maxsim_only_without_solver(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 2, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-a",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"text": "alpha top"},
-                    },
-                    {
-                        "id": "doc-b",
-                        "vectors": [[0, 1], [0, 1]],
-                        "payload": {"text": "beta"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 2, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-a",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"text": "alpha top"},
+                        },
+                        {
+                            "id": "doc-b",
+                            "vectors": [[0, 1], [0, 1]],
+                            "payload": {"text": "beta"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("mm")
@@ -1092,31 +1278,41 @@ def test_multimodal_optimized_auto_falls_back_to_maxsim_only_without_solver(tmp_
 
 def test_multimodal_optimized_defaults_to_measured_maxsim_only_path(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/mm",
-            json={"dimension": 2, "kind": "multimodal"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/mm/points",
-            json={
-                "points": [
-                    {
-                        "id": "doc-a",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"text": "alpha top"},
-                    },
-                    {
-                        "id": "doc-b",
-                        "vectors": [[0, 1], [0, 1]],
-                        "payload": {"text": "beta"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/mm",
+                json={"dimension": 2, "kind": "multimodal"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/mm/points",
+                json={
+                    "points": [
+                        {
+                            "id": "doc-a",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"text": "alpha top"},
+                        },
+                        {
+                            "id": "doc-b",
+                            "vectors": [[0, 1], [0, 1]],
+                            "payload": {"text": "beta"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         service = client.app.state.search_service
         runtime = service.get_collection("mm")
-        with patch.object(service, "_get_multimodal_optimizer_pipeline", side_effect=AssertionError("solver pipeline should not be used for default multimodal optimized search")):
+        with patch.object(
+            service,
+            "_get_multimodal_optimizer_pipeline",
+            side_effect=AssertionError("solver pipeline should not be used for default multimodal optimized search"),
+        ):
             response = client.post(
                 "/collections/mm/search",
                 json={
@@ -1143,10 +1339,13 @@ def test_create_collection_rejects_unsupported_kind_specific_options(tmp_path: P
 
 def test_dense_search_rejects_multivector_queries(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/dense",
-            json={"dimension": 2, "kind": "dense"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/dense",
+                json={"dimension": 2, "kind": "dense"},
+            ).status_code
+            == 200
+        )
 
         response = client.post(
             "/collections/dense/search",
@@ -1159,27 +1358,33 @@ def test_dense_search_rejects_multivector_queries(tmp_path: Path) -> None:
 
 def test_scan_ceiling_rejections_surface_in_metrics_and_ready(tmp_path: Path) -> None:
     with _create_client(tmp_path) as client:
-        assert client.post(
-            "/collections/li",
-            json={"dimension": 2, "kind": "late_interaction"},
-        ).status_code == 200
-        assert client.post(
-            "/collections/li/points",
-            json={
-                "points": [
-                    {
-                        "id": "a",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"group": "same", "text": "alpha one"},
-                    },
-                    {
-                        "id": "b",
-                        "vectors": [[1, 0], [1, 0]],
-                        "payload": {"group": "same", "text": "alpha two"},
-                    },
-                ]
-            },
-        ).status_code == 200
+        assert (
+            client.post(
+                "/collections/li",
+                json={"dimension": 2, "kind": "late_interaction"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/collections/li/points",
+                json={
+                    "points": [
+                        {
+                            "id": "a",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"group": "same", "text": "alpha one"},
+                        },
+                        {
+                            "id": "b",
+                            "vectors": [[1, 0], [1, 0]],
+                            "payload": {"group": "same", "text": "alpha two"},
+                        },
+                    ]
+                },
+            ).status_code
+            == 200
+        )
 
         client.app.state.search_service.filter_scan_limit = 1
         response = client.post(

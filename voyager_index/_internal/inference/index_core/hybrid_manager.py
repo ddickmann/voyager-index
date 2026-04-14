@@ -21,6 +21,7 @@ import numpy as np
 try:
     import bm25s
     import Stemmer
+
     _BM25S_AVAILABLE = True
 except ImportError:
     bm25s = None  # type: ignore[assignment]
@@ -55,6 +56,7 @@ except ImportError as e:
     TabuSearchSolver = None
     SolverConstraints = None
     logger.warning(f"latence_solver not available, refinement will fail. Error: {e}")
+
 
 class HybridSearchManager:
     """
@@ -97,9 +99,10 @@ class HybridSearchManager:
         # Dense Index
         if dense_engine == "shard":
             from voyager_index._internal.inference.shard_engine.manager import (
-                ShardSegmentManager,
                 ShardEngineConfig,
+                ShardSegmentManager,
             )
+
             shard_config = dense_engine_config or ShardEngineConfig(dim=dim)
             device = getattr(shard_config, "device", "cuda") if dense_engine_config else "cuda"
             self.hnsw = ShardSegmentManager(
@@ -121,7 +124,7 @@ class HybridSearchManager:
                 ef_construct=ef_construct,
                 on_disk=on_disk,
                 multivector_comparator=multivector_comparator,
-                roq_bits=roq_bits
+                roq_bits=roq_bits,
             )
 
         # Sparse Index
@@ -302,8 +305,7 @@ class HybridSearchManager:
             return
 
         sanitized_corpus = [
-            self._sanitize_sparse_text(text, doc_id)
-            for text, doc_id in zip(self.corpus_buffer, self.ids_buffer)
+            self._sanitize_sparse_text(text, doc_id) for text, doc_id in zip(self.corpus_buffer, self.ids_buffer)
         ]
 
         if _BM25S_AVAILABLE:
@@ -349,11 +351,7 @@ class HybridSearchManager:
         raise RuntimeError(self.sparse_error)
 
     def index(
-        self,
-        corpus: List[str],
-        vectors: np.ndarray,
-        ids: List[int],
-        payloads: Optional[List[Dict[str, Any]]] = None
+        self, corpus: List[str], vectors: np.ndarray, ids: List[int], payloads: Optional[List[Dict[str, Any]]] = None
     ) -> None:
         """
         Index documents into both HNSW and BM25.
@@ -365,7 +363,7 @@ class HybridSearchManager:
             raise ValueError("3D arrays not supported; pass a list of 2D arrays for multi-vector docs")
         if self._dense_engine_type == "shard":
             if isinstance(vectors, np.ndarray) and vectors.ndim == 2:
-                vecs_list = [vectors[i:i+1] for i in range(vectors.shape[0])]
+                vecs_list = [vectors[i : i + 1] for i in range(vectors.shape[0])]
             elif isinstance(vectors, list):
                 vecs_list = vectors
             else:
@@ -415,11 +413,7 @@ class HybridSearchManager:
         dense_search_kwargs = dict(dense_search_kwargs or {})
         if query_vector is not None:
             dense_query = query_vector
-            if (
-                self._dense_engine_type == "shard"
-                and isinstance(query_vector, np.ndarray)
-                and query_vector.ndim == 1
-            ):
+            if self._dense_engine_type == "shard" and isinstance(query_vector, np.ndarray) and query_vector.ndim == 1:
                 dense_query = query_vector.reshape(1, -1)
             if self._dense_engine_type == "shard" and hasattr(self.hnsw, "search_multivector"):
                 dense_results = self.hnsw.search_multivector(
@@ -508,9 +502,7 @@ class HybridSearchManager:
         resolved["use_cross_encoder"] = bool(
             resolved.get("use_cross_encoder") or resolved.get("refine_use_cross_encoder")
         )
-        resolved["cross_encoder_model"] = str(
-            resolved.get("cross_encoder_model") or DEFAULT_REFINE_CROSS_ENCODER_MODEL
-        )
+        resolved["cross_encoder_model"] = str(resolved.get("cross_encoder_model") or DEFAULT_REFINE_CROSS_ENCODER_MODEL)
         resolved["cross_encoder_top_k"] = max(
             1,
             int(resolved.get("cross_encoder_top_k") or resolved.get("rerank_top_k") or 96),
@@ -523,7 +515,9 @@ class HybridSearchManager:
         resolved["nli_model"] = str(resolved.get("nli_model") or DEFAULT_REFINE_NLI_MODEL)
         resolved["nli_top_k"] = max(
             1,
-            int(resolved.get("nli_top_k") or resolved.get("utility_top_k") or resolved.get("cross_encoder_top_k") or 64),
+            int(
+                resolved.get("nli_top_k") or resolved.get("utility_top_k") or resolved.get("cross_encoder_top_k") or 64
+            ),
         )
         resolved["nli_batch_size"] = max(
             1,
@@ -535,12 +529,42 @@ class HybridSearchManager:
         resolved["confidence_gating"] = bool(
             resolved.get("confidence_gating") or resolved.get("refine_confidence_gating")
         )
-        resolved["confidence_gap_threshold"] = float(
-            resolved.get("confidence_gap_threshold") or 0.20
-        )
+        resolved["confidence_gap_threshold"] = float(resolved.get("confidence_gap_threshold") or 0.20)
         resolved["confidence_min_candidates"] = max(
             2,
             int(resolved.get("confidence_min_candidates") or 16),
+        )
+        gate_mode = str(resolved.get("solver_gate_mode") or resolved.get("production_gate_mode") or "auto").strip().lower()
+        if gate_mode not in {"auto", "always", "off", "disabled"}:
+            gate_mode = "auto"
+        resolved["solver_gate_mode"] = gate_mode
+        resolved["solver_gate_min_candidates"] = max(
+            1,
+            int(resolved.get("solver_gate_min_candidates") or 24),
+        )
+        resolved["solver_gate_max_candidates"] = max(
+            int(resolved["solver_gate_min_candidates"]),
+            int(resolved.get("solver_gate_max_candidates") or 96),
+        )
+        resolved["solver_gate_min_headroom"] = max(
+            0,
+            int(resolved.get("solver_gate_min_headroom") or 12),
+        )
+        resolved["solver_gate_min_budget_pressure"] = max(
+            0.0,
+            float(resolved.get("solver_gate_min_budget_pressure") or 1.35),
+        )
+        resolved["solver_gate_score_gap_threshold"] = min(
+            1.0,
+            max(0.0, float(resolved.get("solver_gate_score_gap_threshold") or 0.18)),
+        )
+        resolved["production_lambda_cap"] = min(
+            1.0,
+            max(0.0, float(resolved.get("production_lambda_cap") or 0.05)),
+        )
+        resolved["production_lambda_large_candidate_threshold"] = max(
+            1,
+            int(resolved.get("production_lambda_large_candidate_threshold") or 48),
         )
         return resolved
 
@@ -566,9 +590,7 @@ class HybridSearchManager:
             try:
                 from sentence_transformers import CrossEncoder
             except ImportError as exc:  # pragma: no cover - depends on optional dependency
-                raise ImportError(
-                    "Cross-encoder refinement requires sentence-transformers to be installed"
-                ) from exc
+                raise ImportError("Cross-encoder refinement requires sentence-transformers to be installed") from exc
             device = self._cross_encoder_device()
             logger.info("Loading cross-encoder %s for hybrid refine (device=%s)", model_name, device)
             cache[model_name] = CrossEncoder(model_name, device=device)
@@ -584,9 +606,7 @@ class HybridSearchManager:
                 import torch
                 from transformers import AutoModelForSequenceClassification, AutoTokenizer
             except ImportError as exc:  # pragma: no cover - optional dependency path
-                raise ImportError(
-                    "NLI refinement requires transformers to be installed"
-                ) from exc
+                raise ImportError("NLI refinement requires transformers to be installed") from exc
             device_name = self._cross_encoder_device()
             model_device = torch.device("cpu" if device_name == "cpu" else device_name)
             logger.info("Loading NLI model %s for hybrid refine (device=%s)", model_name, model_device)
@@ -599,8 +619,7 @@ class HybridSearchManager:
                 "model": model,
                 "device": model_device,
                 "id2label": {
-                    int(idx): str(label)
-                    for idx, label in dict(getattr(model.config, "id2label", {}) or {}).items()
+                    int(idx): str(label) for idx, label in dict(getattr(model.config, "id2label", {}) or {}).items()
                 },
             }
         return cache[model_name]
@@ -667,6 +686,269 @@ class HybridSearchManager:
             "gap": gap,
             "threshold": float(refine_options.get("confidence_gap_threshold", 0.20)),
         }
+
+    @staticmethod
+    def _normalize_signal(values: List[float]) -> np.ndarray:
+        arr = np.asarray(values, dtype=np.float32)
+        if arr.size == 0:
+            return arr
+        lo = float(arr.min())
+        hi = float(arr.max())
+        if hi - lo <= 1e-8:
+            return np.full(arr.shape, 0.5, dtype=np.float32)
+        return ((arr - lo) / (hi - lo)).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _has_advanced_query_utility(query_payload: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(query_payload, dict):
+            return False
+        return any(
+            key in query_payload
+            for key in (
+                "query_token_weights",
+                "query_aspect_weights",
+                "query_aspects",
+                "query_aspect_vectors",
+                "query_expansion_vectors",
+                "teacher_token_weights",
+                "teacher_utility_score",
+            )
+        )
+
+    @staticmethod
+    def _is_lambda_override_explicit(
+        solver_config: Optional[Any],
+        *,
+        default_solver_config: Any = None,
+    ) -> bool:
+        if solver_config is None:
+            return False
+        if isinstance(solver_config, dict):
+            return "lambda" in solver_config or "lambda_" in solver_config
+        if default_solver_config is not None and solver_config is default_solver_config:
+            return False
+        return any(getattr(solver_config, key, None) is not None for key in ("lambda_", "lambda"))
+
+    def _fallback_candidate_order(
+        self,
+        solver_candidates: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        if not solver_candidates:
+            return [], {"signal": "none", "normalized_primary_scores": []}
+
+        has_rerank = any(
+            isinstance(
+                candidate.get(
+                    "rerank_score",
+                    candidate.get("cross_encoder_score", candidate.get("ce_score", candidate.get("ltr_score"))),
+                ),
+                (int, float),
+            )
+            for candidate in solver_candidates
+        )
+        has_utility = any(
+            isinstance(candidate.get("utility_score", candidate.get("nli_utility_score")), (int, float))
+            for candidate in solver_candidates
+        )
+        has_rrf = any(isinstance(candidate.get("rrf_score"), (int, float)) for candidate in solver_candidates)
+
+        signal_name = "base_relevance"
+        if has_rerank:
+            signal_name = "rerank"
+        elif has_utility:
+            signal_name = "utility_composite"
+        elif has_rrf:
+            signal_name = "rrf"
+
+        primary_scores: List[float] = []
+        ranked_rows: List[tuple[tuple[float, float, float, float, float, float, float, float], Dict[str, Any]]] = []
+        for index, candidate in enumerate(solver_candidates):
+            rerank_score = float(
+                candidate.get(
+                    "rerank_score",
+                    candidate.get("cross_encoder_score", candidate.get("ce_score", candidate.get("ltr_score", 0.0))),
+                )
+                or 0.0
+            )
+            utility_score = float(candidate.get("utility_score", candidate.get("nli_utility_score", 0.0)) or 0.0)
+            entailment = float(candidate.get("nli_entailment", 0.0) or 0.0)
+            contradiction = float(candidate.get("nli_contradiction", 0.0) or 0.0)
+            base_relevance = float(candidate.get("base_relevance", 0.0) or 0.0)
+            rrf_score = float(candidate.get("rrf_score", 0.0) or 0.0)
+            dense_score = float(candidate.get("dense_score", 0.0) or 0.0)
+            sparse_score = float(candidate.get("sparse_score", 0.0) or 0.0)
+
+            if has_rerank:
+                primary = rerank_score
+            elif has_utility:
+                primary = (0.70 * base_relevance) + (0.30 * utility_score) - (0.20 * contradiction)
+            elif has_rrf:
+                primary = rrf_score
+            else:
+                primary = base_relevance
+            primary_scores.append(float(primary))
+            ranked_rows.append(
+                (
+                    (
+                        float(primary),
+                        utility_score,
+                        entailment,
+                        -contradiction,
+                        base_relevance,
+                        rrf_score,
+                        dense_score,
+                        sparse_score - (index * 1e-9),
+                    ),
+                    candidate,
+                )
+            )
+
+        normalized_primary = self._normalize_signal(primary_scores)
+        normalized_by_id = {
+            id(candidate): float(normalized_primary[idx]) for idx, candidate in enumerate(solver_candidates)
+        }
+        ranked = [candidate for _, candidate in sorted(ranked_rows, key=lambda item: item[0], reverse=True)]
+        return ranked, {
+            "signal": signal_name,
+            "normalized_primary_scores": [normalized_by_id[id(candidate)] for candidate in ranked],
+        }
+
+    def _production_solver_gate(
+        self,
+        *,
+        query_text: str,
+        query_payload: Optional[Dict[str, Any]],
+        solver_candidates: List[Dict[str, Any]],
+        constraints_payload: Dict[str, Any],
+        refine_options: Dict[str, Any],
+        fallback_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        gate_mode = str(refine_options.get("solver_gate_mode", "auto"))
+        candidate_count = len(solver_candidates)
+        selected_cap = min(
+            int(constraints_payload.get("max_chunks", min(10, max(candidate_count, 1)))),
+            candidate_count,
+        )
+        total_candidate_tokens = int(
+            sum(int(candidate.get("token_count", 0) or 0) for candidate in solver_candidates)
+        )
+        max_tokens = int(constraints_payload.get("max_tokens", 0) or 0)
+        budget_pressure = (
+            float(total_candidate_tokens / float(max_tokens))
+            if max_tokens > 0
+            else float(candidate_count)
+        )
+        headroom = int(max(candidate_count - selected_cap, 0))
+        normalized_scores = list(fallback_summary.get("normalized_primary_scores", []))
+        if len(normalized_scores) >= 2:
+            top_gap = float(max(normalized_scores[0] - normalized_scores[1], 0.0))
+        elif normalized_scores:
+            top_gap = float(normalized_scores[0])
+        else:
+            top_gap = 0.0
+        advanced_query_utility = self._has_advanced_query_utility(query_payload)
+
+        if gate_mode in {"off", "disabled"}:
+            return {
+                "enabled": False,
+                "applied": False,
+                "run_solver": True,
+                "reason": "disabled",
+                "fallback_signal": fallback_summary.get("signal", "none"),
+                "candidate_count": candidate_count,
+                "selected_cap": selected_cap,
+            }
+        if gate_mode == "always":
+            return {
+                "enabled": True,
+                "applied": False,
+                "run_solver": True,
+                "reason": "forced",
+                "fallback_signal": fallback_summary.get("signal", "none"),
+                "candidate_count": candidate_count,
+                "selected_cap": selected_cap,
+            }
+
+        reasons: List[str] = []
+        if candidate_count < int(refine_options.get("solver_gate_min_candidates", 24)):
+            reasons.append("candidate_count_below_min")
+        if candidate_count > int(refine_options.get("solver_gate_max_candidates", 96)):
+            reasons.append("candidate_count_above_max")
+        if headroom < int(refine_options.get("solver_gate_min_headroom", 12)):
+            reasons.append("insufficient_choice_headroom")
+        if not query_text.strip() and not advanced_query_utility:
+            reasons.append("missing_query_signal")
+        if (
+            budget_pressure < float(refine_options.get("solver_gate_min_budget_pressure", 1.35))
+            and not advanced_query_utility
+        ):
+            reasons.append("weak_budget_pressure")
+        if (
+            top_gap >= float(refine_options.get("solver_gate_score_gap_threshold", 0.18))
+            and not advanced_query_utility
+        ):
+            reasons.append("confident_head")
+
+        return {
+            "enabled": True,
+            "applied": bool(reasons),
+            "run_solver": not reasons,
+            "reasons": reasons,
+            "reason": reasons[0] if reasons else "passed",
+            "fallback_signal": fallback_summary.get("signal", "none"),
+            "candidate_count": candidate_count,
+            "selected_cap": selected_cap,
+            "total_candidate_tokens": total_candidate_tokens,
+            "max_tokens": max_tokens,
+            "budget_pressure": budget_pressure,
+            "choice_headroom": headroom,
+            "top_score_gap": top_gap,
+            "advanced_query_utility": advanced_query_utility,
+        }
+
+    @staticmethod
+    def _apply_production_solver_profile(
+        *,
+        solver_config_payload: Dict[str, Any],
+        candidate_count: int,
+        refine_options: Dict[str, Any],
+        explicit_lambda_override: bool,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        summary = {
+            "applied": False,
+            "explicit_lambda_override": bool(explicit_lambda_override),
+            "candidate_count": int(candidate_count),
+        }
+        if explicit_lambda_override:
+            summary["reason"] = "explicit_lambda_override"
+            return solver_config_payload, summary
+        threshold = int(refine_options.get("production_lambda_large_candidate_threshold", 48))
+        if candidate_count < threshold:
+            summary["reason"] = "candidate_count_below_threshold"
+            return solver_config_payload, summary
+        current_lambda = float(
+            solver_config_payload.get(
+                "lambda",
+                solver_config_payload.get("lambda_", 0.32),
+            )
+        )
+        lambda_cap = float(refine_options.get("production_lambda_cap", 0.05))
+        if current_lambda <= lambda_cap:
+            summary["reason"] = "lambda_already_within_cap"
+            summary["lambda"] = current_lambda
+            return solver_config_payload, summary
+        updated = dict(solver_config_payload)
+        updated["lambda"] = lambda_cap
+        summary.update(
+            {
+                "applied": True,
+                "reason": "lambda_cap",
+                "previous_lambda": current_lambda,
+                "lambda": lambda_cap,
+                "candidate_threshold": threshold,
+            }
+        )
+        return updated, summary
 
     @staticmethod
     def _payload_rerank_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -936,15 +1218,9 @@ class HybridSearchManager:
         query_text: str = "",
         query_payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
-        ontology_terms = [
-            str(term).strip()
-            for term in (payload.get("ontology_terms") or [])
-            if str(term).strip()
-        ]
+        ontology_terms = [str(term).strip() for term in (payload.get("ontology_terms") or []) if str(term).strip()]
         ontology_labels = {
-            str(label).strip().lower()
-            for label in (payload.get("ontology_labels") or [])
-            if str(label).strip()
+            str(label).strip().lower() for label in (payload.get("ontology_labels") or []) if str(label).strip()
         }
         ontology_confidences = cls._float_list(payload.get("ontology_confidences"))
         ontology_evidence = cls._float_list(payload.get("ontology_evidence_counts"))
@@ -970,18 +1246,14 @@ class HybridSearchManager:
         query_terms = cls._token_set(query_text)
         exact_query_match = 1.0 if cls._normalized_text(query_text) in normalized_terms and query_text else 0.0
         entity_coverage = (
-            len(query_terms & ontology_tokens) / float(len(query_terms))
-            if query_terms and ontology_tokens
-            else 0.0
+            len(query_terms & ontology_tokens) / float(len(query_terms)) if query_terms and ontology_tokens else 0.0
         )
 
         extra_query_terms: list[str] = []
         query_label = ""
         if query_payload:
             extra_query_terms = [
-                str(term).strip()
-                for term in (query_payload.get("ontology_terms") or [])
-                if str(term).strip()
+                str(term).strip() for term in (query_payload.get("ontology_terms") or []) if str(term).strip()
             ]
             raw_label = query_payload.get("label") or query_payload.get("query_label")
             if isinstance(raw_label, str):
@@ -1040,7 +1312,9 @@ class HybridSearchManager:
                     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
                 except ValueError:
                     continue
-                age_days = max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400.0)
+                age_days = max(
+                    0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400.0
+                )
                 return cls._clamp01(1.0 / (1.0 + age_days / 30.0))
         return 0.5
 
@@ -1176,8 +1450,7 @@ class HybridSearchManager:
             return []
 
         merged_retrieval_features: Dict[int, Dict[str, Any]] = {
-            int(doc_id): dict(values)
-            for doc_id, values in dict(retrieval_features or {}).items()
+            int(doc_id): dict(values) for doc_id, values in dict(retrieval_features or {}).items()
         }
         for item in valid_items:
             doc_id = int(item["id"])
@@ -1185,10 +1458,7 @@ class HybridSearchManager:
             payload_metadata = self._payload_rerank_metadata(item["payload"])
             for key, value in payload_metadata.items():
                 merged.setdefault(key, value)
-            if any(
-                key in payload_metadata
-                for key in ("rerank_score", "cross_encoder_score", "ce_score", "ltr_score")
-            ):
+            if any(key in payload_metadata for key in ("rerank_score", "cross_encoder_score", "ce_score", "ltr_score")):
                 merged["base_relevance"] = float(
                     payload_metadata.get("base_relevance", merged.get("base_relevance", 0.0) or 0.0)
                 )
@@ -1223,9 +1493,7 @@ class HybridSearchManager:
                     model_name=str(resolved_refine_options["nli_model"]),
                     batch_size=int(resolved_refine_options["nli_batch_size"]),
                     top_k=int(resolved_refine_options["nli_top_k"]),
-                    promote_base_relevance=bool(
-                        resolved_refine_options.get("nli_promote_base_relevance", False)
-                    ),
+                    promote_base_relevance=bool(resolved_refine_options.get("nli_promote_base_relevance", False)),
                 )
         else:
             if resolved_refine_options.get("use_cross_encoder"):
@@ -1277,7 +1545,9 @@ class HybridSearchManager:
                 ),
                 default=0.0,
             )
-            uniqueness = self._clamp01(0.5 * (1.0 - max(0.0, max_peer_similarity)) + 0.5 * (1.0 - max(0.0, centroid_similarity)))
+            uniqueness = self._clamp01(
+                0.5 * (1.0 - max(0.0, max_peer_similarity)) + 0.5 * (1.0 - max(0.0, centroid_similarity))
+            )
             fact_density = self._clamp01(
                 0.70 * self._density_score(payload, text, overlap)
                 + 0.20 * ontology_features["concept_density"]
@@ -1296,7 +1566,11 @@ class HybridSearchManager:
             recency = self._recency_score(payload)
             payload_auxiliary = payload.get("auxiliary_score")
             auxiliary = self._clamp01(
-                (0.70 * float(payload_auxiliary) + 0.20 * ontology_features["query_match"] + 0.10 * ontology_features["relation_density"])
+                (
+                    0.70 * float(payload_auxiliary)
+                    + 0.20 * ontology_features["query_match"]
+                    + 0.10 * ontology_features["relation_density"]
+                )
                 if isinstance(payload_auxiliary, (int, float))
                 else (
                     (0.20 * uniqueness)
@@ -1389,20 +1663,7 @@ class HybridSearchManager:
             refine_options=refine_options,
         )
         effective_optimizer_policy = optimizer_policy
-        advanced_query_utility = bool(
-            isinstance(query_payload, dict)
-            and any(
-                key in query_payload
-                for key in (
-                    "query_token_weights",
-                    "query_aspect_weights",
-                    "query_aspect_vectors",
-                    "query_expansion_vectors",
-                    "teacher_token_weights",
-                    "teacher_utility_score",
-                )
-            )
-        )
+        advanced_query_utility = self._has_advanced_query_utility(query_payload)
         if effective_optimizer_policy is None:
             if resolved_refine_options.get("use_nli") or advanced_query_utility:
                 effective_optimizer_policy = "frontier_v1"
@@ -1455,6 +1716,131 @@ class HybridSearchManager:
                     "required_chunks": list(getattr(constraints, "required_chunks", [])),
                 }
 
+        policy_name = (
+            str(effective_optimizer_policy.get("name", "baseline_v1"))
+            if isinstance(effective_optimizer_policy, dict)
+            else str(effective_optimizer_policy or "baseline_v1")
+        )
+        fallback_ranked_candidates, fallback_summary = self._fallback_candidate_order(solver_candidates)
+        gate_summary = self._production_solver_gate(
+            query_text=query_text,
+            query_payload=query_payload,
+            solver_candidates=solver_candidates,
+            constraints_payload=constraints_payload,
+            refine_options=resolved_refine_options,
+            fallback_summary=fallback_summary,
+        )
+        if hasattr(self, "_last_refine_context"):
+            self._last_refine_context = {
+                **dict(getattr(self, "_last_refine_context") or {}),
+                "solver_gate": gate_summary,
+            }
+
+        candidate_by_id = {candidate["chunk_id"]: candidate for candidate in solver_candidates}
+
+        def _mean_feature(items: List[Dict[str, Any]], key: str) -> float:
+            if not items:
+                return 0.0
+            return float(np.mean([float(item.get(key, 0.0)) for item in items]))
+
+        def _feature_summary(
+            selected_candidates: List[Dict[str, Any]],
+            extra: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            summary: Dict[str, Any] = {
+                "requested_optimizer_policy": policy_name,
+                "refine_rerank": dict((self._last_refine_context or {}).get("rerank") or {}),
+                "refine_nli": dict((self._last_refine_context or {}).get("nli") or {}),
+                "refine_confidence_gate": dict((self._last_refine_context or {}).get("confidence_gate") or {}),
+                "refine_solver_gate": dict(gate_summary),
+                "fallback_ordering_signal": fallback_summary.get("signal"),
+                "rerank_metadata_present": any(
+                    any(
+                        key in candidate
+                        for key in (
+                            "cross_encoder_score",
+                            "ce_score",
+                            "ltr_score",
+                            "rerank_score",
+                            "utility_score",
+                            "nli_utility_score",
+                            "nli_entailment",
+                            "nli_contradiction",
+                        )
+                    )
+                    for candidate in solver_candidates
+                ),
+                "nli_metadata_present": any(
+                    any(
+                        key in candidate
+                        for key in ("utility_score", "nli_utility_score", "nli_entailment", "nli_contradiction")
+                    )
+                    for candidate in solver_candidates
+                ),
+                "candidate_count": len(solver_candidates),
+                "query_text_used": bool(query_text.strip()),
+                "query_label": (
+                    str(query_payload.get("label") or query_payload.get("query_label"))
+                    if isinstance(query_payload, dict)
+                    else None
+                ),
+                "candidate_avg_base_relevance": _mean_feature(solver_candidates, "base_relevance"),
+                "selected_avg_base_relevance": _mean_feature(selected_candidates, "base_relevance"),
+                "candidate_avg_utility_score": _mean_feature(solver_candidates, "utility_score"),
+                "selected_avg_utility_score": _mean_feature(selected_candidates, "utility_score"),
+                "candidate_avg_nli_entailment": _mean_feature(solver_candidates, "nli_entailment"),
+                "selected_avg_nli_entailment": _mean_feature(selected_candidates, "nli_entailment"),
+                "candidate_avg_nli_contradiction": _mean_feature(solver_candidates, "nli_contradiction"),
+                "selected_avg_nli_contradiction": _mean_feature(selected_candidates, "nli_contradiction"),
+                "candidate_avg_ontology_query_match": _mean_feature(solver_candidates, "ontology_query_match"),
+                "selected_avg_ontology_query_match": _mean_feature(selected_candidates, "ontology_query_match"),
+                "candidate_avg_ontology_entity_coverage": _mean_feature(solver_candidates, "ontology_entity_coverage"),
+                "selected_avg_ontology_entity_coverage": _mean_feature(selected_candidates, "ontology_entity_coverage"),
+                "candidate_avg_ontology_type_match": _mean_feature(solver_candidates, "ontology_type_match"),
+                "selected_avg_ontology_type_match": _mean_feature(selected_candidates, "ontology_type_match"),
+            }
+            if isinstance(extra, dict):
+                summary.update(extra)
+            return summary
+
+        if gate_summary.get("applied") and not gate_summary.get("run_solver"):
+            selected_cap = int(gate_summary.get("selected_cap", min(10, len(fallback_ranked_candidates))))
+            selected_candidates = fallback_ranked_candidates[:selected_cap]
+            selected_ids = [candidate["chunk_id"] for candidate in selected_candidates]
+            total_tokens = int(sum(int(candidate.get("token_count", 0) or 0) for candidate in selected_candidates))
+            return {
+                "solver_output": {
+                    "selected_indices": list(range(len(selected_candidates))),
+                    "objective_score": 0.0,
+                    "num_selected": len(selected_candidates),
+                    "total_tokens": total_tokens,
+                    "solve_time_ms": 0.0,
+                    "constraints_satisfied": True,
+                    "constraint_violations": [],
+                    "fallback": True,
+                    "skipped_by_gate": True,
+                    "gate": gate_summary,
+                },
+                "selected_ids": selected_ids,
+                "selected_internal_ids": [int(item_id) for item_id in selected_ids if str(item_id).isdigit()],
+                "selected_vectors": {
+                    int(item_id): candidate_by_id[item_id]["embedding"]
+                    for item_id in selected_ids
+                    if item_id in candidate_by_id and str(item_id).isdigit()
+                },
+                "backend_kind": "rrf_gate",
+                "execution_mode": "gate_skip",
+                "solver_backend_kind": None,
+                "feature_summary": _feature_summary(
+                    selected_candidates,
+                    {
+                        "skipped_by_gate": True,
+                        "selected_count": len(selected_candidates),
+                        "selected_total_tokens": total_tokens,
+                    },
+                ),
+            }
+
         effective_solver_config = solver_config or getattr(self.solver, "config", None)
         solver_config_payload: Dict[str, Any] = {}
         if effective_solver_config is not None:
@@ -1491,13 +1877,18 @@ class HybridSearchManager:
                 lambda_value = getattr(effective_solver_config, "lambda_", None)
                 if lambda_value is not None:
                     solver_config_payload["lambda"] = lambda_value
+        explicit_lambda_override = self._is_lambda_override_explicit(
+            solver_config,
+            default_solver_config=getattr(self.solver, "config", None),
+        )
+        solver_config_payload, production_profile = self._apply_production_solver_profile(
+            solver_config_payload=solver_config_payload,
+            candidate_count=len(solver_candidates),
+            refine_options=resolved_refine_options,
+            explicit_lambda_override=explicit_lambda_override,
+        )
         if effective_optimizer_policy is not None:
             solver_config_payload["optimizer_policy"] = effective_optimizer_policy
-        policy_name = (
-            str(effective_optimizer_policy.get("name", "baseline_v1"))
-            if isinstance(effective_optimizer_policy, dict)
-            else str(effective_optimizer_policy or "baseline_v1")
-        )
         rerank_applied = bool(((self._last_refine_context or {}).get("rerank") or {}).get("applied"))
         nli_applied = bool(((self._last_refine_context or {}).get("nli") or {}).get("applied"))
         logger.info(
@@ -1557,20 +1948,7 @@ class HybridSearchManager:
             },
         )
         selected_ids = [str(item_id) for item_id in result.get("selected_ids", [])]
-        candidate_by_id = {
-            candidate["chunk_id"]: candidate for candidate in solver_candidates
-        }
-
-        def _mean_feature(items: List[Dict[str, Any]], key: str) -> float:
-            if not items:
-                return 0.0
-            return float(np.mean([float(item.get(key, 0.0)) for item in items]))
-
-        selected_candidates = [
-            candidate_by_id[item_id]
-            for item_id in selected_ids
-            if item_id in candidate_by_id
-        ]
+        selected_candidates = [candidate_by_id[item_id] for item_id in selected_ids if item_id in candidate_by_id]
         return {
             "solver_output": result.get("solver_output", {}),
             "selected_ids": selected_ids,
@@ -1583,57 +1961,13 @@ class HybridSearchManager:
             "backend_kind": result.get("solver_backend_kind") or result.get("backend_kind", "cpu_reference"),
             "execution_mode": result.get("backend_kind"),
             "solver_backend_kind": result.get("solver_backend_kind"),
-            "feature_summary": {
-                **result.get("feature_summary", {}),
-                "requested_optimizer_policy": policy_name,
-                "refine_rerank": dict((self._last_refine_context or {}).get("rerank") or {}),
-                "refine_nli": dict((self._last_refine_context or {}).get("nli") or {}),
-                "refine_confidence_gate": dict((self._last_refine_context or {}).get("confidence_gate") or {}),
-                "rerank_metadata_present": any(
-                    any(
-                        key in candidate
-                        for key in (
-                            "cross_encoder_score",
-                            "ce_score",
-                            "ltr_score",
-                            "rerank_score",
-                            "utility_score",
-                            "nli_utility_score",
-                            "nli_entailment",
-                            "nli_contradiction",
-                        )
-                    )
-                    for candidate in solver_candidates
-                ),
-                "nli_metadata_present": any(
-                    any(
-                        key in candidate
-                        for key in ("utility_score", "nli_utility_score", "nli_entailment", "nli_contradiction")
-                    )
-                    for candidate in solver_candidates
-                ),
-                "candidate_count": len(solver_candidates),
-                "query_text_used": bool(query_text.strip()),
-                "query_label": (
-                    str(query_payload.get("label") or query_payload.get("query_label"))
-                    if isinstance(query_payload, dict)
-                    else None
-                ),
-                "candidate_avg_base_relevance": _mean_feature(solver_candidates, "base_relevance"),
-                "selected_avg_base_relevance": _mean_feature(selected_candidates, "base_relevance"),
-                "candidate_avg_utility_score": _mean_feature(solver_candidates, "utility_score"),
-                "selected_avg_utility_score": _mean_feature(selected_candidates, "utility_score"),
-                "candidate_avg_nli_entailment": _mean_feature(solver_candidates, "nli_entailment"),
-                "selected_avg_nli_entailment": _mean_feature(selected_candidates, "nli_entailment"),
-                "candidate_avg_nli_contradiction": _mean_feature(solver_candidates, "nli_contradiction"),
-                "selected_avg_nli_contradiction": _mean_feature(selected_candidates, "nli_contradiction"),
-                "candidate_avg_ontology_query_match": _mean_feature(solver_candidates, "ontology_query_match"),
-                "selected_avg_ontology_query_match": _mean_feature(selected_candidates, "ontology_query_match"),
-                "candidate_avg_ontology_entity_coverage": _mean_feature(solver_candidates, "ontology_entity_coverage"),
-                "selected_avg_ontology_entity_coverage": _mean_feature(selected_candidates, "ontology_entity_coverage"),
-                "candidate_avg_ontology_type_match": _mean_feature(solver_candidates, "ontology_type_match"),
-                "selected_avg_ontology_type_match": _mean_feature(selected_candidates, "ontology_type_match"),
-            },
+            "feature_summary": _feature_summary(
+                selected_candidates,
+                {
+                    **result.get("feature_summary", {}),
+                    "production_solver_profile": production_profile,
+                },
+            ),
         }
 
     def close(self) -> None:

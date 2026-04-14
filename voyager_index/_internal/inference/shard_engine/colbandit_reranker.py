@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 
@@ -55,12 +55,16 @@ class ColBanditReranker:
                 variable_length_strategy=variable_length_strategy,
                 return_stats=True,
             )
-            return ids, scores, {
-                "bandit_rounds": 0,
-                "bandit_docs_pruned": 0,
-                "bandit_docs_survived": float(total_docs),
-                **score_stats,
-            }
+            return (
+                ids,
+                scores,
+                {
+                    "bandit_rounds": 0,
+                    "bandit_docs_pruned": 0,
+                    "bandit_docs_survived": float(total_docs),
+                    **score_stats,
+                },
+            )
 
         try:
             return self._rerank(
@@ -84,12 +88,16 @@ class ColBanditReranker:
                 variable_length_strategy=variable_length_strategy,
                 return_stats=True,
             )
-            return ids, scores, {
-                "bandit_rounds": -1,
-                "bandit_docs_pruned": 0,
-                "bandit_docs_survived": float(total_docs),
-                **score_stats,
-            }
+            return (
+                ids,
+                scores,
+                {
+                    "bandit_rounds": -1,
+                    "bandit_docs_pruned": 0,
+                    "bandit_docs_survived": float(total_docs),
+                    **score_stats,
+                },
+            )
 
     def _rerank(
         self,
@@ -128,7 +136,6 @@ class ColBanditReranker:
         lower = torch.tensor(doc_lower, dtype=torch.float32)
         upper = torch.tensor(doc_upper, dtype=torch.float32)
         doc_max_norm_t = torch.tensor(doc_max_norm, dtype=torch.float32)
-        doc_min_norm = torch.zeros(n_total_docs, dtype=torch.float32)
         active = torch.ones(n_total_docs, dtype=torch.bool)
 
         # Per-doc running stats for Bernstein-style bounds
@@ -142,11 +149,11 @@ class ColBanditReranker:
         rounds = 0
         seen_tokens = 0
         while rounds < self.config.max_rounds and seen_tokens < len(token_order):
-            block = token_order[seen_tokens:seen_tokens + self.config.reveal_query_tokens_per_round]
+            block = token_order[seen_tokens : seen_tokens + self.config.reveal_query_tokens_per_round]
             if not block:
                 break
             q_sub = q[:, block, :]
-            remaining_indices = token_order[seen_tokens + len(block):]
+            remaining_indices = token_order[seen_tokens + len(block) :]
             remaining_norm = float(torch.sum(q_norms[remaining_indices]).item()) if remaining_indices else 0.0
 
             global_doc_base = 0
@@ -154,33 +161,40 @@ class ColBanditReranker:
                 n_docs = len(doc_ids)
                 if n_docs == 0:
                     continue
-                mask_slice = active[global_doc_base:global_doc_base + n_docs]
+                mask_slice = active[global_doc_base : global_doc_base + n_docs]
                 if not bool(mask_slice.any()):
                     global_doc_base += n_docs
                     continue
                 if shard_idx not in cached_padded:
                     cached_padded[shard_idx] = _pad_shard_on_device(flat_emb, offsets, device)
                 doc_emb, doc_mask = cached_padded[shard_idx]
-                contrib = maxsim(
-                    queries_embeddings=q_sub,
-                    documents_embeddings=doc_emb,
-                    documents_mask=doc_mask,
-                ).squeeze(0).float().cpu()
+                contrib = (
+                    maxsim(
+                        queries_embeddings=q_sub,
+                        documents_embeddings=doc_emb,
+                        documents_mask=doc_mask,
+                    )
+                    .squeeze(0)
+                    .float()
+                    .cpu()
+                )
 
                 sl = slice(global_doc_base, global_doc_base + n_docs)
                 lower[sl] += contrib
                 sum_contribs[sl] += contrib
-                sum_sq_contribs[sl] += contrib ** 2
+                sum_sq_contribs[sl] += contrib**2
                 tokens_seen_count[sl] += len(block)
 
                 # Tighter upper bound using empirical variance (Bernstein-Serfling style)
                 n_seen = tokens_seen_count[sl].clamp(min=1)
                 n_remaining = float(total_q_tokens) - n_seen
                 mean_per_token = sum_contribs[sl] / n_seen
-                var_per_token = (sum_sq_contribs[sl] / n_seen - mean_per_token ** 2).clamp(min=0)
+                var_per_token = (sum_sq_contribs[sl] / n_seen - mean_per_token**2).clamp(min=0)
                 # Finite-population correction: uncertainty shrinks as we reveal more tokens
                 fpc = (n_remaining / float(max(1, total_q_tokens))).clamp(min=0)
-                empirical_upper = lower[sl] + n_remaining * mean_per_token + 2.0 * torch.sqrt(var_per_token * n_remaining * fpc)
+                empirical_upper = (
+                    lower[sl] + n_remaining * mean_per_token + 2.0 * torch.sqrt(var_per_token * n_remaining * fpc)
+                )
                 hard_upper = lower[sl] + remaining_norm * doc_max_norm_t[sl]
                 upper[sl] = torch.minimum(empirical_upper, hard_upper)
                 global_doc_base += n_docs
@@ -208,12 +222,16 @@ class ColBanditReranker:
                 variable_length_strategy=variable_length_strategy,
                 return_stats=True,
             )
-            return ids, scores, {
-                "bandit_rounds": float(rounds),
-                "bandit_docs_pruned": float(len(flat_doc_ids)),
-                "bandit_docs_survived": 0.0,
-                **score_stats,
-            }
+            return (
+                ids,
+                scores,
+                {
+                    "bandit_rounds": float(rounds),
+                    "bandit_docs_pruned": float(len(flat_doc_ids)),
+                    "bandit_docs_survived": 0.0,
+                    **score_stats,
+                },
+            )
 
         docs_by_shard: Dict[int, set[int]] = {}
         for idx in torch.nonzero(active, as_tuple=False).squeeze(-1).tolist():
@@ -247,9 +265,13 @@ class ColBanditReranker:
             variable_length_strategy=variable_length_strategy,
             return_stats=True,
         )
-        return ids, scores, {
-            "bandit_rounds": float(rounds),
-            "bandit_docs_pruned": float(len(flat_doc_ids) - len(survivors)),
-            "bandit_docs_survived": float(len(survivors)),
-            **score_stats,
-        }
+        return (
+            ids,
+            scores,
+            {
+                "bandit_rounds": float(rounds),
+                "bandit_docs_pruned": float(len(flat_doc_ids) - len(survivors)),
+                "bandit_docs_survived": float(len(survivors)),
+                **score_stats,
+            },
+        )

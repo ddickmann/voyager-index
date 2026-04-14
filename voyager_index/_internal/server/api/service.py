@@ -27,7 +27,6 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 import numpy as np
 import torch
 
-from voyager_index.transport import decode_payload
 from voyager_index._internal.inference.config import IndexConfig
 from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
 from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
@@ -35,6 +34,7 @@ from voyager_index._internal.inference.index_core.index import ColbertIndex
 from voyager_index._internal.inference.shard_engine import ShardSegmentManager
 from voyager_index._internal.inference.shard_engine.config import Compression, TransferMode
 from voyager_index._internal.inference.shard_engine.manager import ShardEngineConfig
+from voyager_index.transport import decode_payload
 
 from .models import (
     CollectionInfo,
@@ -42,6 +42,7 @@ from .models import (
     CreateCollectionRequest,
     DistanceMetric,
     MultimodalOptimizeMode,
+    MutationTaskStatus,
     PointVector,
     RenderDocumentsRequest,
     ScoredPoint,
@@ -49,7 +50,6 @@ from .models import (
     SearchRequest,
     SearchResponse,
     SearchStrategy,
-    MutationTaskStatus,
     TransportVectorPayload,
 )
 
@@ -142,7 +142,10 @@ class SearchService:
         return datetime.now(timezone.utc).isoformat()
 
     def _record_search_metrics(
-        self, elapsed_ms: float, nodes_visited: int = 0, distance_comps: int = 0,
+        self,
+        elapsed_ms: float,
+        nodes_visited: int = 0,
+        distance_comps: int = 0,
     ) -> None:
         with self._metrics_lock:
             self.request_count += 1
@@ -207,16 +210,10 @@ class SearchService:
         return candidate.resolve()
 
     def _sanitize_records(self, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-        return {
-            str(key): value
-            for key, value in (meta.get("records") or {}).items()
-        }
+        return {str(key): value for key, value in (meta.get("records") or {}).items()}
 
     def _refresh_record_index(self, meta: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
-        return {
-            int(record["internal_id"]): record
-            for record in self._sanitize_records(meta).values()
-        }
+        return {int(record["internal_id"]): record for record in self._sanitize_records(meta).values()}
 
     @staticmethod
     def _filter_value_key(value: Any) -> Optional[str]:
@@ -324,10 +321,7 @@ class SearchService:
         records = self._ordered_records(runtime)
         self._refresh_runtime_indexes(runtime)
         ids = [int(record["internal_id"]) for record in records]
-        corpus = [
-            record.get("text") or ""
-            for record in records
-        ]
+        corpus = [record.get("text") or "" for record in records]
         payloads = [dict(record.get("payload") or {}) for record in records]
         if rebuild_sparse:
             runtime.engine.rebuild_sparse_state(corpus, ids, payloads)
@@ -396,9 +390,7 @@ class SearchService:
                 max_docs_exact=int(meta.get("max_docs_exact", 10_000)),
                 n_full_scores=int(meta.get("n_full_scores", 4096)),
                 lemur_search_k_cap=(
-                    int(meta["lemur_search_k_cap"])
-                    if meta.get("lemur_search_k_cap") is not None
-                    else 2048
+                    int(meta["lemur_search_k_cap"]) if meta.get("lemur_search_k_cap") is not None else 2048
                 ),
                 transfer_mode=TransferMode(str(meta.get("transfer_mode", TransferMode.PINNED.value))),
                 pinned_pool_buffers=int(meta.get("pinned_pool_buffers", 3)),
@@ -443,13 +435,10 @@ class SearchService:
             meta_mtime_ns=metadata_path.stat().st_mtime_ns if metadata_path.exists() else 0,
         )
         if runtime.kind == CollectionKind.DENSE:
-            should_rebuild_sparse = (
-                bool(runtime.meta.get("sparse_dirty"))
-                or (
-                    runtime.engine.retriever is None
-                    and not runtime.engine.sparse_index_present
-                    and bool(runtime.meta.get("records"))
-                )
+            should_rebuild_sparse = bool(runtime.meta.get("sparse_dirty")) or (
+                runtime.engine.retriever is None
+                and not runtime.engine.sparse_index_present
+                and bool(runtime.meta.get("records"))
             )
             self._sync_dense_sparse_state(runtime, rebuild_sparse=should_rebuild_sparse)
             if should_rebuild_sparse:
@@ -470,9 +459,7 @@ class SearchService:
         disk_names = {
             entry.name
             for entry in self.root_path.iterdir()
-            if entry.is_dir()
-            and not entry.name.startswith(".")
-            and (entry / "collection.json").exists()
+            if entry.is_dir() and not entry.name.startswith(".") and (entry / "collection.json").exists()
         }
         with self._collections_lock:
             loaded_names = set(self.collections.keys())
@@ -652,7 +639,7 @@ class SearchService:
             self._copy_into_backup(runtime, backup_root, runtime.path / "hybrid")
             runtime.engine = self._build_engine(runtime.name, runtime.meta)
         elif runtime.kind == CollectionKind.SHARD:
-            if hasattr(runtime.engine, 'flush') and callable(runtime.engine.flush):
+            if hasattr(runtime.engine, "flush") and callable(runtime.engine.flush):
                 runtime.engine.flush()
             shard_dir = runtime.path / "shard"
             if shard_dir.exists():
@@ -669,9 +656,7 @@ class SearchService:
             self._copy_into_backup(runtime, backup_root, runtime.path / "colpali" / "centroid_sidecar")
             self._copy_into_backup(runtime, backup_root, manifest_path)
             metadata["existing_chunk_files"] = (
-                sorted(path.name for path in chunks_path.glob("*.npz"))
-                if chunks_path.exists()
-                else []
+                sorted(path.name for path in chunks_path.glob("*.npz")) if chunks_path.exists() else []
             )
         self._write_journal_metadata(backup_root, metadata)
         return backup
@@ -819,9 +804,7 @@ class SearchService:
                     meta["pinned_buffer_max_tokens"] = int(request.pinned_buffer_max_tokens or 50_000)
                     meta["router_device"] = str(request.router_device or "cpu")
                     meta["lemur_search_k_cap"] = (
-                        int(request.lemur_search_k_cap)
-                        if request.lemur_search_k_cap is not None
-                        else 2048
+                        int(request.lemur_search_k_cap) if request.lemur_search_k_cap is not None else 2048
                     )
                     meta["max_docs_exact"] = int(request.max_docs_exact or 10_000)
                     meta["n_full_scores"] = int(request.n_full_scores or 4096)
@@ -984,10 +967,7 @@ class SearchService:
                         raise ValidationError("Point IDs must be unique within a single request")
 
                     payloads = [self._prepare_payload(point) for point in points]
-                    corpus = [
-                        payload.get("text") or payload.get("content") or ""
-                        for payload in payloads
-                    ]
+                    corpus = [payload.get("text") or payload.get("content") or "" for payload in payloads]
                     existing_internal_ids = [
                         int(runtime.meta["records"][record_key]["internal_id"])
                         for record_key in record_keys
@@ -1015,7 +995,9 @@ class SearchService:
                         runtime.engine.hnsw.add(vectors, ids=ids, payloads=payloads)
                         for record_key in record_keys:
                             runtime.meta["records"].pop(record_key, None)
-                        for record_key, point, payload, text_value, internal_id in zip(record_keys, points, payloads, corpus, ids):
+                        for record_key, point, payload, text_value, internal_id in zip(
+                            record_keys, points, payloads, corpus, ids
+                        ):
                             runtime.meta["records"][record_key] = {
                                 "external_id": point.id,
                                 "internal_id": internal_id,
@@ -1042,8 +1024,10 @@ class SearchService:
                         if tensor.dim() != 3 or tensor.shape[-1] != int(runtime.meta["dimension"]):
                             raise ValidationError("Late-interaction tensors must have shape (docs, tokens, dim)")
                         if runtime.engine.storage.num_docs == 0 and not runtime.engine.storage.data_file.exists():
+
                             def batch_gen():
                                 yield tensor.detach().cpu(), payloads
+
                             assigned_ids = runtime.engine.build_from_batches(
                                 batch_gen(),
                                 collection_name="default",
@@ -1053,7 +1037,9 @@ class SearchService:
                             assigned_ids = runtime.engine.add_documents(tensor, metadata=payloads)
                         for record_key in record_keys:
                             runtime.meta["records"].pop(record_key, None)
-                        for record_key, point, payload, text_value, internal_id in zip(record_keys, points, payloads, corpus, assigned_ids):
+                        for record_key, point, payload, text_value, internal_id in zip(
+                            record_keys, points, payloads, corpus, assigned_ids
+                        ):
                             runtime.meta["records"][record_key] = {
                                 "external_id": point.id,
                                 "internal_id": int(internal_id),
@@ -1083,7 +1069,11 @@ class SearchService:
                         for record_key in record_keys:
                             runtime.meta["records"].pop(record_key, None)
                         for record_key, point, payload, text_value, internal_id in zip(
-                            record_keys, points, payloads, corpus, ids,
+                            record_keys,
+                            points,
+                            payloads,
+                            corpus,
+                            ids,
                         ):
                             runtime.meta["records"][record_key] = {
                                 "external_id": point.id,
@@ -1112,7 +1102,9 @@ class SearchService:
                         runtime.engine.add_documents(vectors, doc_ids=ids)
                         for record_key in record_keys:
                             runtime.meta["records"].pop(record_key, None)
-                        for record_key, point, payload, text_value, internal_id in zip(record_keys, points, payloads, corpus, ids):
+                        for record_key, point, payload, text_value, internal_id in zip(
+                            record_keys, points, payloads, corpus, ids
+                        ):
                             runtime.meta["records"][record_key] = {
                                 "external_id": point.id,
                                 "internal_id": internal_id,
@@ -1264,13 +1256,15 @@ class SearchService:
             shards = []
             for s in store.manifest.shards:
                 avg = s.total_tokens / max(s.num_docs, 1)
-                shards.append({
-                    "shard_id": s.shard_id,
-                    "num_docs": s.num_docs,
-                    "total_tokens": s.total_tokens,
-                    "avg_tokens": avg,
-                    "p95_tokens": s.p95_tokens,
-                })
+                shards.append(
+                    {
+                        "shard_id": s.shard_id,
+                        "num_docs": s.num_docs,
+                        "total_tokens": s.total_tokens,
+                        "avg_tokens": avg,
+                        "p95_tokens": s.p95_tokens,
+                    }
+                )
             return {
                 "collection": name,
                 "num_shards": store.manifest.num_shards,
@@ -1357,7 +1351,9 @@ class SearchService:
         if request.vector is not None:
             query = self._coerce_single_vector_input(request.vector, field_name="vector")
         elif request.vectors is not None:
-            raise ValidationError("Dense search requires 'vector'; 'vectors' is only supported for late-interaction or multimodal collections")
+            raise ValidationError(
+                "Dense search requires 'vector'; 'vectors' is only supported for late-interaction or multimodal collections"
+            )
         else:
             return None
 
@@ -1367,17 +1363,10 @@ class SearchService:
 
     def _get_dense_vectors(self, runtime: CollectionRuntime, internal_ids: List[int]) -> Dict[int, Any]:
         items = runtime.engine.hnsw.retrieve(internal_ids)
-        return {
-            int(item["id"]): item.get("vector")
-            for item in items
-        }
+        return {int(item["id"]): item.get("vector") for item in items}
 
     def _dense_solver_constraints(self, request: SearchRequest) -> Any:
-        if (
-            request.max_tokens is None
-            and request.max_chunks is None
-            and request.max_per_cluster is None
-        ):
+        if request.max_tokens is None and request.max_chunks is None and request.max_per_cluster is None:
             return None
         try:
             from latence_solver import SolverConstraints  # type: ignore
@@ -1762,9 +1751,7 @@ class SearchService:
         screening_profile: Dict[str, Any],
     ) -> tuple[List[Any], Optional[float], Optional[int]]:
         effective_candidate_ids = (
-            list(candidate_ids)
-            if candidate_ids is not None
-            else list(runtime.record_index.keys())
+            list(candidate_ids) if candidate_ids is not None else list(runtime.record_index.keys())
         )
         if not effective_candidate_ids:
             runtime.engine.last_search_profile["screening"] = dict(screening_profile)
@@ -1844,9 +1831,7 @@ class SearchService:
         screening_profile: Dict[str, Any],
     ) -> tuple[List[Any], Optional[float], Optional[int]]:
         effective_candidate_ids = (
-            list(candidate_ids)
-            if candidate_ids is not None
-            else list(runtime.record_index.keys())
+            list(candidate_ids) if candidate_ids is not None else list(runtime.record_index.keys())
         )
         if not effective_candidate_ids:
             runtime.engine.last_search_profile["screening"] = dict(screening_profile)
@@ -1864,11 +1849,7 @@ class SearchService:
             candidate_ids=effective_candidate_ids,
         )
         frontier_profile = dict(getattr(runtime.engine, "last_search_profile", {}) or {})
-        frontier_ids = [
-            int(result.doc_id)
-            for result in frontier_results
-            if int(result.doc_id) in runtime.record_index
-        ]
+        frontier_ids = [int(result.doc_id) for result in frontier_results if int(result.doc_id) in runtime.record_index]
         frontier_scores = {
             int(result.doc_id): float(result.score)
             for result in frontier_results
@@ -1909,11 +1890,7 @@ class SearchService:
         )
         if not selected_ids:
             selected_ids = frontier_ids[: request.top_k]
-        selected_ranked = [
-            result
-            for result in frontier_results
-            if int(result.doc_id) in set(selected_ids)
-        ]
+        selected_ranked = [result for result in frontier_results if int(result.doc_id) in set(selected_ids)]
         selected_ranked = selected_ranked[: request.top_k]
         frontier_profile["screening"] = dict(screening_profile)
         frontier_profile["optimization"] = {
@@ -1946,9 +1923,7 @@ class SearchService:
         if not self._dense_uses_solver(request):
             return fused[: request.top_k], None
         if not getattr(runtime.engine, "solver_available", False):
-            raise ValidationError(
-                "Optimized dense search requires the latence_solver native package to be installed"
-            )
+            raise ValidationError("Optimized dense search requires the latence_solver native package to be installed")
         if query is None:
             raise ValidationError("Optimized dense search requires 'vector' so the solver can score dense candidates")
 
@@ -1968,19 +1943,13 @@ class SearchService:
                 "Cross-encoder dense refinement requires sentence-transformers to be installed."
             ) from exc
         selected_ids = [
-            int(doc_id)
-            for doc_id in refined.get("selected_internal_ids", [])
-            if int(doc_id) in runtime.record_index
+            int(doc_id) for doc_id in refined.get("selected_internal_ids", []) if int(doc_id) in runtime.record_index
         ]
         if not selected_ids:
             return fused, refined
 
         score_map = {int(doc_id): float(score) for doc_id, score in fused}
-        refined_pairs = [
-            (doc_id, score_map.get(doc_id, 0.0))
-            for doc_id in selected_ids
-            if doc_id in score_map
-        ]
+        refined_pairs = [(doc_id, score_map.get(doc_id, 0.0)) for doc_id in selected_ids if doc_id in score_map]
         if not refined_pairs:
             return fused, refined
         return refined_pairs[: request.top_k], refined
@@ -2050,7 +2019,9 @@ class SearchService:
                 if query is None and not request.query_text:
                     raise ValidationError("Dense search requires a vector or query_text")
                 if use_dense_solver and query is None:
-                    raise ValidationError("Tabu-refined dense search requires 'vector' because solver refinement is dense-query aware")
+                    raise ValidationError(
+                        "Tabu-refined dense search requires 'vector' because solver refinement is dense-query aware"
+                    )
                 if request.query_text and runtime.meta.get("sparse_dirty"):
                     with self._cross_process_collection_lock(runtime.name):
                         runtime = self.get_collection(runtime.name)
@@ -2074,10 +2045,7 @@ class SearchService:
                 if request.with_vector:
                     refined_vectors = refined.get("selected_vectors", {}) if refined is not None else {}
                     vectors_by_id = {int(doc_id): value for doc_id, value in refined_vectors.items()}
-                    missing_ids = [
-                        doc_id for doc_id, _ in dense_pairs
-                        if int(doc_id) not in vectors_by_id
-                    ]
+                    missing_ids = [doc_id for doc_id, _ in dense_pairs if int(doc_id) not in vectors_by_id]
                     if missing_ids:
                         vectors_by_id.update(self._get_dense_vectors(runtime, missing_ids))
                 results = [
@@ -2092,15 +2060,9 @@ class SearchService:
                     for rank, (doc_id, score) in enumerate(dense_pairs, start=1)
                 ]
                 objective_score = (
-                    refined.get("solver_output", {}).get("objective_score")
-                    if refined is not None
-                    else None
+                    refined.get("solver_output", {}).get("objective_score") if refined is not None else None
                 )
-                total_tokens = (
-                    refined.get("solver_output", {}).get("total_tokens")
-                    if refined is not None
-                    else None
-                )
+                total_tokens = refined.get("solver_output", {}).get("total_tokens") if refined is not None else None
             elif runtime.kind == CollectionKind.LATE_INTERACTION:
                 if request.query_text:
                     raise ValidationError("Late-interaction collections do not support query_text search")
@@ -2136,7 +2098,7 @@ class SearchService:
                     if int(doc_id) in runtime.record_index
                     and self._matches_filter(runtime.record_index[int(doc_id)]["payload"], request.filter)
                 ]
-                selected_pairs = filtered_pairs[:request.top_k]
+                selected_pairs = filtered_pairs[: request.top_k]
                 internal_ids = [doc_id for doc_id, _ in selected_pairs]
                 vectors_by_id = {}
                 if request.with_vector and internal_ids:
@@ -2184,10 +2146,9 @@ class SearchService:
                     n_probes=request.n_probes,
                     **shard_overrides,
                 )
-                selected_pairs = [
-                    (did, sc) for did, sc in shard_results
-                    if did in runtime.record_index
-                ][:request.top_k]
+                selected_pairs = [(did, sc) for did, sc in shard_results if did in runtime.record_index][
+                    : request.top_k
+                ]
                 results = [
                     self._build_scored_point(
                         runtime,
@@ -2243,7 +2204,10 @@ class SearchService:
                     multimodal_mode = MultimodalOptimizeMode.MAXSIM_ONLY
                 if candidate_ids == []:
                     raw_results = []
-                elif request.strategy != SearchStrategy.OPTIMIZED or multimodal_mode == MultimodalOptimizeMode.MAXSIM_ONLY:
+                elif (
+                    request.strategy != SearchStrategy.OPTIMIZED
+                    or multimodal_mode == MultimodalOptimizeMode.MAXSIM_ONLY
+                ):
                     raw_results = runtime.engine.search(
                         query_embedding=query_embedding,
                         top_k=request.top_k,
@@ -2254,9 +2218,7 @@ class SearchService:
                         runtime.engine.last_search_profile["optimization"] = {
                             "mode": "maxsim_only",
                             "candidate_pool_size": (
-                                len(candidate_ids)
-                                if candidate_ids is not None
-                                else len(runtime.record_index)
+                                len(candidate_ids) if candidate_ids is not None else len(runtime.record_index)
                             ),
                         }
                 elif multimodal_mode == MultimodalOptimizeMode.SOLVER_PREFILTER_MAXSIM:
@@ -2280,10 +2242,12 @@ class SearchService:
                     for result in raw_results
                     if int(result.doc_id) in runtime.record_index
                     and self._matches_filter(runtime.record_index[int(result.doc_id)]["payload"], request.filter)
-                ][:request.top_k]
+                ][: request.top_k]
                 vectors_by_id = {}
                 if request.with_vector and selected_results:
-                    vectors_by_id = runtime.engine.get_document_embeddings([int(result.doc_id) for result in selected_results])
+                    vectors_by_id = runtime.engine.get_document_embeddings(
+                        [int(result.doc_id) for result in selected_results]
+                    )
                 results = [
                     self._build_scored_point(
                         runtime,
@@ -2362,7 +2326,9 @@ class SearchService:
                 storage_mb=storage_mb,
                 m=runtime.meta.get("m") if runtime.kind == CollectionKind.DENSE else None,
                 ef_construction=runtime.meta.get("ef_construction") if runtime.kind == CollectionKind.DENSE else None,
-                storage_mode=runtime.meta.get("storage_mode") if runtime.kind == CollectionKind.LATE_INTERACTION else None,
+                storage_mode=runtime.meta.get("storage_mode")
+                if runtime.kind == CollectionKind.LATE_INTERACTION
+                else None,
                 storage_path=str(runtime.path),
                 n_shards=shard_n_shards,
                 k_candidates=shard_k_candidates,
@@ -2500,7 +2466,9 @@ class SearchService:
         self._refresh_runtime_indexes(runtime)
         logger.info(
             "Evicted %d oldest documents from '%s' (max_documents=%d)",
-            len(evict_keys), runtime.name, max_docs,
+            len(evict_keys),
+            runtime.name,
+            max_docs,
         )
 
     # ------------------------------------------------------------------
@@ -2508,7 +2476,10 @@ class SearchService:
     # ------------------------------------------------------------------
 
     def set_payload(
-        self, name: str, point_ids: List[Any], payload: Dict[str, Any],
+        self,
+        name: str,
+        point_ids: List[Any],
+        payload: Dict[str, Any],
     ) -> int:
         """Merge payload fields into specified points."""
         runtime, collection_lock = self._collection_context(name)
@@ -2533,7 +2504,10 @@ class SearchService:
                 return updated
 
     def delete_payload_keys(
-        self, name: str, point_ids: List[Any], keys: List[str],
+        self,
+        name: str,
+        point_ids: List[Any],
+        keys: List[str],
     ) -> int:
         """Remove specific payload keys from specified points."""
         runtime, collection_lock = self._collection_context(name)
@@ -2600,6 +2574,7 @@ class SearchService:
     def encode(self, request):
         """Encode text/images into embeddings via the configured model provider."""
         from .models import EncodeResponse
+
         provider = self._get_encode_provider()
         if provider is None:
             raise ServiceError("No encoding model configured. Set VOYAGER_ENCODE_MODEL or start with a ColPali engine.")
@@ -2618,6 +2593,7 @@ class SearchService:
     def rerank(self, request):
         """Rerank documents against a query."""
         from .models import RerankResponse, RerankResult
+
         provider = self._get_encode_provider()
         if provider is None:
             raise ServiceError("No encoding model configured for reranking.")
@@ -2625,12 +2601,15 @@ class SearchService:
         query_emb = provider.encode(request.query)
         if hasattr(query_emb, "numpy"):
             import numpy as _np
+
             query_np = query_emb.numpy().astype(_np.float32)
         elif hasattr(query_emb, "tolist"):
             import numpy as _np
+
             query_np = _np.array(query_emb, dtype=_np.float32)
         else:
             import numpy as _np
+
             query_np = _np.array(query_emb, dtype=_np.float32)
 
         scored = []
@@ -2641,23 +2620,21 @@ class SearchService:
             else:
                 doc_np = _np.array(doc_emb, dtype=_np.float32)
             if query_np.ndim == 1:
-                score = float(_np.dot(query_np, doc_np.flatten()[:len(query_np)]))
+                score = float(_np.dot(query_np, doc_np.flatten()[: len(query_np)]))
             else:
                 import torch as _torch
+
                 q = _torch.from_numpy(query_np).float()
                 d = _torch.from_numpy(doc_np).float()
                 if q.dim() == 2 and d.dim() == 2:
                     sim = q @ d.T
                     score = float(sim.max(dim=1).values.sum())
                 else:
-                    score = float(_np.dot(query_np.flatten(), doc_np.flatten()[:query_np.size]))
+                    score = float(_np.dot(query_np.flatten(), doc_np.flatten()[: query_np.size]))
             scored.append((idx, score, doc))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        results = [
-            RerankResult(index=idx, score=sc, document=doc)
-            for idx, sc, doc in scored[:request.top_k]
-        ]
+        results = [RerankResult(index=idx, score=sc, document=doc) for idx, sc, doc in scored[: request.top_k]]
         return RerankResponse(results=results, model=getattr(provider, "model_name", None))
 
     _cached_encode_provider = None
@@ -2773,9 +2750,7 @@ class SearchService:
                 )
 
         try:
-            indexed_matches_records = (
-                not runtime.meta.get("records") or self._is_runtime_indexed(runtime)
-            )
+            indexed_matches_records = not runtime.meta.get("records") or self._is_runtime_indexed(runtime)
         except Exception as exc:
             issues.append(
                 {
@@ -2834,13 +2809,7 @@ class SearchService:
                 }
             )
 
-        degraded_collections = sorted(
-            {
-                issue["name"]
-                for issue in issues
-                if issue.get("scope") == "collection"
-            }
-        )
+        degraded_collections = sorted({issue["name"] for issue in issues if issue.get("scope") == "collection"})
         return {
             "status": "ok" if not issues else "degraded",
             "collections": len(runtimes),
@@ -2859,10 +2828,7 @@ class SearchService:
             nodes_visited_total = self.nodes_visited_total
             distance_comps_total = self.distance_comps_total
         with self._collections_lock:
-            collection_kinds = {
-                name: runtime.kind.value
-                for name, runtime in self.collections.items()
-            }
+            collection_kinds = {name: runtime.kind.value for name, runtime in self.collections.items()}
         return {
             "request_count": request_count,
             "total_latency": total_latency,

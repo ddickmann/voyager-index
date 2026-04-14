@@ -3,39 +3,34 @@
 Supports WAL, retrieve, scroll, flush, memtable CRUD, payload filters,
 ROQ-4 bit scoring, and optional BM25-hybrid re-ranking.
 """
+
 from __future__ import annotations
 
 import gc
 import json
 import logging
 import pickle
-import time
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
 
-from .checkpoint import ShardCheckpointManager
 try:
     from voyager_index._internal.inference.index_core.io_utils import (
         FileLock as _FileLock,
+    )
+    from voyager_index._internal.inference.index_core.io_utils import (
         atomic_json_write as _atomic_json_write,
     )
 except ImportError:
     _FileLock = None
     _atomic_json_write = None
 
-
-def atomic_json_write(path: Path, data: Any) -> None:
-    """Atomic JSON write with graceful fallback to plain json.dump."""
-    if _atomic_json_write is not None:
-        _atomic_json_write(path, data)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+from .checkpoint import ShardCheckpointManager
+from .colbandit_reranker import ColBanditReranker
 from .config import (
     AnnBackend,
     BuildConfig,
@@ -46,23 +41,31 @@ from .config import (
     StorageLayout,
     TransferMode,
 )
-from .colbandit_reranker import ColBanditReranker
 from .fetch_pipeline import FetchPipeline, PinnedBufferPool
 from .lemur_router import CandidatePlan, LemurRouter
 from .memtable import MemTable
-from .profiler import QueryProfile, Timer
+from .profiler import Timer
 from .scorer import (
     PreloadedGpuCorpus,
-    brute_force_maxsim,
     proxy_score_candidates,
-    score_roq4_topk,
     score_all_docs_topk,
+    score_roq4_topk,
     warmup_maxsim,
 )
 from .shard_store import ShardStore
-from .wal import WalEntry, WalOp, WalReader, WalWriter
+from .wal import WalOp, WalReader, WalWriter
 
 logger = logging.getLogger(__name__)
+
+
+def atomic_json_write(path: Path, data: Any) -> None:
+    """Atomic JSON write with graceful fallback to plain json.dump."""
+    if _atomic_json_write is not None:
+        _atomic_json_write(path, data)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
 
 
 class ShardEngineConfig:
@@ -249,8 +252,7 @@ class ShardSegmentManager:
                 offset += v.shape[0]
             doc_counts = np.array([e - s for s, e in doc_offsets], dtype=np.int32)
 
-            logger.info("Building shard index: %d docs, dim=%d, %d total tokens",
-                        n_docs, self._dim, all_vecs.shape[0])
+            logger.info("Building shard index: %d docs, dim=%d, %d total tokens", n_docs, self._dim, all_vecs.shape[0])
 
             from .builder import assign_storage_shards
 
@@ -264,7 +266,10 @@ class ShardSegmentManager:
             doc_counts_t = torch.from_numpy(doc_counts)
 
             shard_assignments = assign_storage_shards(
-                doc_offsets, cfg.n_shards, cfg.seed, StorageLayout.TOKEN_BALANCED,
+                doc_offsets,
+                cfg.n_shards,
+                cfg.seed,
+                StorageLayout.TOKEN_BALANCED,
             )
             doc_id_to_shard = {did: int(shard_assignments[i]) for i, did in enumerate(ids)}
             router.fit_initial(
@@ -277,7 +282,11 @@ class ShardSegmentManager:
 
             proxy_weights = router._weights.clone()
             shard_assignments = assign_storage_shards(
-                doc_offsets, cfg.n_shards, cfg.seed, cfg.layout, proxy_weights=proxy_weights,
+                doc_offsets,
+                cfg.n_shards,
+                cfg.seed,
+                cfg.layout,
+                proxy_weights=proxy_weights,
             )
             doc_id_to_shard = {did: int(shard_assignments[i]) for i, did in enumerate(ids)}
             router.fit_initial(
@@ -295,10 +304,13 @@ class ShardSegmentManager:
             effective_compression = cfg.compression
             if cfg.compression == Compression.ROQ4:
                 try:
-                    from voyager_index._internal.inference.quantization.rotational import (
-                        RotationalQuantizer, RoQConfig,
-                    )
                     import pickle
+
+                    from voyager_index._internal.inference.quantization.rotational import (
+                        RoQConfig,
+                        RotationalQuantizer,
+                    )
+
                     logger.info("Training ROQ 4-bit quantizer ...")
                     roq_q = RotationalQuantizer(RoQConfig(dim=self._dim, num_bits=4, seed=cfg.seed))
                     roq_doc_codes = []
@@ -348,9 +360,7 @@ class ShardSegmentManager:
             self._router = router
             self._doc_vecs = vectors
             self._doc_ids = list(ids)
-            self._sealed_payloads: Dict[int, dict] = {
-                did: payload_dict.get(str(did), {}) for did in ids
-            }
+            self._sealed_payloads: Dict[int, dict] = {did: payload_dict.get(str(did), {}) for did in ids}
             self._is_built = True
             self._next_doc_id = max(ids) + 1 if ids else 0
             self._init_pipeline()
@@ -578,21 +588,20 @@ class ShardSegmentManager:
                 doc_index_path = self._path / "doc_index.npz"
                 merged_emb_path = self._path / "merged_embeddings.bin"
                 gpu_preloaded = False
-                if (
-                    doc_index_path.exists()
-                    and torch.cuda.is_available()
-                    and str(self._device).startswith("cuda")
-                ):
+                if doc_index_path.exists() and torch.cuda.is_available() and str(self._device).startswith("cuda"):
                     try:
                         di = np.load(str(doc_index_path), allow_pickle=True)
                         actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
                         from .scorer import PreloadedGpuCorpus
 
                         fits_gpu = PreloadedGpuCorpus.fits_on_gpu(
-                            len(self._doc_ids), actual_max_tok, self._dim,
+                            len(self._doc_ids),
+                            actual_max_tok,
+                            self._dim,
                         )
                         stream_chunk_docs = PreloadedGpuCorpus.suggest_streaming_chunk_docs(
-                            actual_max_tok, self._dim,
+                            actual_max_tok,
+                            self._dim,
                         )
                         fits_cpu_stream = PreloadedGpuCorpus.fits_cpu_streaming(
                             actual_max_tok,
@@ -600,7 +609,9 @@ class ShardSegmentManager:
                             chunk_docs=stream_chunk_docs,
                         )
                         fits_cpu_stage = PreloadedGpuCorpus.fits_cpu_staging(
-                            len(self._doc_ids), actual_max_tok, self._dim,
+                            len(self._doc_ids),
+                            actual_max_tok,
+                            self._dim,
                         )
 
                         if fits_gpu and merged_emb_path.exists() and fits_cpu_stream and self._store is not None:
@@ -614,7 +625,9 @@ class ShardSegmentManager:
                                 gpu_preloaded = True
                                 logger.info(
                                     "Streaming GPU preload succeeded (%d docs, max_tok=%d, chunk_docs=%d)",
-                                    len(self._gpu_corpus.doc_ids), actual_max_tok, stream_chunk_docs,
+                                    len(self._gpu_corpus.doc_ids),
+                                    actual_max_tok,
+                                    stream_chunk_docs,
                                 )
                             except Exception as exc:
                                 logger.warning("Streaming GPU preload failed: %s", exc)
@@ -628,7 +641,8 @@ class ShardSegmentManager:
                                     gpu_preloaded = True
                                     logger.info(
                                         "GPU preload succeeded (%d docs, max_tok=%d)",
-                                        len(self._doc_ids), actual_max_tok,
+                                        len(self._doc_ids),
+                                        actual_max_tok,
                                     )
                                 else:
                                     self._doc_vecs = None
@@ -636,30 +650,41 @@ class ShardSegmentManager:
                                 if merged_emb_path.exists() and not fits_cpu_stream:
                                     stream_mb = (
                                         PreloadedGpuCorpus.estimate_streaming_cpu_bytes(
-                                            stream_chunk_docs, actual_max_tok, self._dim,
-                                        ) / 1e6
+                                            stream_chunk_docs,
+                                            actual_max_tok,
+                                            self._dim,
+                                        )
+                                        / 1e6
                                     )
                                     logger.info(
                                         "Skipping streaming GPU preload (%d docs, max_tok=%d) — "
                                         "chunk staging would require ~%.1f MB; using non-preloaded exact path",
-                                        len(self._doc_ids), actual_max_tok, stream_mb,
+                                        len(self._doc_ids),
+                                        actual_max_tok,
+                                        stream_mb,
                                     )
                                 else:
                                     stage_gb = (
                                         PreloadedGpuCorpus.estimate_cpu_staging_bytes(
-                                            len(self._doc_ids), actual_max_tok, self._dim,
-                                        ) / 1e9
+                                            len(self._doc_ids),
+                                            actual_max_tok,
+                                            self._dim,
+                                        )
+                                        / 1e9
                                     )
                                     logger.info(
                                         "Skipping GPU preload (%d docs, max_tok=%d) — "
-                                                "CPU staging would require ~%.1f GB; using non-preloaded exact path",
-                                        len(self._doc_ids), actual_max_tok, stage_gb,
+                                        "CPU staging would require ~%.1f GB; using non-preloaded exact path",
+                                        len(self._doc_ids),
+                                        actual_max_tok,
+                                        stage_gb,
                                     )
                             else:
                                 logger.info(
                                     "Corpus too large for GPU preload (%d docs, max_tok=%d) — "
-                                            "using non-preloaded exact path",
-                                    len(self._doc_ids), actual_max_tok,
+                                    "using non-preloaded exact path",
+                                    len(self._doc_ids),
+                                    actual_max_tok,
                                 )
                     except Exception as exc:
                         logger.warning("GPU preload check failed: %s", exc)
@@ -671,14 +696,9 @@ class ShardSegmentManager:
                 self._try_gpu_preload()
                 if self._gpu_corpus is None:
                     self._doc_vecs = None
-            if (
-                self._rust_index is None
-                or self._gpu_corpus is not None
-                or str(self._device).startswith("cuda")
-            ):
+            if self._rust_index is None or self._gpu_corpus is not None or str(self._device).startswith("cuda"):
                 self._init_pipeline()
-            logger.info("Shard index loaded: %d docs from %s",
-                        len(self._doc_ids), self._path)
+            logger.info("Shard index loaded: %d docs from %s", len(self._doc_ids), self._path)
 
     # ------------------------------------------------------------------
     # Search
@@ -733,21 +753,16 @@ class ShardSegmentManager:
         scfg: SearchConfig,
         dev: torch.device,
     ) -> Tuple[List[int], Dict[int, List[int]], str]:
-        if (
-            self._rust_index is not None
-            and scfg.n_centroid_approx > 0
-            and len(routed.doc_ids) > scfg.n_centroid_approx
-        ):
+        if self._rust_index is not None and scfg.n_centroid_approx > 0 and len(routed.doc_ids) > scfg.n_centroid_approx:
             q_np = q.cpu().numpy().astype(np.float32)
             approx_ids, _approx_scores = self._rust_index.score_candidates_approx(
-                q_np, routed.doc_ids, scfg.n_centroid_approx,
+                q_np,
+                routed.doc_ids,
+                scfg.n_centroid_approx,
             )
             pruned_ids = approx_ids.tolist()
             pruned_set = set(pruned_ids)
-            routed_by_shard = {
-                sid: [d for d in dids if d in pruned_set]
-                for sid, dids in routed.by_shard.items()
-            }
+            routed_by_shard = {sid: [d for d in dids if d in pruned_set] for sid, dids in routed.by_shard.items()}
             routed_by_shard = {sid: dids for sid, dids in routed_by_shard.items() if dids}
             return pruned_ids, routed_by_shard, "centroid_approx"
 
@@ -761,10 +776,7 @@ class ShardSegmentManager:
                 device=dev,
             )
             pruned_set = set(pruned_ids)
-            routed_by_shard = {
-                sid: [d for d in dids if d in pruned_set]
-                for sid, dids in routed.by_shard.items()
-            }
+            routed_by_shard = {sid: [d for d in dids if d in pruned_set] for sid, dids in routed.by_shard.items()}
             routed_by_shard = {sid: dids for sid, dids in routed_by_shard.items() if dids}
             return pruned_ids, routed_by_shard, "doc_mean_proxy"
 
@@ -779,7 +791,7 @@ class ShardSegmentManager:
         scfg: SearchConfig,
         dev: torch.device,
     ) -> Tuple[List[Tuple[int, float]], List[int], str, Dict[str, Any]]:
-        exact_candidate_ids = candidate_ids[:scfg.max_docs_exact]
+        exact_candidate_ids = candidate_ids[: scfg.max_docs_exact]
         if not exact_candidate_ids:
             return [], [], "none", self._empty_exact_stage_stats("none")
 
@@ -829,7 +841,10 @@ class ShardSegmentManager:
         if self._gpu_corpus is not None and dev.type == "cuda":
             rerank_topn = max(int(getattr(scfg, "gpu_corpus_rerank_topn", 0) or 0), internal_k)
             ids, scores, score_stats = self._gpu_corpus.score_candidates(
-                q, exact_candidate_ids, k=rerank_topn, return_stats=True,
+                q,
+                exact_candidate_ids,
+                k=rerank_topn,
+                return_stats=True,
             )
             stage_stats = self._empty_exact_stage_stats("gpu_corpus")
             stage_stats.update(score_stats)
@@ -839,7 +854,9 @@ class ShardSegmentManager:
                 q_np = q.cpu().numpy().astype(np.float32) if not isinstance(q, np.ndarray) else q.astype(np.float32)
                 with Timer(sync_cuda=True) as t_rerank:
                     rerank_ids, rerank_scores = self._rust_index.score_candidates_exact(
-                        q_np, ids, internal_k,
+                        q_np,
+                        ids,
+                        internal_k,
                     )
                 stage_stats["exact_ms"] += t_rerank.elapsed_ms
                 stage_stats["maxsim_ms"] += t_rerank.elapsed_ms
@@ -857,7 +874,9 @@ class ShardSegmentManager:
             try:
                 with Timer(sync_cuda=dev.type == "cuda") as t_exact:
                     top_ids, top_scores = self._rust_index.score_candidates_exact(
-                        q_np, exact_candidate_ids, internal_k,
+                        q_np,
+                        exact_candidate_ids,
+                        internal_k,
                     )
                 exact_path = "rust_fused_exact" if dev.type == "cpu" else "rust_fused_exact_no_preload"
                 stage_stats = self._empty_exact_stage_stats(exact_path)
@@ -890,14 +909,14 @@ class ShardSegmentManager:
                 if len(doc_ids_arr) > 0:
                     emb_f16 = np.frombuffer(np.array(raw_bytes, copy=False), dtype=np.float16).reshape(-1, self._dim)
                     emb_t = torch.from_numpy(emb_f16)
-                    offsets_list = [
-                        (int(offsets_arr[i, 0]), int(offsets_arr[i, 1]))
-                        for i in range(len(doc_ids_arr))
-                    ]
+                    offsets_list = [(int(offsets_arr[i, 0]), int(offsets_arr[i, 1])) for i in range(len(doc_ids_arr))]
                     doc_ids_list = doc_ids_arr.tolist()
                     shard_chunks = [(emb_t, offsets_list, doc_ids_list)]
                     ids, scores, score_stats = score_all_docs_topk(
-                        q, shard_chunks, k=internal_k, device=dev,
+                        q,
+                        shard_chunks,
+                        k=internal_k,
+                        device=dev,
                         quantization_mode=scfg.quantization_mode,
                         variable_length_strategy=scfg.variable_length_strategy,
                         return_stats=True,
@@ -940,11 +959,7 @@ class ShardSegmentManager:
             raise RuntimeError("Index not built or loaded")
 
         self._ensure_warmup()
-        q = (
-            torch.from_numpy(query_vectors).float()
-            if isinstance(query_vectors, np.ndarray)
-            else query_vectors.float()
-        )
+        q = torch.from_numpy(query_vectors).float() if isinstance(query_vectors, np.ndarray) else query_vectors.float()
         dev = self._resolve_scoring_device()
         scfg = self._apply_search_overrides(self._config.to_search_config(), **kwargs)
         internal_k = k
@@ -963,10 +978,18 @@ class ShardSegmentManager:
 
             with Timer(sync_cuda=dev.type == "cuda") as t_prune:
                 pruned_ids, routed_by_shard, prune_path = self._prune_routed_candidates(
-                    q, routed, scfg, dev,
+                    q,
+                    routed,
+                    scfg,
+                    dev,
                 )
             sealed_results, exact_candidate_ids, exact_path, exact_stats = self._score_sealed_candidates(
-                q, pruned_ids, routed_by_shard, internal_k, scfg, dev,
+                q,
+                pruned_ids,
+                routed_by_shard,
+                internal_k,
+                scfg,
+                dev,
             )
 
         result_ids = [int(doc_id) for doc_id, _score in sealed_results[:k]]
@@ -1031,10 +1054,12 @@ class ShardSegmentManager:
 
         with self._lock:
             if self._memtable:
-                mt_docs_snap, mt_payloads_snap, tombstones = self._memtable.snapshot()
+                _mt_docs_snap, mt_payloads_snap, tombstones = self._memtable.snapshot()
             else:
-                mt_docs_snap, mt_payloads_snap, tombstones = {}, {}, set()
-            sealed_payloads_snap = dict(self._sealed_payloads) if hasattr(self, '_sealed_payloads') and self._sealed_payloads else {}
+                _mt_docs_snap, mt_payloads_snap, tombstones = {}, {}, set()
+            sealed_payloads_snap = (
+                dict(self._sealed_payloads) if hasattr(self, "_sealed_payloads") and self._sealed_payloads else {}
+            )
 
         with Timer(sync_cuda=True) as t_route:
             routed = self._router.route(
@@ -1047,10 +1072,18 @@ class ShardSegmentManager:
 
         with Timer(sync_cuda=dev.type == "cuda") as t_prune:
             pruned_ids, routed_by_shard, _prune_path = self._prune_routed_candidates(
-                q, routed, scfg, dev,
+                q,
+                routed,
+                scfg,
+                dev,
             )
         sealed_results, exact_candidate_ids, _exact_path, exact_stats = self._score_sealed_candidates(
-            q, pruned_ids, routed_by_shard, internal_k, scfg, dev,
+            q,
+            pruned_ids,
+            routed_by_shard,
+            internal_k,
+            scfg,
+            dev,
         )
 
         memtable_results: List[Tuple[int, float]] = []
@@ -1136,10 +1169,7 @@ class ShardSegmentManager:
         scfg = self._apply_search_overrides(self._config.to_search_config(), **kwargs)
         n_sealed = len(self._doc_ids) if self._doc_ids else 0
         effective_k = min(scfg.k_candidates, max(n_sealed, 1))
-        query_tensors = [
-            torch.from_numpy(q).float() if isinstance(q, np.ndarray) else q.float()
-            for q in queries
-        ]
+        query_tensors = [torch.from_numpy(q).float() if isinstance(q, np.ndarray) else q.float() for q in queries]
 
         with self._lock:
             if self._memtable:
@@ -1158,21 +1188,25 @@ class ShardSegmentManager:
         def _finish_one(item: Tuple[int, torch.Tensor, CandidatePlan]) -> Tuple[int, List[Tuple[int, float]]]:
             idx, q, routed = item
             pruned_ids, routed_by_shard, _prune_path = self._prune_routed_candidates(
-                q, routed, scfg, dev,
+                q,
+                routed,
+                scfg,
+                dev,
             )
             sealed_results, _exact_candidate_ids, _exact_path, _exact_stats = self._score_sealed_candidates(
-                q, pruned_ids, routed_by_shard, k, scfg, dev,
+                q,
+                pruned_ids,
+                routed_by_shard,
+                k,
+                scfg,
+                dev,
             )
             merged: Dict[int, float] = {}
             for did, sc in sealed_results:
                 if did not in tombstones:
                     merged[did] = max(merged.get(did, float("-inf")), sc)
             if self._memtable and self._memtable.size > 0:
-                query_np = (
-                    queries[idx]
-                    if isinstance(queries[idx], np.ndarray)
-                    else queries[idx].detach().cpu().numpy()
-                )
+                query_np = queries[idx] if isinstance(queries[idx], np.ndarray) else queries[idx].detach().cpu().numpy()
                 for did, sc in self._memtable.search(query_np, k=k):
                     merged[did] = max(merged.get(did, float("-inf")), sc)
             ranked = sorted(merged.items(), key=lambda x: x[1], reverse=True)
@@ -1198,8 +1232,9 @@ class ShardSegmentManager:
         """Alias for search_multivector."""
         return self.search_multivector(query, k=k, filters=filters)
 
-    def scroll(self, limit: int = 100, offset: int = 0,
-               filters: Optional[Dict] = None) -> Tuple[List[int], Optional[int]]:
+    def scroll(
+        self, limit: int = 100, offset: int = 0, filters: Optional[Dict] = None
+    ) -> Tuple[List[int], Optional[int]]:
         """Paginate through all document IDs.
 
         Returns:
@@ -1214,12 +1249,14 @@ class ShardSegmentManager:
             if filters:
                 all_ids = [did for did in all_ids if self._match_filter(did, filters)]
 
-        page = all_ids[offset:offset + limit]
+        page = all_ids[offset : offset + limit]
         next_off = offset + limit if offset + limit < len(all_ids) else None
         return page, next_off
 
     def explain_score(
-        self, query: np.ndarray, doc_id: int,
+        self,
+        query: np.ndarray,
+        doc_id: int,
     ) -> Tuple[Optional[List[float]], Optional[List[int]]]:
         """Per-query-token score attribution for a single document.
 
@@ -1242,15 +1279,9 @@ class ShardSegmentManager:
         if not filters:
             return True
         if "$and" in filters:
-            return all(
-                ShardSegmentManager._evaluate_filter(payload, sub)
-                for sub in filters["$and"]
-            )
+            return all(ShardSegmentManager._evaluate_filter(payload, sub) for sub in filters["$and"])
         if "$or" in filters:
-            return any(
-                ShardSegmentManager._evaluate_filter(payload, sub)
-                for sub in filters["$or"]
-            )
+            return any(ShardSegmentManager._evaluate_filter(payload, sub) for sub in filters["$or"])
         for key, condition in filters.items():
             val = payload.get(key)
             if isinstance(condition, dict):
@@ -1287,7 +1318,7 @@ class ShardSegmentManager:
         if tombstones and doc_id in tombstones:
             return None
         payload = {}
-        if hasattr(self, '_sealed_payloads') and self._sealed_payloads:
+        if hasattr(self, "_sealed_payloads") and self._sealed_payloads:
             payload = dict(self._sealed_payloads.get(doc_id, {}))
         if self._memtable:
             _, mt_payloads, _ = self._memtable.snapshot()
@@ -1412,14 +1443,16 @@ class ShardSegmentManager:
         }
         if self._store and self._store.manifest:
             m = self._store.manifest
-            stats.update({
-                "num_docs": m.num_docs,
-                "sealed_docs": m.num_docs,
-                "num_shards": m.num_shards,
-                "total_tokens": m.total_tokens,
-                "compression": m.compression,
-                "avg_tokens_per_doc": m.avg_tokens_per_chunk,
-            })
+            stats.update(
+                {
+                    "num_docs": m.num_docs,
+                    "sealed_docs": m.num_docs,
+                    "num_shards": m.num_shards,
+                    "total_tokens": m.total_tokens,
+                    "compression": m.compression,
+                    "avg_tokens_per_doc": m.avg_tokens_per_chunk,
+                }
+            )
         if self._router:
             stats["router_type"] = "lemur"
         if self._store:
@@ -1441,7 +1474,7 @@ class ShardSegmentManager:
     def upsert_payload(self, doc_id: int, payload: Dict[str, Any]) -> None:
         """Update or insert payload for a document."""
         with self._lock:
-            if hasattr(self, '_sealed_payloads') and doc_id in (self._sealed_payloads or {}):
+            if hasattr(self, "_sealed_payloads") and doc_id in (self._sealed_payloads or {}):
                 self._sealed_payloads[doc_id].update(payload)
             if self._memtable:
                 _, mt_payloads, _ = self._memtable.snapshot()
@@ -1451,8 +1484,7 @@ class ShardSegmentManager:
             if self._wal_writer:
                 self._wal_writer.log_update_payload(doc_id, payload)
 
-    def retrieve(self, ids: List[int], with_vector: bool = False,
-                 with_payload: bool = True) -> list:
+    def retrieve(self, ids: List[int], with_vector: bool = False, with_payload: bool = True) -> list:
         """Retrieve documents by ID from sealed store and memtable.
 
         Tombstoned documents are skipped (not included in results).
@@ -1485,7 +1517,9 @@ class ShardSegmentManager:
             if self._memtable:
                 mt_docs, mt_payloads, mt_tombstones = self._memtable.snapshot()
                 wal_offset = self._wal_writer.n_entries if self._wal_writer else 0
-                sealed_snap = dict(self._sealed_payloads) if hasattr(self, '_sealed_payloads') and self._sealed_payloads else {}
+                sealed_snap = (
+                    dict(self._sealed_payloads) if hasattr(self, "_sealed_payloads") and self._sealed_payloads else {}
+                )
                 try:
                     self._checkpoint_mgr.save(
                         memtable_docs=mt_docs,
@@ -1532,6 +1566,7 @@ class ShardSegmentManager:
                 self._rust_index = None
             if self._rust_tmpdir:
                 import shutil
+
                 shutil.rmtree(self._rust_tmpdir, ignore_errors=True)
                 self._rust_tmpdir = None
             self._sealed_payloads = {}
@@ -1575,29 +1610,25 @@ class ShardSegmentManager:
 
     def _try_gpu_preload(self) -> None:
         """Attempt to pre-load corpus to GPU (GEM pattern) if it fits."""
-        if (
-            self._doc_vecs is None
-            or not self._doc_ids
-            or not str(self._device).startswith("cuda")
-        ):
+        if self._doc_vecs is None or not self._doc_ids or not str(self._device).startswith("cuda"):
             return
         max_tok = max((v.shape[0] for v in self._doc_vecs), default=1)
         if PreloadedGpuCorpus.fits_on_gpu(len(self._doc_vecs), max_tok, self._dim):
             self._gpu_corpus = PreloadedGpuCorpus(
-                self._doc_vecs, self._doc_ids, self._dim, device=self._device,
+                self._doc_vecs,
+                self._doc_ids,
+                self._dim,
+                device=self._device,
             )
         else:
-            logger.info("Corpus too large for GPU preload (%d docs) — using shard fetch",
-                        len(self._doc_ids))
+            logger.info("Corpus too large for GPU preload (%d docs) — using shard fetch", len(self._doc_ids))
 
     def _ensure_warmup(self) -> None:
         if self._warmup_done:
             return
         token_counts = [128, 256]
         if self._store and self._store.manifest:
-            token_counts = [
-                int(s.p95_tokens) for s in self._store.manifest.shards if s.p95_tokens > 0
-            ] or token_counts
+            token_counts = [int(s.p95_tokens) for s in self._store.manifest.shards if s.p95_tokens > 0] or token_counts
         warmup_maxsim(dim=self._dim, doc_token_counts=token_counts, device=self._device)
         self._warmup_done = True
 
@@ -1617,7 +1648,8 @@ class ShardSegmentManager:
         if ckpt is not None:
             logger.info(
                 "Restoring checkpoint: %d docs, wal_offset=%d",
-                len(ckpt["docs"]), ckpt["wal_offset"],
+                len(ckpt["docs"]),
+                ckpt["wal_offset"],
             )
             for doc_id, vecs in ckpt["docs"].items():
                 self._memtable.insert(doc_id, vecs, ckpt["payloads"].get(doc_id))
@@ -1653,13 +1685,21 @@ class ShardSegmentManager:
             elif entry.op == WalOp.UPDATE_PAYLOAD:
                 if entry.payload is not None:
                     self._memtable.upsert_payload(entry.doc_id, entry.payload)
-                    if hasattr(self, '_sealed_payloads') and self._sealed_payloads and entry.doc_id in self._sealed_payloads:
+                    if (
+                        hasattr(self, "_sealed_payloads")
+                        and self._sealed_payloads
+                        and entry.doc_id in self._sealed_payloads
+                    ):
                         self._sealed_payloads[entry.doc_id].update(entry.payload)
-        logger.info("WAL replay done: memtable has %d docs, %d tombstones",
-                    self._memtable.size, self._memtable.tombstone_count)
+        logger.info(
+            "WAL replay done: memtable has %d docs, %d tombstones", self._memtable.size, self._memtable.tombstone_count
+        )
 
     def _build_and_save_doc_means(
-        self, all_vecs: np.ndarray, doc_offsets: List[Tuple[int, int]], ids: List[int],
+        self,
+        all_vecs: np.ndarray,
+        doc_offsets: List[Tuple[int, int]],
+        ids: List[int],
     ) -> None:
         """Compute mean-pooled doc embeddings and persist for proxy scoring."""
         dim = all_vecs.shape[1]
@@ -1675,8 +1715,7 @@ class ShardSegmentManager:
         dev = torch.device(self._device if torch.cuda.is_available() else "cpu")
         self._doc_means = torch.from_numpy(means).to(dev)
         self._doc_mean_id_to_idx = {int(did): i for i, did in enumerate(ids)}
-        logger.info("Doc-mean proxy embeddings saved: %d docs, %.1f MB",
-                     len(ids), means.nbytes / 1e6)
+        logger.info("Doc-mean proxy embeddings saved: %d docs, %.1f MB", len(ids), means.nbytes / 1e6)
 
     def _load_doc_means(self) -> None:
         """Load mean-pooled doc embeddings for proxy scoring (if available)."""
@@ -1720,7 +1759,10 @@ class ShardSegmentManager:
                 logger.warning("No shard files found — skipping Rust approx scoring")
                 return
 
-            import tempfile, os, shutil
+            import os
+            import shutil
+            import tempfile
+
             if self._rust_tmpdir and os.path.isdir(self._rust_tmpdir):
                 shutil.rmtree(self._rust_tmpdir, ignore_errors=True)
             tmpdir = tempfile.mkdtemp(prefix="shard_idx_")
@@ -1746,7 +1788,8 @@ class ShardSegmentManager:
                 rust_idx.set_codec(bw.tolist(), nbits_val)
                 logger.info(
                     "Residual codec loaded: nbits=%d, %d bucket weights",
-                    nbits_val, len(bw),
+                    nbits_val,
+                    len(bw),
                 )
 
             merged_emb_path = self._path / "merged_embeddings.bin"
@@ -1760,7 +1803,8 @@ class ShardSegmentManager:
             self._rust_index = rust_idx
             logger.info(
                 "Rust ShardIndex ready: %d docs, %d centroids for approx scoring",
-                rust_idx.doc_count, len(centroids),
+                rust_idx.doc_count,
+                len(centroids),
             )
         except Exception as exc:
             logger.warning("Failed to initialize Rust ShardIndex: %s", exc)

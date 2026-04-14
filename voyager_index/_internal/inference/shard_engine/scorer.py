@@ -6,16 +6,20 @@ Supports two paths:
 - score_shards_and_topk: per-shard scoring with GPU top-k merge (legacy)
 - score_and_topk: legacy padded-tensor interface
 """
+
 from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
 import numpy as np
 import torch
 
 from .profiler import Timer
+
+if TYPE_CHECKING:
+    from .shard_store import ShardStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,7 @@ def _get_maxsim():
         return _maxsim_fn
     try:
         from voyager_index._internal.kernels.maxsim import fast_colbert_scores
+
         _maxsim_fn = fast_colbert_scores
         logger.info("Using voyager-index Triton MaxSim kernel")
     except ImportError:
@@ -114,6 +119,7 @@ ShardChunk = Tuple[torch.Tensor, List[Tuple[int, int]], List[int]]
 # Centroid proxy pre-scoring (Track C optimisation)
 # ------------------------------------------------------------------
 
+
 def proxy_score_candidates(
     query: torch.Tensor,
     doc_means: torch.Tensor,
@@ -181,6 +187,7 @@ def proxy_score_candidates(
 # ------------------------------------------------------------------
 # Batched scoring (Fix 1) — single kernel call for all docs
 # ------------------------------------------------------------------
+
 
 def score_all_docs_topk(
     query: torch.Tensor,
@@ -389,6 +396,7 @@ def score_all_docs_topk(
 # Pre-loaded GPU corpus (GEM pattern)
 # ------------------------------------------------------------------
 
+
 class PreloadedGpuCorpus:
     """Pre-pad all docs into a contiguous GPU tensor once at startup.
 
@@ -407,7 +415,9 @@ class PreloadedGpuCorpus:
         max_tok = max(v.shape[0] for v in doc_vecs) if doc_vecs else 1
         logger.info(
             "PreloadedGpuCorpus: %d docs, max_tok=%d, dim=%d, %.1f GB %s",
-            n_docs, max_tok, dim,
+            n_docs,
+            max_tok,
+            dim,
             n_docs * max_tok * dim * (2 if dtype == torch.float16 else 4) / 1e9,
             dtype,
         )
@@ -596,10 +606,16 @@ class PreloadedGpuCorpus:
     ) -> bool:
         if chunk_docs is None:
             chunk_docs = cls.suggest_streaming_chunk_docs(
-                max_tok, dim, dtype=dtype, max_host_bytes=max_host_bytes,
+                max_tok,
+                dim,
+                dtype=dtype,
+                max_host_bytes=max_host_bytes,
             )
         bytes_needed = cls.estimate_streaming_cpu_bytes(
-            chunk_docs, max_tok, dim, dtype=dtype,
+            chunk_docs,
+            max_tok,
+            dim,
+            dtype=dtype,
         )
         if bytes_needed > hard_cap_bytes:
             return False
@@ -635,7 +651,9 @@ class PreloadedGpuCorpus:
         self._device = device
 
         pos = 0
-        for ids_chunk, emb_chunk, mask_chunk, chunk_max_tok, _global_max_tok in store.iter_merged_doc_chunks(chunk_docs):
+        for ids_chunk, emb_chunk, mask_chunk, chunk_max_tok, _global_max_tok in store.iter_merged_doc_chunks(
+            chunk_docs
+        ):
             n_chunk = int(len(ids_chunk))
             if n_chunk == 0:
                 continue
@@ -647,15 +665,18 @@ class PreloadedGpuCorpus:
             else:
                 emb_t = emb_t.to(device=device, dtype=dtype)
                 mask_t = mask_t.to(device=device, dtype=torch.float32)
-            self.D[pos:pos + n_chunk, :chunk_max_tok] = emb_t[:, :chunk_max_tok]
-            self.M[pos:pos + n_chunk, :chunk_max_tok] = mask_t[:, :chunk_max_tok]
+            self.D[pos : pos + n_chunk, :chunk_max_tok] = emb_t[:, :chunk_max_tok]
+            self.M[pos : pos + n_chunk, :chunk_max_tok] = mask_t[:, :chunk_max_tok]
             pos += n_chunk
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         logger.info(
             "PreloadedGpuCorpus ready from merged mmap: %d docs, max_tok=%d, dim=%d on %s",
-            n_docs, max_tok, dim, device,
+            n_docs,
+            max_tok,
+            dim,
+            device,
         )
         return self
 
@@ -666,12 +687,14 @@ class PreloadedGpuCorpus:
 
 _roq_fn = None
 
+
 def _get_roq_maxsim():
     global _roq_fn
     if _roq_fn is not None:
         return _roq_fn
     try:
         from voyager_index._internal.kernels.roq import roq_maxsim_4bit
+
         _roq_fn = roq_maxsim_4bit
         logger.info("Using voyager-index ROQ 4-bit MaxSim kernel")
     except ImportError:
@@ -731,6 +754,7 @@ def score_roq4_topk(
 # ------------------------------------------------------------------
 # Per-shard scoring (legacy, kept for backward compat)
 # ------------------------------------------------------------------
+
 
 def _pad_flat_embeddings(
     flat_emb: torch.Tensor,

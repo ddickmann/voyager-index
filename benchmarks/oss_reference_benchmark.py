@@ -3,18 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-from pathlib import Path
 import sys
 import tempfile
 import time
+from pathlib import Path
 
-from fastapi.testclient import TestClient
 import numpy as np
 import torch
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from voyager_index import ColPaliConfig, ColPaliEngine, TRITON_AVAILABLE, fast_colbert_scores
+from voyager_index import TRITON_AVAILABLE, ColPaliConfig, ColPaliEngine, fast_colbert_scores
 from voyager_index.server import create_app
 
 
@@ -175,8 +175,14 @@ def benchmark_maxsim_tensors(
         and queries_embeddings.device.type == "cuda"
         and documents_embeddings.device.type == "cuda"
     ):
-        qm_cuda = queries_mask.to(device=queries_embeddings.device, dtype=torch.float32) if queries_mask is not None else None
-        dm_cuda = documents_mask.to(device=documents_embeddings.device, dtype=torch.float32) if documents_mask is not None else None
+        qm_cuda = (
+            queries_mask.to(device=queries_embeddings.device, dtype=torch.float32) if queries_mask is not None else None
+        )
+        dm_cuda = (
+            documents_mask.to(device=documents_embeddings.device, dtype=torch.float32)
+            if documents_mask is not None
+            else None
+        )
         triton_scores, triton_bench = _benchmark_runs(
             lambda: fast_colbert_scores(
                 queries_embeddings,

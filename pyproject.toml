@@ -121,6 +121,10 @@ Changelog = "https://github.com/ddickmann/voyager-index/blob/main/CHANGELOG.md"
 [tool.setuptools]
 include-package-data = true
 packages = [
+  "src",
+  "src.server",
+  "src.inference",
+  "src.kernels",
   "voyager_index",
   "voyager_index._internal",
   "voyager_index._internal.server",

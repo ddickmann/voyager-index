@@ -22,7 +22,6 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from voyager_index import __version__ as PACKAGE_VERSION
@@ -46,6 +45,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Application Factory
 # ============================================================================
+
 
 def create_app(
     title: str = "Voyager Index Reference API",
@@ -84,6 +84,7 @@ def create_app(
         # Check GPU availability
         try:
             import torch
+
             if torch.cuda.is_available():
                 logger.info(f"GPU available: {torch.cuda.get_device_name(0)}")
             else:
@@ -253,4 +254,3 @@ app = create_app()
 
 if __name__ == "__main__":
     main()
-

@@ -5,7 +5,8 @@ Public OSS API for voyager-index.
 from __future__ import annotations
 
 from importlib import import_module
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 try:
@@ -60,6 +61,7 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted(list(globals().keys()) + list(__all__) + ["__version__"])
+
 
 __all__ = [
     "Index",

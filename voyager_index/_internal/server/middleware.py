@@ -6,6 +6,7 @@ Provides:
 - Concurrency limiter (cap in-flight requests)
 - Structured JSON error wrapper
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +30,7 @@ _REQUEST_ID_HEADER = "X-Request-ID"
 # X-Request-ID
 # ------------------------------------------------------------------
 
+
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """Inject X-Request-ID into every request/response.
 
@@ -46,6 +48,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 # ------------------------------------------------------------------
 # Rate limiter (token-bucket per client IP)
 # ------------------------------------------------------------------
+
 
 class _TokenBucket:
     __slots__ = ("capacity", "rate", "tokens", "last_refill", "_lock")
@@ -133,6 +136,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 # Concurrency limiter
 # ------------------------------------------------------------------
 
+
 class ConcurrencyLimitMiddleware(BaseHTTPMiddleware):
     """Cap the number of in-flight requests.
 
@@ -166,6 +170,7 @@ class ConcurrencyLimitMiddleware(BaseHTTPMiddleware):
 # ------------------------------------------------------------------
 # Structured error formatter
 # ------------------------------------------------------------------
+
 
 def _json_safe(value):
     if isinstance(value, dict):
