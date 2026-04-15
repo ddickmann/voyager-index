@@ -15,8 +15,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install ruff
@@ -31,8 +31,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install build tools
@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m pip install twine
           python -m twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-python
           path: dist/
@@ -82,7 +82,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.14"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -93,7 +93,7 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --strip --interpreter 3.10 3.11 3.12
           before-script-linux: yum install -y clang-devel
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.crate }}-${{ matrix.os }}-${{ matrix.target }}
           path: src/kernels/${{ matrix.crate }}/target/wheels/*.whl
@@ -107,8 +107,8 @@ jobs:
       matrix:
         crate: [shard_engine, knapsack_solver]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install maturin
@@ -117,7 +117,7 @@ jobs:
         run: |
           mkdir -p dist/native-sdists/${{ matrix.crate }}
           (cd src/kernels/${{ matrix.crate }} && maturin sdist -o ../../../dist/native-sdists/${{ matrix.crate }})
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist-${{ matrix.crate }}
           path: dist/native-sdists/${{ matrix.crate }}/*.tar.gz
@@ -127,8 +127,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Build wheel and sdist
@@ -179,7 +179,7 @@ jobs:
             --artifact dist/voyager_index-*.whl \
             --artifact dist/voyager_index-*.tar.gz
       - name: Upload package validation bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: package-build-report
           path: validation-reports/package-build-${{ github.run_id }}
@@ -189,8 +189,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
@@ -248,7 +248,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packaged-install-validation-report
           path: validation-reports/packaged-install-${{ github.run_id }}
@@ -262,8 +262,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package and shard/API test extras
@@ -295,7 +295,7 @@ jobs:
             --output-dir validation-reports/oss-test-${{ matrix.python-version }}-${{ github.run_id }} \
             --benchmark-json benchmark.json
       - name: Upload OSS validation bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: oss-test-${{ matrix.python-version }}-report
           path: validation-reports/oss-test-${{ matrix.python-version }}-${{ github.run_id }}
@@ -305,8 +305,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install package and graph validation extras
@@ -358,7 +358,7 @@ jobs:
             --output-dir validation-reports/graph-route-${{ github.run_id }}/bundle \
             --benchmark-json validation-reports/graph-route-${{ github.run_id }}/graph-benchmark.json \
             --artifact validation-reports/graph-route-${{ github.run_id }}/graph-ablation.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: graph-route-validation-report
           path: validation-reports/graph-route-${{ github.run_id }}
@@ -368,8 +368,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
@@ -407,7 +407,7 @@ jobs:
       - name: Assert solver validation status
         run: |
           python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); summary = report['lanes']['solver']['summary']; assert set(report['native_packages']) == {'latence_shard_engine', 'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_shard_engine']['status'] == 'installed_and_importable'; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert summary['backend_probe_cpu']['constraints_satisfied'] is True; assert summary['accelerated'].get('parity_with_cpu', {}).get('status', 'passed') == 'passed'"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: solver-validation-report
           path: validation-reports/solver-validation-${{ github.run_id }}
@@ -421,8 +421,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package with server and dev extras
@@ -443,7 +443,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build container
         run: docker build -f deploy/reference-api/Dockerfile -t voyager-index:test .
       - name: Run container and probe health
@@ -479,7 +479,7 @@ jobs:
       id-token: write
     environment: pypi
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: all-artifacts/
       - name: Collect native distributions
@@ -501,7 +501,7 @@ jobs:
       id-token: write
     environment: pypi
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist-python
           path: dist-root/
