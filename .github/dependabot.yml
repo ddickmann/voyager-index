@@ -4,7 +4,7 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
     groups:
       github-actions:
         patterns:
@@ -14,7 +14,7 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
     groups:
       python-dependencies:
         patterns:
@@ -24,7 +24,7 @@ updates:
     directory: "/src/kernels/shard_engine"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
     groups:
       shard-engine-rust:
         patterns:
@@ -34,7 +34,7 @@ updates:
     directory: "/src/kernels/knapsack_solver"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
     groups:
       solver-rust:
         patterns:
