@@ -28,9 +28,9 @@ Most retrieval systems optimize the shortlist and treat late interaction as an
 add-on. voyager-index is built the other way around: **MaxSim is the final
 scorer, and the rest of the system exists to make that practical in production.**
 
-- **Proxy routing instead of graph build dependency.** LEMUR routing narrows
-  candidates with ANN over compact routing representations, then hands off to
-  exact or quantized MaxSim.
+- **Proxy routing instead of graph build dependency.** A learned proxy router
+  collapses multi-vector candidate generation to ANN over compact routing
+  representations, then hands off to exact or quantized MaxSim.
 - **Fast CPU and GPU execution.** Rust fused scoring for CPU, Triton kernels for
   GPU, with the same retrieval contract across both modes.
 - **Operational features included.** CRUD, WAL, checkpoint, recovery, metadata,
@@ -92,14 +92,12 @@ larger corpus for that dataset.
 | | next-plaid | **0.7593** | **0.7186** | **0.9633** | 7.9 | 169.5 | 16.9 | 305.4 |
 
 In our current benchmark setup, voyager-index is **competitive or better on
-retrieval quality** across most listed datasets, while showing **materially
-higher search throughput and much lower P95 latency** on an RTX A5000.
-
-**This is not a fully apples-to-apples comparison.** next-plaid reports H100
-numbers and includes encoding in QPS, while our numbers are search-only. A
-100-query sample can also differ materially from the full query distribution on
-BEIR; the table above uses full-query evaluation specifically to avoid publishing
-a flattering slice.
+retrieval quality** across most listed datasets and shows **materially higher
+search throughput with much lower P95 latency** on an RTX A5000. **This is not
+a fully apples-to-apples comparison:** next-plaid reports H100 numbers and
+includes encoding in QPS, while our numbers are search-only on a smaller GPU.
+The table above uses full-query evaluation specifically to avoid publishing a
+flattering slice.
 
 ## Architecture
 
