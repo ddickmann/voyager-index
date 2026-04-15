@@ -6,8 +6,12 @@ import json
 import os
 from pathlib import Path
 import shutil
-import tomllib
 from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python <3.11
+    import tomli as tomllib
 
 
 FALLBACK_FIXTURE_PATH = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "dataset_di_fixture.json"
