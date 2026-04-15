@@ -29,19 +29,28 @@ hardware, without taking on distributed search complexity.
 
 ## Start Here
 
-Use the shard-first production lane first, then add optional planes only when
-they earn their keep:
+Use the shard-first production lane first. The canonical CPU-safe production
+install is one command, then you can layer GPU support on top when needed:
 
 ```bash
-pip install "voyager-index[server,shard]"         # production lane on CPU
-pip install "voyager-index[server,shard,gpu]"     # add Triton GPU scoring
-pip install "voyager-index[server,shard,native]"  # add Tabu Search solver
-pip install "voyager-index[server,shard,latence-graph]"  # add optional Latence graph lane
+pip install "voyager-index[full]"      # full public CPU surface
+pip install "voyager-index[full,gpu]"  # add Triton GPU scoring on CUDA hosts
 ```
 
 ```bash
 HOST=0.0.0.0 WORKERS=4 voyager-index-server
 # OpenAPI docs at http://127.0.0.1:8080/docs
+```
+
+Fine-grained profiles stay available:
+
+```bash
+pip install "voyager-index[shard]"                     # minimal shard path
+pip install "voyager-index[server,shard]"             # reference API
+pip install "voyager-index[server,shard,shard-native]"  # Rust shard CPU fast-path
+pip install "voyager-index[server,shard,solver]"      # Tabu Search solver only
+pip install "voyager-index[server,shard,native]"      # both public native wheels
+pip install "voyager-index[server,shard,latence-graph]"  # graph lane without native extras
 ```
 
 If you are evaluating quickly:
@@ -246,11 +255,11 @@ inputs.
 ### Install
 
 ```bash
-pip install "voyager-index[shard]"               # CPU only
-pip install "voyager-index[server,shard]"         # + FastAPI server
-pip install "voyager-index[server,shard,gpu]"     # + Triton GPU kernels
-pip install "voyager-index[server,shard,native]"  # + Tabu Search solver
-pip install "voyager-index[server,shard,latence-graph]"  # + optional Latence graph lane
+pip install "voyager-index[full]"                    # full public CPU surface
+pip install "voyager-index[full,gpu]"                # + Triton GPU kernels on CUDA hosts
+pip install "voyager-index[server,shard]"            # + FastAPI server only
+pip install "voyager-index[server,shard,shard-native]"  # + Rust shard CPU fast-path
+pip install "voyager-index[server,shard,solver]"     # + Tabu Search solver only
 ```
 
 ### Python SDK
@@ -405,6 +414,9 @@ Graph-aware search uses the same search endpoint and adds:
 - [Scaling Guide](docs/guides/scaling.md)
 - [Benchmarks And Methodology](docs/benchmarks.md)
 - [Production Notes](PRODUCTION.md)
+- [Contributing](CONTRIBUTING.md)
+- [Releasing](RELEASING.md)
+- [Security](SECURITY.md)
 
 ## Install From Source
 
@@ -413,6 +425,14 @@ git clone https://github.com/ddickmann/voyager-index.git
 cd voyager-index
 bash scripts/install_from_source.sh --cpu
 ```
+
+## Project Health
+
+- PRs: [pull request template](.github/pull_request_template.md)
+- Issues: [bug report](.github/ISSUE_TEMPLATE/bug_report.yml) and [feature request](.github/ISSUE_TEMPLATE/feature_request.yml)
+- Community: [Code of Conduct](CODE_OF_CONDUCT.md)
+- Security: see [SECURITY.md](SECURITY.md)
+- Release process: see [RELEASING.md](RELEASING.md)
 
 ## License
 

@@ -284,5 +284,6 @@ Example: 100K docs × 128 tokens × 128 dim = ~3.3 GB.
 - shard is the documented production retrieval path in this repo
 - HTTP shard search is vector-only
 - dense BM25 hybrid remains on `dense` collections over HTTP
-- `latence_solver` is the optional native add-on for `tabu`
+- `voyager-index[shard,shard-native]` or `voyager-index[native]` enables the Rust shard CPU fast-path
+- `latence_solver` remains the optional native add-on for `tabu`
 - `voyager-index[latence-graph]` adds the optional premium graph lane on top of the shard production path

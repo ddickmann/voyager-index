@@ -68,8 +68,10 @@ def test_curated_top_level_layout_hides_root_clutter() -> None:
         "README.md",
         "BENCHMARKS.md",
         "CHANGELOG.md",
+        "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "PRODUCTION.md",
+        "SECURITY.md",
         "internal/README.md",
         "research/legacy/README.md",
     }

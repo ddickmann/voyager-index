@@ -37,6 +37,7 @@ treated as internal or legacy paths, not the OSS contract.
 - `src.*` is not a supported or shipped Python namespace
 - the reference service CLI is `voyager-index-server`, exposed through `voyager_index.server`
 - the package is published to PyPI as `voyager-index`; `pip install voyager-index` is the recommended install path
+- `pip install "voyager-index[full]"` is the canonical full public CPU install profile
 - source checkout plus local install is the contributor and development alternative
 
 ## Supported Foundation Capabilities
@@ -89,6 +90,12 @@ local production deployments.
 - the wheel under `src/kernels/knapsack_solver/` backs both in-process refinement and the public `/reference/optimize` contract
 - that solver is the in-tree OSS Tabu Search knapsack implementation with CPU fallback and optional accelerated execution
 - the stable public serving surface is the reference API, not direct imports from the native package source tree
+
+## Optional Native Shard Lane
+
+- shard collections can use a locally installed `latence_shard_engine`
+- this is the public Rust shard CPU fast-path for the shard-first production lane
+- the wheel under `src/kernels/shard_engine/` is part of the supported PyPI and source-build surface
 
 ## Multimodal Contract
 

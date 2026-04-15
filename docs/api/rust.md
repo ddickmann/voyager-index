@@ -1,7 +1,26 @@
 # Rust Crates
 
 The supported native crate story for the shard-first OSS surface is intentionally
-small.
+focused on the two crates that matter for the public production lane.
+
+## `latence-shard-engine`
+
+Source: `src/kernels/shard_engine/`
+
+`latence-shard-engine` is the native shard crate behind the Rust CPU fast-path
+used by the shard production lane when it is installed.
+
+### What it provides
+
+- fused Rust shard scoring and merged-mmap CPU acceleration
+- the optional `latence_shard_engine.ShardIndex` runtime used by shard serving
+- the native data-plane acceleration path for the public shard product surface
+
+### Why it is public
+
+- it is part of the supported PyPI/source-build story
+- release automation builds and validates it as part of the public native bundle
+- it directly backs the shard-first production narrative in the docs
 
 ## `latence-solver`
 

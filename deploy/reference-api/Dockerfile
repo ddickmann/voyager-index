@@ -18,6 +18,7 @@ COPY src /app/src
 
 RUN python -m pip install --no-cache-dir --upgrade pip wheel setuptools maturin \
     && python -m pip wheel --no-deps --wheel-dir /wheels . \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./src/kernels/shard_engine \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./src/kernels/knapsack_solver
 
 FROM python:3.11-slim AS runtime
@@ -43,9 +44,9 @@ COPY --from=builder /wheels /wheels
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
-    && python -m pip install --no-cache-dir /wheels/latence_solver-*.whl \
+    && python -m pip install --no-cache-dir /wheels/latence_shard_engine-*.whl /wheels/latence_solver-*.whl \
     && VOYAGER_WHEEL=$(ls /wheels/voyager_index-*.whl) \
-    && python -m pip install --no-cache-dir "voyager-index[server,preprocessing,shard] @ file://${VOYAGER_WHEEL}"
+    && python -m pip install --no-cache-dir "voyager-index[full] @ file://${VOYAGER_WHEEL}"
 
 USER voyager
 

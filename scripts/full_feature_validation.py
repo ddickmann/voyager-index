@@ -54,6 +54,11 @@ ROLE_TO_ID = {
     "procedure": 7,
 }
 NATIVE_PACKAGE_SPECS = {
+    "latence_shard_engine": {
+        "distribution": "latence-shard-engine",
+        "source_dir": REPO_ROOT / "src" / "kernels" / "shard_engine",
+        "verify_script": None,
+    },
     "latence_solver": {
         "distribution": "latence-solver",
         "source_dir": REPO_ROOT / "src" / "kernels" / "knapsack_solver",
@@ -4049,6 +4054,7 @@ def main() -> None:
             "packages": {
                 "sauerkrautlm-colpali": safe_version("sauerkrautlm-colpali"),
                 "httpx": safe_version("httpx"),
+                "latence_shard_engine": safe_version(NATIVE_PACKAGE_SPECS["latence_shard_engine"]["distribution"]),
                 "latence_solver": safe_version(NATIVE_PACKAGE_SPECS["latence_solver"]["distribution"]),
             },
         },

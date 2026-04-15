@@ -3,8 +3,9 @@
 # install_from_source.sh — one-command source install of voyager-index
 #
 # Installs system dependencies, Rust toolchain, the Python package in
-# editable mode, and the optional supported native solver package:
-#   - latence_solver    (Tabu Search knapsack solver)
+# editable mode, the optional graph dependency, and the supported native packages:
+#   - latence_shard_engine (Rust shard CPU fast-path)
+#   - latence_solver       (Tabu Search knapsack solver)
 #
 # Usage:
 #   bash scripts/install_from_source.sh          # full install
@@ -75,15 +76,16 @@ fi
 
 # ── 5. Main Python package (editable) ────────────────────────────────
 echo ""
-echo "▶ Installing voyager-index in editable mode with shard/server extras..."
+echo "▶ Installing voyager-index in editable mode with the public full CPU surface..."
 cd "$REPO_ROOT"
-python -m pip install -e ".[server,shard,multimodal,preprocessing,dev,native-solver-build]"
+python -m pip install -e ".[server,shard,multimodal,preprocessing,latence-graph,dev,native-build]"
 
 # ── 6. Native Rust extensions ────────────────────────────────────────
 echo ""
-echo "▶ Building optional native solver package..."
+echo "▶ Building supported native packages..."
 
 NATIVE_CRATES=(
+  "src/kernels/shard_engine"
   "src/kernels/knapsack_solver"
 )
 
@@ -103,6 +105,12 @@ echo "▶ Verifying installation..."
 python -c "
 import voyager_index
 print(f'  ✓ voyager_index loaded ({voyager_index.__file__})')
+
+try:
+    import latence_shard_engine
+    print(f'  ✓ latence_shard_engine loaded ({latence_shard_engine.__file__})')
+except ImportError as e:
+    print(f'  ✗ latence_shard_engine: {e}')
 
 try:
     import latence_solver

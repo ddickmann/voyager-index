@@ -37,15 +37,25 @@ jobs:
       matrix:
         include:
           # Linux x86_64
+          - crate: shard_engine
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
           - crate: knapsack_solver
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
           # macOS Intel (cross-compile on ARM runner, macos-13 is deprecated)
+          - crate: shard_engine
+            os: macos-14
+            target: x86_64-apple-darwin
           - crate: knapsack_solver
             os: macos-14
             target: x86_64-apple-darwin
           # macOS Apple Silicon
+          - crate: shard_engine
+            os: macos-14
+            target: aarch64-apple-darwin
           - crate: knapsack_solver
             os: macos-14
             target: aarch64-apple-darwin
@@ -69,7 +79,209 @@ jobs:
           name: wheels-${{ matrix.crate }}-${{ matrix.os }}-${{ matrix.target }}
           path: src/kernels/${{ matrix.crate }}/target/wheels/*.whl
 
-  graph-release-gate:
+  build-native-sdists:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [shard_engine, knapsack_solver]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install maturin
+        run: python -m pip install --upgrade pip maturin
+      - name: Build native sdist
+        run: |
+          mkdir -p dist/native-sdists/${{ matrix.crate }}
+          (cd src/kernels/${{ matrix.crate }} && maturin sdist -o ../../../dist/native-sdists/${{ matrix.crate }})
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist-${{ matrix.crate }}
+          path: dist/native-sdists/${{ matrix.crate }}/*.tar.gz
+
+  package-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Inspect release artifacts
+        run: |
+          python -c "
+          import pathlib, tarfile, zipfile
+          dist = pathlib.Path('dist')
+          wheel = next(dist.glob('voyager_index-*.whl'))
+          sdist = next(dist.glob('voyager_index-*.tar.gz'))
+          wheel_names = set(zipfile.ZipFile(wheel).namelist())
+          raw_sdist = set(tarfile.open(sdist).getnames())
+          sdist_names = {n.split('/', 1)[1] for n in raw_sdist if '/' in n}
+          assert 'voyager_index/py.typed' in wheel_names, 'py.typed missing from wheel'
+          assert 'voyager_index/py.typed' in sdist_names, 'py.typed missing from sdist'
+          assert 'tests/fixtures/dataset_di_fixture.json' in sdist_names, 'fixture missing from sdist'
+          assert 'tests/fixtures/latence_graph_quality_eval.json' in sdist_names, 'graph quality fixture missing from sdist'
+          assert 'voyager_index/_internal/inference/shard_engine/__init__.py' in wheel_names
+          assert 'voyager_index/_internal/inference/shard_engine/_lemur_vendor/__init__.py' in wheel_names
+          assert 'src/__init__.py' not in wheel_names
+          assert 'src/server/__init__.py' not in wheel_names
+          assert 'src/inference/__init__.py' not in wheel_names
+          assert 'src/kernels/__init__.py' not in wheel_names
+          assert 'src/server/main.py' not in wheel_names
+          assert 'src/server/api/service.py' not in wheel_names
+          assert 'src/inference/index_core/index.py' not in wheel_names
+          assert 'src/kernels/maxsim.py' not in wheel_names
+          assert 'voyager_index/_internal/inference/solver/__init__.py' not in wheel_names
+          print(f'Wheel: {len(wheel_names)} files, sdist: {len(sdist_names)} files — all checks passed')
+          "
+      - name: Install built wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install fastapi uvicorn pydantic Pillow PyMuPDF python-docx openpyxl faiss-cpu safetensors
+          python -m pip install dist/voyager_index-*.whl
+          python -c "from voyager_index import ColbertIndex, SearchPipeline; from voyager_index.server import create_app; from voyager_index._internal.inference.shard_engine import ShardSegmentManager; assert ColbertIndex is not None; assert SearchPipeline is not None; assert create_app is not None; assert ShardSegmentManager is not None"
+      - name: Write package validation bundle
+        run: |
+          python scripts/release_validation_report.py \
+            --job-name package-build \
+            --output-dir validation-reports/package-build-${{ github.run_id }} \
+            --artifact dist/voyager_index-*.whl \
+            --artifact dist/voyager_index-*.tar.gz
+      - name: Upload package validation bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-build-report
+          path: validation-reports/package-build-${{ github.run_id }}
+
+  packaged-install-validation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build root and native wheels
+        run: |
+          python -m pip install --upgrade pip build maturin
+          python -m build --wheel
+          mkdir -p dist/native
+          python -m pip wheel --no-deps --wheel-dir dist/native ./src/kernels/shard_engine ./src/kernels/knapsack_solver
+      - name: Validate full packaged install
+        run: |
+          ROOT_WHEEL=$(python - <<'PY'
+          from pathlib import Path
+          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          PY
+          )
+          python -m venv .venv-full
+          .venv-full/bin/pip install --upgrade pip
+          .venv-full/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+          .venv-full/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full] @ file://${ROOT_WHEEL}"
+          mkdir -p validation-reports/packaged-install-${{ github.run_id }}
+          .venv-full/bin/python scripts/packaged_install_smoke.py > validation-reports/packaged-install-${{ github.run_id }}/full-smoke.json
+      - name: Validate full GPU install contract
+        run: |
+          ROOT_WHEEL=$(python - <<'PY'
+          from pathlib import Path
+          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          PY
+          )
+          python -m venv .venv-full-gpu
+          .venv-full-gpu/bin/pip install --upgrade pip
+          .venv-full-gpu/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+          .venv-full-gpu/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full,gpu] @ file://${ROOT_WHEEL}"
+          .venv-full-gpu/bin/python - <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          import voyager_index
+
+          assert importlib.util.find_spec("triton") is not None
+          assert importlib.util.find_spec("latence") is not None
+          assert importlib.util.find_spec("latence_shard_engine") is not None
+          assert importlib.util.find_spec("latence_solver") is not None
+
+          Path("validation-reports/packaged-install-${{ github.run_id }}/full-gpu-smoke.json").write_text(
+              json.dumps(
+                  {
+                      "voyager_index_version": voyager_index.__version__,
+                      "triton_importable": True,
+                      "latence_importable": True,
+                      "latence_shard_engine_importable": True,
+                      "latence_solver_importable": True,
+                  }
+              ),
+              encoding="utf-8",
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-install-validation-report
+          path: validation-reports/packaged-install-${{ github.run_id }}
+
+  oss-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package and shard/API test extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[server,multimodal,dev,shard]"
+      - name: Run shard-only release and API surface tests
+        run: |
+          pytest \
+            tests/test_oss_release_hygiene.py \
+            tests/test_release_polish_surface.py \
+            tests/test_reference_api_contract.py \
+            tests/test_reference_api_persistence.py \
+            tests/test_reference_api_security.py \
+            tests/test_shard_http_api.py \
+            tests/test_shard_hardening.py \
+            tests/test_shard_serving_wiring.py \
+            tests/test_search_pipeline_contract.py \
+            -v --tb=short
+      - name: Run benchmark smoke
+        run: |
+          python benchmarks/oss_reference_benchmark.py --device cpu --points 16 --top-k 3 > benchmark.json
+          python -c "import json; payload = json.load(open('benchmark.json', 'r', encoding='utf-8')); assert 'maxsim' in payload; assert 'reference_api_ingest' in payload; assert 'reference_api_search' in payload; assert 'multimodal_search' in payload"
+      - name: Write OSS validation bundle
+        run: |
+          python scripts/release_validation_report.py \
+            --job-name oss-test \
+            --output-dir validation-reports/oss-test-${{ matrix.python-version }}-${{ github.run_id }} \
+            --benchmark-json benchmark.json
+      - name: Upload OSS validation bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: oss-test-${{ matrix.python-version }}-report
+          path: validation-reports/oss-test-${{ matrix.python-version }}-${{ github.run_id }}
+
+  graph-route-validation:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -83,29 +295,165 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -e ".[server,multimodal,dev,shard]"
-      - name: Run graph release gate
+      - name: Run graph route regression suites
         run: |
           pytest \
             tests/test_latence_graph_lightrag.py \
             tests/test_latence_graph_crud.py \
             tests/test_latence_graph_quality.py \
             -v --tb=short
-          python tools/benchmarks/benchmark_latence_graph_quality.py --mode benchmark --output-json graph-benchmark.json
+      - name: Run graph benchmark smoke
+        run: |
+          mkdir -p validation-reports/graph-route-${{ github.run_id }}
+          python tools/benchmarks/benchmark_latence_graph_quality.py \
+            --mode benchmark \
+            --output-json validation-reports/graph-route-${{ github.run_id }}/graph-benchmark.json
+          python tools/benchmarks/benchmark_latence_graph_quality.py \
+            --mode ablation \
+            --output-json validation-reports/graph-route-${{ github.run_id }}/graph-ablation.json
+      - name: Enforce graph route-conformance gate
+        run: |
           python - <<'PY'
           import json
-          payload = json.load(open("graph-benchmark.json", "r", encoding="utf-8"))
-          representative = payload["representative"]
+          from pathlib import Path
+
+          root = Path("validation-reports/graph-route-${{ github.run_id }}")
+          benchmark = json.loads((root / "graph-benchmark.json").read_text(encoding="utf-8"))
+          representative = benchmark["representative"]
           assert representative["graph"]["route_checks"]["all_passed"], "graph route checks failed"
-          assert payload["representative"]["comparison"]["graph_shaped"]["recall"] > 0.0, "graph-shaped uplift missing"
-          assert payload["representative"]["graph"]["graph_applied_rate"] < 1.0, "ordinary queries should not all trigger graph"
+          assert benchmark["representative"]["comparison"]["graph_shaped"]["recall"] > 0.0, "graph-shaped uplift missing"
+          assert benchmark["representative"]["graph"]["graph_applied_rate"] < 1.0, "ordinary queries should not all trigger graph"
+
+          ablation = json.loads((root / "graph-ablation.json").read_text(encoding="utf-8"))
+          local_queries = {item["query_id"]: item for item in ablation["local_only"]["synthetic"]["graph"]["queries"]}
+          community_queries = {
+              item["query_id"]: item for item in ablation["community_only"]["synthetic"]["graph"]["queries"]
+          }
+          assert 2 in local_queries["local_chain"]["full_ranked_ids"], "local ablation lost local rescue"
+          assert 4 in community_queries["community_support"]["full_ranked_ids"], "community ablation lost community rescue"
           PY
+      - name: Write graph validation bundle
+        run: |
+          python scripts/release_validation_report.py \
+            --job-name graph-route-validation \
+            --output-dir validation-reports/graph-route-${{ github.run_id }}/bundle \
+            --benchmark-json validation-reports/graph-route-${{ github.run_id }}/graph-benchmark.json \
+            --artifact validation-reports/graph-route-${{ github.run_id }}/graph-ablation.json
       - uses: actions/upload-artifact@v4
         with:
-          name: graph-release-gate-report
-          path: graph-benchmark.json
+          name: graph-route-validation-report
+          path: validation-reports/graph-route-${{ github.run_id }}
 
-  publish:
-    needs: [build-python, build-native-wheels, graph-release-gate]
+  solver-validation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install package and native build prerequisites
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[server,multimodal,dev,shard,native-build]"
+          python -m pip install ./src/kernels/shard_engine
+          python -m pip install ./src/kernels/knapsack_solver
+      - name: Smoke import supported native packages
+        run: |
+          python -c "import latence_shard_engine; import latence_solver; from latence_solver import TabuSearchSolver; assert latence_shard_engine is not None; assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; print(latence_solver.version())"
+      - name: Run native package unit tests
+        run: |
+          pytest tests/test_full_feature_validation_native.py -v --tb=short
+      - name: Prepare solver validation fixtures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          from PIL import Image
+
+          target = Path(".solver-validation-data")
+          target.mkdir(exist_ok=True)
+          Image.new("RGB", (64, 64), color="white").save(target / "native-doc.png")
+          shutil.copy("tests/fixtures/dataset_di_fixture.json", target / "dataset_di_825cbaae40335bc4265a3726.json")
+          PY
+      - name: Run shard-only validation matrix
+        run: |
+          python scripts/full_feature_validation.py \
+            --tmp-data-dir .solver-validation-data \
+            --native-bootstrap off \
+            --output-dir validation-reports/solver-validation-${{ github.run_id }}
+      - name: Assert solver validation status
+        run: |
+          python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); assert set(report['native_packages']) == {'latence_shard_engine', 'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_shard_engine']['status'] == 'installed_and_importable'; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert report['lanes']['solver']['summary']['gpu']['status'] in {'passed', 'gpu_unavailable_for_cuda_lane'}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: solver-validation-report
+          path: validation-reports/solver-validation-${{ github.run_id }}
+
+  shard-engine-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with server and dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[server,dev,shard]"
+      - name: Run shard engine unit tests
+        run: |
+          pytest tests/test_shard_engine.py tests/test_shard_engine_api.py \
+                 tests/test_shard_crud_wal.py tests/test_shard_advanced.py \
+                 tests/test_hybrid_shard.py tests/test_shard_roq4.py \
+                 tests/test_shard_http_api.py tests/test_shard_hardening.py \
+                 -v --tb=short
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container
+        run: docker build -f deploy/reference-api/Dockerfile -t voyager-index:test .
+      - name: Run container and probe health
+        run: |
+          docker run -d --name voyager-index-smoke -p 18080:8080 voyager-index:test
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:18080/health; then
+              break
+            fi
+            sleep 3
+          done
+          curl -fsS http://127.0.0.1:18080/ready
+      - name: Print container logs on failure
+        if: failure()
+        run: docker logs voyager-index-smoke
+
+  publish-native:
+    needs:
+      [
+        build-native-wheels,
+        build-native-sdists,
+        package-build,
+        packaged-install-validation,
+        oss-test,
+        graph-route-validation,
+        solver-validation,
+        shard-engine-test,
+        docker-smoke,
+      ]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -114,14 +462,32 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: all-artifacts/
-      - name: Collect all wheels into dist/
+      - name: Collect native distributions
         run: |
-          mkdir -p dist/
-          find all-artifacts/ -name '*.whl' -exec cp {} dist/ \;
-          find all-artifacts/ -name '*.tar.gz' -exec cp {} dist/ \;
-          echo "=== Artifacts to publish ==="
-          ls -lh dist/
+          mkdir -p dist-native/
+          find all-artifacts/ -name 'latence*.whl' -exec cp {} dist-native/ \;
+          find all-artifacts/ -name 'latence*.tar.gz' -exec cp {} dist-native/ \;
+          echo "=== Native artifacts to publish ==="
+          ls -lh dist-native/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip-existing: true
+          packages-dir: dist-native/
+          verbose: true
+
+  publish-root:
+    needs: [build-python, publish-native]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-python
+          path: dist-root/
+      - name: Show root artifacts
+        run: ls -lh dist-root/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-root/
           verbose: true

@@ -48,13 +48,13 @@ body:
         - Python version
         - voyager-index version (`python -c "import voyager_index; print(voyager_index.__version__)"`)
         - PyTorch version (if relevant)
-        - Whether native packages are installed (latence_hnsw, latence_solver, latence_gem_router)
+        - Whether optional packages are installed (`latence_shard_engine`, `latence_solver`, `latence`)
       placeholder: |
         OS: Ubuntu 22.04
         Python: 3.11.10
-        voyager-index: 0.1.0
+        voyager-index: 0.1.3
         torch: 2.9.1 (CPU)
-        Native: latence_hnsw, latence_gem_router installed
+        Optional packages: latence_shard_engine, latence_solver
     validations:
       required: true
   - type: textarea

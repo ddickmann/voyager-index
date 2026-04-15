@@ -17,17 +17,22 @@ Then continue with:
 ## 1. Install
 
 ```bash
+pip install "voyager-index[full]"
+pip install "voyager-index[full,gpu]"
 pip install "voyager-index[server,shard]"
-pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
+pip install "voyager-index[server,shard,solver]"  # adds Tabu Search solver
+pip install "voyager-index[server,shard,native]"  # adds both public native wheels
 pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 
 The `server` extra includes the supported document-rendering stack for
 `POST /reference/preprocess/documents`.
 
-The optional `native` extra currently adds one supported native wheel:
+The supported native extras are:
 
-- `latence_solver` for `dense_hybrid_mode="tabu"` and `/reference/optimize`
+- `shard-native`: `latence_shard_engine` for the fused Rust shard CPU fast-path
+- `solver`: `latence_solver` for `dense_hybrid_mode="tabu"` and `/reference/optimize`
+- `native`: both public native wheels together
 
 The optional `latence-graph` extra enables the premium Latence graph sidecar.
 Without it, graph-aware search requests fall back to the OSS retrieval path.

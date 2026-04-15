@@ -5,10 +5,11 @@
 Pick the profile you need:
 
 ```bash
+pip install "voyager-index[full]"
+pip install "voyager-index[full,gpu]"
 pip install "voyager-index[shard]"
-pip install "voyager-index[shard,gpu]"
-pip install "voyager-index[server,shard]"
-pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
+pip install "voyager-index[shard,shard-native]"
+pip install "voyager-index[server,shard,solver]"        # adds Tabu Search solver
 pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 

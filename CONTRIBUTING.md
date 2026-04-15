@@ -37,19 +37,20 @@ Behavior rules:
 - direct late-interaction multivector queries belong to `ColbertIndex` or the reference API
 - multimodal ingestion and query flows expect precomputed embeddings, with `VllmPoolingProvider` as the public provider seam
 - optional `latence_solver` refinement and `/reference/optimize` share the same canonical OSS solver contract
-- the package is distributed via PyPI (`pip install voyager-index`) with source builds for native crates
+- the package is distributed via PyPI (`pip install voyager-index`) with published wheels and source builds for the supported native crates
 
 ## Local Setup
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-python -m pip install -e ".[server,shard,multimodal,dev,native-solver-build]"
+python -m pip install -e ".[server,shard,multimodal,preprocessing,latence-graph,dev,native-build]"
 ```
 
 Optional native packages (require Rust toolchain):
 
 ```bash
+python -m pip install ./src/kernels/shard_engine
 python -m pip install ./src/kernels/knapsack_solver
 ```
 
@@ -62,8 +63,10 @@ bash scripts/install_from_source.sh
 Native truth:
 
 - repo source presence does not make a native module active
+- `latence_shard_engine` only affects runtime after it is built or installed in the current environment
 - `latence_solver` only affects runtime after it is built and importable in the current environment
-- `cargo` and `rustc` are required to build the solver package from source
+- `cargo` and `rustc` are required to build the public native packages from source
+- `latence_shard_engine` is the canonical OSS Rust shard CPU fast-path package
 - `latence_solver` is the canonical OSS solver package with CPU fallback and optional CUDA-backed execution when built with GPU features
 
 ## Before Opening A Change
@@ -75,7 +78,7 @@ Native truth:
 - keep the public solver API aligned around `/reference/optimize` and the shared request contract instead of adding parallel one-off optimize paths
 - keep `SearchPipeline` guidance limited to its vector-first dense/hybrid role
 - distinguish the canonical OSS solver contract from any future premium productization, but do not describe the OSS solver as CPU-only
-- when touching native code or native-lane docs, verify `latence_solver` with the same build/install rigor
+- when touching native code or native-lane docs, verify both `latence_shard_engine` and `latence_solver` with the same build/install rigor
 
 ## Validation
 
@@ -105,6 +108,7 @@ Deeper maintainer-only helpers now live under:
 For native-specific changes, also verify:
 
 ```bash
+python -c "import latence_shard_engine; print(latence_shard_engine.__file__)"
 python -c "import latence_solver; print(latence_solver.version())"
 ```
 
@@ -117,6 +121,11 @@ The ontology contract test resolves its fixture in this order:
 ## Releases
 
 See [RELEASING.md](RELEASING.md) for the step-by-step release workflow.
+
+## Community
+
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) in issues, PRs, and
+project discussions.
 
 ## Pull Requests
 

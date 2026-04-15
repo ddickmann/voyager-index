@@ -45,27 +45,28 @@ Operational sequence:
 
 ### CPU-first
 
-- install `voyager-index[server,shard]`
+- install `voyager-index[full]` for the complete CPU-safe public surface, or `voyager-index[server,shard]` for the lean shard/API profile
 - keep `router_device="cpu"`
 - use exact scoring
 - scale QPS with `WORKERS=4` or `WORKERS=8` on a single host
+- add `voyager-index[shard,shard-native]` or `voyager-index[native]` when you want the Rust shard CPU fast-path installed from PyPI
 
 ### GPU streamed
 
-- install `voyager-index[server,shard,gpu]`
+- install `voyager-index[full,gpu]` or `voyager-index[server,shard,gpu]`
 - use `transfer_mode="pinned"` or `transfer_mode="double_buffered"`
 - enable `quantization_mode` when you want GPU-side acceleration
 - for `compression="roq4"`, the shard assets persist `roq_codes` and `roq_meta` alongside offsets and IDs
 
 ### GPU corpus
 
-- install `voyager-index[server,shard,gpu]`
+- install `voyager-index[full,gpu]` or `voyager-index[server,shard,gpu]`
 - preload the corpus into VRAM when it fits
 - report GPU-corpus numbers separately from streamed numbers
 
 ### Optional Latence graph plane
 
-- install `voyager-index[server,shard,latence-graph]`
+- install `voyager-index[full]` or `voyager-index[server,shard,latence-graph]`
 - keep `graph_mode="off"` as the safe baseline and enable `auto` or `force` per workflow
 - graph data comes from Latence graph data derived from the customer corpus and linked back to collection targets through the sidecar sync path
 - use `query_payload` to steer graph policy on vector-only HTTP routes such as shard search

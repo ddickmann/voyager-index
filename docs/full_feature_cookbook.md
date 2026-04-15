@@ -65,13 +65,17 @@ For the full install matrix and product overview, start with `README.md`.
 Optional extras:
 
 ```bash
+pip install "voyager-index[full]"                     # + full public CPU surface
+pip install "voyager-index[full,gpu]"                 # + Triton GPU kernels on CUDA hosts
 pip install "voyager-index[server,shard,multimodal]"  # + multimodal helpers
-pip install "voyager-index[server,shard,native]"      # + Tabu Search solver
+pip install "voyager-index[server,shard,solver]"      # + Tabu Search solver only
+pip install "voyager-index[server,shard,native]"      # + both public native wheels
 pip install "voyager-index[server,shard,latence-graph]"  # + optional Latence graph lane
 ```
 
 What the native extras add:
 
+- `latence_shard_engine`: fused Rust shard CPU fast-path for the shard production lane
 - `latence_solver`: canonical OSS solver package for dense refinement and `/reference/optimize`
 - `latence`: optional LatenceAI SDK used by the premium graph sidecar
 

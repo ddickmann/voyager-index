@@ -18,51 +18,54 @@ ffv = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ffv)
 
 
-def test_probe_native_package_reports_installed_when_importable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("module_name", ["latence_shard_engine", "latence_solver"])
+def test_probe_native_package_reports_installed_when_importable(tmp_path, monkeypatch, module_name):
     original_find_spec = ffv.importlib.util.find_spec
 
     def fake_find_spec(name: str):
-        if name == "latence_solver":
+        if name == module_name:
             return object()
         return original_find_spec(name)
 
     monkeypatch.setattr(ffv.importlib.util, "find_spec", fake_find_spec)
 
-    result = ffv.probe_native_package("latence_solver", Path(tmp_path), bootstrap=False)
+    result = ffv.probe_native_package(module_name, Path(tmp_path), bootstrap=False)
 
     assert result["status"] == "installed_and_importable"
     assert result["source_present"] is True
 
 
-def test_probe_native_package_reports_source_present_but_not_built(tmp_path, monkeypatch):
+@pytest.mark.parametrize("module_name", ["latence_shard_engine", "latence_solver"])
+def test_probe_native_package_reports_source_present_but_not_built(tmp_path, monkeypatch, module_name):
     original_find_spec = ffv.importlib.util.find_spec
 
     def fake_find_spec(name: str):
-        if name == "latence_solver":
+        if name == module_name:
             return None
         return original_find_spec(name)
 
     monkeypatch.setattr(ffv.importlib.util, "find_spec", fake_find_spec)
 
-    result = ffv.probe_native_package("latence_solver", Path(tmp_path), bootstrap=False)
+    result = ffv.probe_native_package(module_name, Path(tmp_path), bootstrap=False)
 
     assert result["status"] == "source_present_but_not_built"
     assert result["reason"] == "module_not_importable_in_active_environment"
     assert result["source_present"] is True
 
 
-def test_probe_native_package_reports_missing_toolchain(tmp_path, monkeypatch):
+@pytest.mark.parametrize("module_name", ["latence_shard_engine", "latence_solver"])
+def test_probe_native_package_reports_missing_toolchain(tmp_path, monkeypatch, module_name):
     original_find_spec = ffv.importlib.util.find_spec
 
     def fake_find_spec(name: str):
-        if name == "latence_solver":
+        if name == module_name:
             return None
         return original_find_spec(name)
 
     monkeypatch.setattr(ffv.importlib.util, "find_spec", fake_find_spec)
     monkeypatch.setattr(ffv.shutil, "which", lambda _: None)
 
-    result = ffv.probe_native_package("latence_solver", Path(tmp_path), bootstrap=True)
+    result = ffv.probe_native_package(module_name, Path(tmp_path), bootstrap=True)
 
     assert result["status"] == "build_failed"
     assert result["reason"] == "missing_rust_toolchain"

@@ -5,8 +5,9 @@ paths.
 
 Install:
 
-- `pip install "voyager-index[shard]"` is the mainline install path
-- optional extras: `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`, `[native]`, `[latence-graph]`
+- `pip install "voyager-index[full]"` is the canonical full public CPU install path
+- `pip install "voyager-index[full,gpu]"` adds Triton GPU scoring on supported CUDA hosts
+- optional extras: `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`, `[shard-native]`, `[solver]`, `[native]`, `[latence-graph]`
 - contributors and developers can install from source: `bash scripts/install_from_source.sh --cpu` or `make install-cpu`
 - the install commands in `docs/reference_api_tutorial.md` and `docs/full_feature_cookbook.md` cover both paths
 - `README.md` is the product homepage; the docs below expand the same public OSS story rather than replacing it

@@ -118,6 +118,74 @@ jobs:
           name: package-build-report
           path: validation-reports/package-build-${{ github.run_id }}
 
+  packaged-install-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build root and native wheels
+        run: |
+          python -m pip install --upgrade pip build maturin
+          python -m build --wheel
+          mkdir -p dist/native
+          python -m pip wheel --no-deps --wheel-dir dist/native ./src/kernels/shard_engine ./src/kernels/knapsack_solver
+      - name: Validate full packaged install
+        run: |
+          ROOT_WHEEL=$(python - <<'PY'
+          from pathlib import Path
+          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          PY
+          )
+          python -m venv .venv-full
+          .venv-full/bin/pip install --upgrade pip
+          .venv-full/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+          .venv-full/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full] @ file://${ROOT_WHEEL}"
+          mkdir -p validation-reports/packaged-install-${{ github.run_id }}
+          .venv-full/bin/python scripts/packaged_install_smoke.py > validation-reports/packaged-install-${{ github.run_id }}/full-smoke.json
+      - name: Validate full GPU install contract
+        run: |
+          ROOT_WHEEL=$(python - <<'PY'
+          from pathlib import Path
+          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          PY
+          )
+          python -m venv .venv-full-gpu
+          .venv-full-gpu/bin/pip install --upgrade pip
+          .venv-full-gpu/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+          .venv-full-gpu/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full,gpu] @ file://${ROOT_WHEEL}"
+          .venv-full-gpu/bin/python - <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          import voyager_index
+
+          assert importlib.util.find_spec("triton") is not None
+          assert importlib.util.find_spec("latence") is not None
+          assert importlib.util.find_spec("latence_shard_engine") is not None
+          assert importlib.util.find_spec("latence_solver") is not None
+
+          Path("validation-reports/packaged-install-${{ github.run_id }}/full-gpu-smoke.json").write_text(
+              json.dumps(
+                  {
+                      "voyager_index_version": voyager_index.__version__,
+                      "triton_importable": True,
+                      "latence_importable": True,
+                      "latence_shard_engine_importable": True,
+                      "latence_solver_importable": True,
+                  }
+              ),
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload packaged install validation bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-install-validation-report
+          path: validation-reports/packaged-install-${{ github.run_id }}
+
   oss-test:
     runs-on: ubuntu-latest
     strategy:
@@ -233,15 +301,19 @@ jobs:
         with:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install package and solver build prerequisites
+      - name: Install package and native build prerequisites
         run: |
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install -e ".[server,multimodal,dev,shard,native-solver-build]"
+          python -m pip install -e ".[server,multimodal,dev,shard,native-build]"
+          python -m pip install ./src/kernels/shard_engine
           python -m pip install ./src/kernels/knapsack_solver
-      - name: Smoke import supported native package
+      - name: Smoke import supported native packages
         run: |
-          python -c "import latence_solver; from latence_solver import TabuSearchSolver; assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; print(latence_solver.version())"
+          python -c "import latence_shard_engine; import latence_solver; from latence_solver import TabuSearchSolver; assert latence_shard_engine is not None; assert callable(latence_solver.gpu_available); assert TabuSearchSolver is not None; print(latence_solver.version())"
+      - name: Run native package unit tests
+        run: |
+          pytest tests/test_full_feature_validation_native.py -v --tb=short
       - name: Prepare solver validation fixtures
         run: |
           python - <<'PY'
@@ -262,7 +334,7 @@ jobs:
             --output-dir validation-reports/solver-validation-${{ github.run_id }}
       - name: Assert solver validation status
         run: |
-          python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); assert set(report['native_packages']) == {'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert report['lanes']['solver']['summary']['gpu']['status'] in {'passed', 'gpu_unavailable_for_cuda_lane'}"
+          python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); assert set(report['native_packages']) == {'latence_shard_engine', 'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_shard_engine']['status'] == 'installed_and_importable'; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert report['lanes']['solver']['summary']['gpu']['status'] in {'passed', 'gpu_unavailable_for_cuda_lane'}"
       - name: Upload solver validation bundle
         uses: actions/upload-artifact@v4
         with:

@@ -6,17 +6,30 @@ reads in release order again.
 
 ## Unreleased
 
-### Optional Latence graph lane
+## 0.1.3 — Production Release Hardening
 
-- added an optional `latence-graph` install extra for the premium graph-aware retrieval lane
-- documented the Latence graph sidecar as a post-retrieval, additive graph plane rather than a mandatory OSS dependency
-- exposed graph health, sync lifecycle, and provenance guidance across the docs and reference API tutorial
+This release closes the gap between the public product story and the shipped
+package, native-wheel, and release pipeline surfaces.
 
-### Architecture and evidence
+### Packaging and install surface
 
-- added explicit docs for the Latence graph sidecar and the enterprise control-plane boundary
-- documented graph benchmark methodology, route-conformance checks, and additive candidate-coverage interpretation
-- updated cookbook and quickstart guidance so graph-aware retrieval is described consistently across dense, late-interaction, shard, and multimodal flows
+- added a canonical `voyager-index[full]` install profile for the full public CPU-safe surface
+- added `shard-native` and broadened `native` so the public native story now covers both `latence-shard-engine` and `latence-solver`
+- bumped the root package and supported native packages onto the `0.1.3` line
+- tightened package data so the shipped sdist includes the graph quality fixture required by release validation
+
+### Graph-aware production path
+
+- kept `latence-graph` as a public optional extra and pinned it to the verified public `latence>=0.1.1` line
+- clarified throughout the docs that the graph lane can consume compatible prebuilt graph data directly and remains additive to the shard-first hot path
+- preserved the graph route-conformance, provenance, and retrieval-uplift evidence as a distinct proof layer from shard performance benchmarks
+
+### CI, release, and OSS hygiene
+
+- expanded the native release bundle to include the shard-engine wheel alongside the solver wheel
+- tightened release documentation and automation around clean-install rehearsal, native-wheel validation, and publish gating
+- refreshed the README, install docs, issue templates, and contributor guidance around the supported production lane
+- added repo-governance files for dependency updates, code ownership, and contributor conduct
 
 ## 0.1.2 — Shard Production Surface
 
