@@ -20,6 +20,7 @@ It exercises:
 - reference API ingest
 - reference API search
 - multimodal search
+- graph-off OSS sanity checks
 
 Run it with:
 
@@ -31,6 +32,49 @@ python benchmarks/oss_reference_benchmark.py --device cuda --points 16 --top-k 3
 This benchmark is intentionally small. It is for regression detection, not for
 headline product comparisons.
 
+### 1B. Optional Latence graph benchmark
+
+`tools/benchmarks/benchmark_latence_graph_quality.py` is the graph-aware quality
+and conformance harness for the optional premium lane.
+
+It includes:
+
+- a tiny synthetic regression fixture for deterministic local vs community rescue checks
+- a representative fixture for graph-shaped vs ordinary query behavior
+- route-conformance checks for `graph_mode`, additive merge semantics, and provenance tags
+- latency, candidate-growth, and solver-overhead summaries
+- ablations for local-only, community-only, and full graph settings
+
+Run it with:
+
+```bash
+python tools/benchmarks/benchmark_latence_graph_quality.py --mode benchmark
+python tools/benchmarks/benchmark_latence_graph_quality.py --mode ablation
+```
+
+Important interpretation note:
+
+- the optional graph lane is additive, so the benchmark tracks candidate-pool coverage and route conformance
+- it is not trying to prove that graph rescue must always promote documents into the unaugmented top-`k` head
+- ordinary queries should stay graph-off in `auto`
+- graph-shaped or compliance-style queries should show additive rescue with the expected `graph_local` or `graph_community` provenance tags
+
+Current representative snapshot from the shipped fixture-backed harness:
+
+| Metric | Current value |
+|---|---|
+| graph-shaped recall delta | `+0.75` |
+| graph-shaped NDCG delta | `+0.333` |
+| graph-shaped support coverage delta | `+0.75` |
+| ordinary-query recall / NDCG / support delta | `0.0 / 0.0 / 0.0` |
+| graph applied rate | `0.571` |
+| average added candidates on graph-shaped queries | `3.5` |
+| route-conformance checks | `all passed` |
+
+These numbers are valuable because they prove the shipped graph lane is working
+as intended, but they are still fixture-backed graph evidence. They are not the
+same thing as a public graph-on shard BEIR benchmark.
+
 ### 2. Product benchmark
 
 The product benchmark is the shard retrieval benchmark on the 100k corpus:
@@ -41,6 +85,10 @@ The product benchmark is the shard retrieval benchmark on the 100k corpus:
 - same warmup policy
 - same hardware per comparison table
 - separate reporting for streamed GPU and GPU-corpus modes
+
+The public README BEIR table is part of this product benchmark layer. It proves
+the shard-first production lane, including Triton GPU scoring and multiworker
+fused Rust CPU scoring, but it does not by itself prove graph-lane value.
 
 ## Methodology
 
@@ -54,6 +102,7 @@ Every published table should include:
 - measured latency: p50, p95, p99
 - quality: at least recall@10, and preferably NDCG or MRR when available
 - throughput: QPS only after the recall target is stated
+- for graph-aware claims: route-conformance, graph-applied rate, and additive candidate growth
 
 ## What Is Comparable
 

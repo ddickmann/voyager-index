@@ -29,7 +29,9 @@ import torch
 
 from voyager_index._internal.inference.config import IndexConfig
 from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
+from voyager_index._internal.inference.index_core.graph_policy import LatenceGraphPolicy
 from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+from voyager_index._internal.inference.index_core.latence_graph_sidecar import LatenceGraphSidecar
 from voyager_index._internal.inference.index_core.index import ColbertIndex
 from voyager_index._internal.inference.shard_engine import ShardSegmentManager
 from voyager_index._internal.inference.shard_engine.config import Compression, TransferMode
@@ -41,6 +43,7 @@ from .models import (
     CollectionKind,
     CreateCollectionRequest,
     DistanceMetric,
+    GraphMode,
     MultimodalOptimizeMode,
     MutationTaskStatus,
     PointVector,
@@ -101,6 +104,7 @@ class CollectionRuntime:
     engine: Any
     record_index: Dict[int, Dict[str, Any]]
     payload_filter_index: Dict[str, Dict[str, set[int]]]
+    graph_sidecar: Optional[Any] = None
     meta_mtime_ns: int = 0
 
 
@@ -131,6 +135,7 @@ class SearchService:
         self.gpu_available = torch.cuda.is_available()
         self.filter_scan_limit = int(os.environ.get("VOYAGER_FILTER_SCAN_LIMIT", "10000"))
         self.filter_scan_limit_hits = 0
+        self._graph_policy = LatenceGraphPolicy()
         self._metrics_lock = threading.Lock()
         self._task_thread_lock = threading.Lock()
         self._collections_lock = threading.RLock()
@@ -181,6 +186,12 @@ class SearchService:
     def _metadata_path(self, name: str) -> Path:
         return self._collection_path(name) / "collection.json"
 
+    def _graph_state_path(self, name: str, kind: CollectionKind) -> Path:
+        base = self._collection_path(name)
+        if kind == CollectionKind.DENSE:
+            return base / "hybrid" / "latence_graph_state.json"
+        return base / "latence_graph_state.json"
+
     def _collection_lockfile_path(self, name: str) -> Path:
         safe_name = self._validate_collection_name(name)
         digest = hashlib.sha256(safe_name.encode("utf-8")).hexdigest()
@@ -212,6 +223,13 @@ class SearchService:
     def _sanitize_records(self, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         return {str(key): value for key, value in (meta.get("records") or {}).items()}
 
+    @staticmethod
+    def _graph_sidecar_for_runtime(runtime: CollectionRuntime) -> Optional[Any]:
+        sidecar = getattr(runtime, "graph_sidecar", None)
+        if sidecar is not None:
+            return sidecar
+        return getattr(runtime.engine, "graph_sidecar", None)
+
     def _refresh_record_index(self, meta: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
         return {int(record["internal_id"]): record for record in self._sanitize_records(meta).values()}
 
@@ -237,6 +255,68 @@ class SearchService:
     def _refresh_runtime_indexes(self, runtime: CollectionRuntime) -> None:
         runtime.record_index = self._refresh_record_index(runtime.meta)
         runtime.payload_filter_index = self._build_payload_filter_index(runtime.meta)
+
+    @staticmethod
+    def _graph_request_options(request: SearchRequest) -> Dict[str, Any]:
+        options: Dict[str, Any] = {}
+        if request.graph_max_hops is not None:
+            options["max_hops"] = int(request.graph_max_hops)
+        if request.graph_local_budget is not None:
+            options["local_budget"] = int(request.graph_local_budget)
+        if request.graph_community_budget is not None:
+            options["community_budget"] = int(request.graph_community_budget)
+        if request.graph_evidence_budget is not None:
+            options["evidence_budget"] = int(request.graph_evidence_budget)
+        if request.graph_explain:
+            options["explain"] = True
+        return options
+
+    def _sync_runtime_graph_state(
+        self,
+        runtime: CollectionRuntime,
+        *,
+        records: Optional[List[Dict[str, Any]]] = None,
+        rebuild: bool = False,
+        action: str = "append",
+    ) -> None:
+        normalized_records = [
+            {
+                "internal_id": int(record["internal_id"]),
+                "external_id": record["external_id"],
+                "payload": dict(record.get("payload") or {}),
+            }
+            for record in (records or self._ordered_records(runtime))
+        ]
+        if runtime.kind == CollectionKind.DENSE and hasattr(runtime.engine, "sync_graph_records"):
+            runtime.engine.sync_graph_records(
+                [int(record["internal_id"]) for record in normalized_records],
+                [dict(record["payload"]) for record in normalized_records],
+                external_ids=[record["external_id"] for record in normalized_records],
+                rebuild=rebuild,
+            )
+            runtime.graph_sidecar = getattr(runtime.engine, "graph_sidecar", None)
+            return
+        sidecar = self._graph_sidecar_for_runtime(runtime)
+        if sidecar is None:
+            return
+        if rebuild:
+            sidecar.rebuild_from_records(normalized_records, target_kind="document")
+        else:
+            sidecar.append_records(normalized_records, target_kind="document", action=action)
+        runtime.graph_sidecar = sidecar
+
+    def _delete_runtime_graph_targets(self, runtime: CollectionRuntime, target_ids: List[Any]) -> None:
+        if not target_ids:
+            return
+        if runtime.kind == CollectionKind.DENSE and hasattr(runtime.engine, "delete_graph_records"):
+            runtime.engine.delete_graph_records([int(runtime.meta["records"][str(target_id)]["internal_id"]) for target_id in target_ids if str(target_id) in runtime.meta["records"]], external_ids=[str(target_id) for target_id in target_ids if str(target_id) in runtime.meta["records"]])
+            runtime.graph_sidecar = getattr(runtime.engine, "graph_sidecar", None)
+            return
+        sidecar = self._graph_sidecar_for_runtime(runtime)
+        if sidecar is None:
+            return
+        sidecar.delete([str(target_id) for target_id in target_ids])
+        runtime.graph_sidecar = sidecar
 
     def _fsync_parent(self, path: Path) -> None:
         try:
@@ -432,6 +512,7 @@ class SearchService:
             engine=self._build_engine(name, meta),
             record_index=self._refresh_record_index(meta),
             payload_filter_index=self._build_payload_filter_index(meta),
+            graph_sidecar=None,
             meta_mtime_ns=metadata_path.stat().st_mtime_ns if metadata_path.exists() else 0,
         )
         if runtime.kind == CollectionKind.DENSE:
@@ -443,6 +524,17 @@ class SearchService:
             self._sync_dense_sparse_state(runtime, rebuild_sparse=should_rebuild_sparse)
             if should_rebuild_sparse:
                 self._write_meta(runtime)
+            runtime.graph_sidecar = getattr(runtime.engine, "graph_sidecar", None)
+        else:
+            runtime.graph_sidecar = LatenceGraphSidecar(self._graph_state_path(name, runtime.kind))
+        graph_sidecar = self._graph_sidecar_for_runtime(runtime)
+        if (
+            runtime.meta.get("records")
+            and graph_sidecar is not None
+            and not graph_sidecar.is_available()
+            and str(getattr(graph_sidecar, "health", "")) != "degraded"
+        ):
+            self._sync_runtime_graph_state(runtime, rebuild=True, action="rebuild")
         return runtime
 
     def _reload_runtime_from_disk(self, name: str) -> CollectionRuntime:
@@ -624,6 +716,12 @@ class SearchService:
         return self._begin_journal(name, kind, operation="create_collection")
 
     def _close_runtime_engine(self, runtime: CollectionRuntime) -> None:
+        graph_sidecar = self._graph_sidecar_for_runtime(runtime)
+        if graph_sidecar is not None and hasattr(graph_sidecar, "close"):
+            try:
+                graph_sidecar.close()
+            except Exception as exc:
+                logger.warning("Failed to close graph sidecar for collection '%s': %s", runtime.name, exc)
         close_method = getattr(runtime.engine, "close", None)
         if callable(close_method):
             close_method()
@@ -638,15 +736,18 @@ class SearchService:
             self._close_runtime_engine(runtime)
             self._copy_into_backup(runtime, backup_root, runtime.path / "hybrid")
             runtime.engine = self._build_engine(runtime.name, runtime.meta)
+            runtime.graph_sidecar = getattr(runtime.engine, "graph_sidecar", None)
         elif runtime.kind == CollectionKind.SHARD:
             if hasattr(runtime.engine, "flush") and callable(runtime.engine.flush):
                 runtime.engine.flush()
             shard_dir = runtime.path / "shard"
             if shard_dir.exists():
                 self._copy_into_backup(runtime, backup_root, shard_dir)
+            self._copy_into_backup(runtime, backup_root, self._graph_state_path(runtime.name, runtime.kind))
         elif runtime.kind == CollectionKind.LATE_INTERACTION:
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "embeddings.h5")
             self._copy_into_backup(runtime, backup_root, runtime.path / "colbert" / "metadata.json")
+            self._copy_into_backup(runtime, backup_root, self._graph_state_path(runtime.name, runtime.kind))
         else:
             manifest_path = runtime.path / "colpali" / "manifest.json"
             screening_state_path = runtime.path / "colpali" / "screening_state.json"
@@ -655,6 +756,7 @@ class SearchService:
             self._copy_into_backup(runtime, backup_root, runtime.path / "colpali" / "prototype_sidecar")
             self._copy_into_backup(runtime, backup_root, runtime.path / "colpali" / "centroid_sidecar")
             self._copy_into_backup(runtime, backup_root, manifest_path)
+            self._copy_into_backup(runtime, backup_root, self._graph_state_path(runtime.name, runtime.kind))
             metadata["existing_chunk_files"] = (
                 sorted(path.name for path in chunks_path.glob("*.npz")) if chunks_path.exists() else []
             )
@@ -673,6 +775,7 @@ class SearchService:
             engine=None,
             record_index={},
             payload_filter_index={},
+            graph_sidecar=None,
         )
 
     def _restore_collection_mutation(self, runtime: CollectionRuntime, backup: MutationBackup) -> None:
@@ -696,9 +799,11 @@ class SearchService:
         elif kind == CollectionKind.SHARD:
             shard_dir = runtime.path / "shard"
             self._restore_from_backup(runtime, backup_root, shard_dir)
+            self._restore_from_backup(runtime, backup_root, self._graph_state_path(runtime.name, kind))
         elif kind == CollectionKind.LATE_INTERACTION:
             self._restore_from_backup(runtime, backup_root, runtime.path / "colbert" / "embeddings.h5")
             self._restore_from_backup(runtime, backup_root, runtime.path / "colbert" / "metadata.json")
+            self._restore_from_backup(runtime, backup_root, self._graph_state_path(runtime.name, kind))
         else:
             chunks_path = runtime.path / "colpali" / "chunks"
             existing_chunk_files = set(metadata.get("existing_chunk_files", []))
@@ -710,6 +815,7 @@ class SearchService:
             self._restore_from_backup(runtime, backup_root, runtime.path / "colpali" / "screening_state.json")
             self._restore_from_backup(runtime, backup_root, runtime.path / "colpali" / "prototype_sidecar")
             self._restore_from_backup(runtime, backup_root, runtime.path / "colpali" / "centroid_sidecar")
+            self._restore_from_backup(runtime, backup_root, self._graph_state_path(runtime.name, kind))
 
     def _recover_pending_journals(self) -> None:
         for backup_root in sorted(self._journal_root.iterdir()):
@@ -820,7 +926,13 @@ class SearchService:
                         engine=self._build_engine(safe_name, meta),
                         record_index={},
                         payload_filter_index={},
+                        graph_sidecar=None,
                     )
+                    if runtime.kind == CollectionKind.DENSE:
+                        runtime.graph_sidecar = getattr(runtime.engine, "graph_sidecar", None)
+                    else:
+                        runtime.graph_sidecar = LatenceGraphSidecar(self._graph_state_path(safe_name, runtime.kind))
+                        runtime.graph_sidecar.save()
                     self._write_meta(runtime)
                     self.collections[safe_name] = runtime
                     self._collection_locks[safe_name] = threading.RLock()
@@ -974,6 +1086,7 @@ class SearchService:
                         if record_key in runtime.meta["records"]
                     ]
                     if existing_internal_ids:
+                        self._delete_runtime_graph_targets(runtime, record_keys)
                         self._delete_internal_ids(runtime, existing_internal_ids)
 
                     if runtime.kind == CollectionKind.DENSE:
@@ -1004,6 +1117,8 @@ class SearchService:
                                 "payload": payload,
                                 "text": text_value,
                             }
+                        new_records = [runtime.meta["records"][record_key] for record_key in record_keys]
+                        self._sync_runtime_graph_state(runtime, records=new_records, rebuild=False, action="append")
                         self._sync_dense_sparse_state(runtime, rebuild_sparse=False)
                         self._flush_runtime_engine(runtime)
                     elif runtime.kind == CollectionKind.LATE_INTERACTION:
@@ -1051,6 +1166,8 @@ class SearchService:
                                 int(runtime.meta.get("next_internal_id", 0)),
                                 max(int(item_id) for item_id in assigned_ids) + 1,
                             )
+                        new_records = [runtime.meta["records"][record_key] for record_key in record_keys]
+                        self._sync_runtime_graph_state(runtime, records=new_records, rebuild=False, action="append")
                         self._refresh_runtime_indexes(runtime)
                     elif runtime.kind == CollectionKind.SHARD:
                         if any(point.vectors is None for point in points):
@@ -1081,6 +1198,8 @@ class SearchService:
                                 "payload": payload,
                                 "text": text_value,
                             }
+                        new_records = [runtime.meta["records"][record_key] for record_key in record_keys]
+                        self._sync_runtime_graph_state(runtime, records=new_records, rebuild=False, action="append")
                         self._flush_runtime_engine(runtime)
                         self._refresh_runtime_indexes(runtime)
                     else:
@@ -1111,6 +1230,8 @@ class SearchService:
                                 "payload": payload,
                                 "text": text_value,
                             }
+                        new_records = [runtime.meta["records"][record_key] for record_key in record_keys]
+                        self._sync_runtime_graph_state(runtime, records=new_records, rebuild=False, action="append")
                         self._refresh_runtime_indexes(runtime)
 
                     self._evict_if_over_limit(runtime)
@@ -1139,6 +1260,7 @@ class SearchService:
                         return 0
 
                     self._delete_internal_ids(runtime, internal_ids)
+                    self._delete_runtime_graph_targets(runtime, record_keys)
                     for record_key in record_keys:
                         runtime.meta["records"].pop(record_key, None)
 
@@ -1959,10 +2081,11 @@ class SearchService:
         dense_results: List[tuple[int, float]],
         sparse_results: List[tuple[int, float]],
         top_k: int,
+        graph_results: Optional[List[tuple[int, float]]] = None,
     ) -> List[tuple[int, float]]:
-        if dense_results and not sparse_results:
+        if dense_results and not sparse_results and not graph_results:
             return [(int(doc_id), float(score)) for doc_id, score in dense_results[:top_k]]
-        if sparse_results and not dense_results:
+        if sparse_results and not dense_results and not graph_results:
             return [(int(doc_id), float(score)) for doc_id, score in sparse_results[:top_k]]
 
         fused: Dict[int, float] = {}
@@ -1971,7 +2094,79 @@ class SearchService:
             fused[int(doc_id)] = fused.get(int(doc_id), 0.0) + 1.0 / (rrf_k + rank)
         for rank, (doc_id, _) in enumerate(sparse_results, start=1):
             fused[int(doc_id)] = fused.get(int(doc_id), 0.0) + 1.0 / (rrf_k + rank)
-        return sorted(fused.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        base_ranked = sorted(fused.items(), key=lambda item: item[1], reverse=True)
+        if not graph_results:
+            return base_ranked[:top_k]
+        base_ids = {int(doc_id) for doc_id, _score in base_ranked}
+        rescued_pairs = [
+            (int(doc_id), float(score))
+            for doc_id, score in list(graph_results or [])
+            if int(doc_id) not in base_ids
+        ]
+        if not base_ranked:
+            return rescued_pairs[:top_k]
+        return base_ranked[:top_k] + rescued_pairs
+
+    def _augment_pairs_with_graph_sidecar(
+        self,
+        runtime: CollectionRuntime,
+        request: SearchRequest,
+        pairs: List[tuple[int, float]],
+        *,
+        query_text: str = "",
+    ) -> tuple[List[tuple[int, float]], Dict[str, Any]]:
+        if request.graph_mode == GraphMode.OFF:
+            return pairs[: request.top_k], {"graph_applied": False, "reason": "graph_mode_off"}
+        sidecar = self._graph_sidecar_for_runtime(runtime)
+        if sidecar is None or not sidecar.is_available():
+            return pairs[: request.top_k], {"graph_applied": False, "reason": "graph_unavailable"}
+        policy = self._graph_policy.decide(
+            graph_mode=request.graph_mode.value,
+            query_text=query_text,
+            query_payload=request.query_payload,
+            dense_results=pairs,
+            sparse_results=[],
+            graph_available=True,
+        )
+        if not policy.applied:
+            return pairs[: request.top_k], {"graph_applied": False, "policy": policy.to_dict(), "reason": policy.reason}
+        graph_aug = sidecar.augment_candidates(
+            [doc_id for doc_id, _ in pairs],
+            query_text=query_text,
+            query_payload=request.query_payload,
+            local_budget=int(request.graph_local_budget) if request.graph_local_budget is not None else 4,
+            community_budget=int(request.graph_community_budget) if request.graph_community_budget is not None else 4,
+            evidence_budget=int(request.graph_evidence_budget) if request.graph_evidence_budget is not None else 8,
+            max_hops=int(request.graph_max_hops) if request.graph_max_hops is not None else 2,
+            explain=bool(request.graph_explain),
+        )
+        if not graph_aug.applied:
+            return pairs[: request.top_k], {
+                "graph_applied": False,
+                "policy": policy.to_dict(),
+                "reason": graph_aug.reason,
+            }
+        base_pairs = [(int(doc_id), float(score)) for doc_id, score in pairs[: request.top_k]]
+        base_ids = {int(doc_id) for doc_id, _score in base_pairs}
+        rescued_pairs = [
+            (int(doc_id), float(score))
+            for doc_id, score in list(graph_aug.graph_results or [])
+            if int(doc_id) not in base_ids
+        ]
+        ranked = base_pairs + rescued_pairs
+        metadata: Dict[str, Any] = {
+            "graph_applied": True,
+            "policy": policy.to_dict(),
+            "summary": {
+                **dict(graph_aug.summary),
+                "merge_mode": "additive",
+                "base_order_preserved": True,
+                "rescued_ids": [int(doc_id) for doc_id, _score in rescued_pairs],
+            },
+        }
+        if request.graph_explain:
+            metadata["provenance"] = dict(graph_aug.provenance_by_target)
+        return ranked, metadata
 
     def _build_scored_point(
         self,
@@ -2012,6 +2207,7 @@ class SearchService:
             start = time.perf_counter()
             objective_score: Optional[float] = None
             total_tokens: Optional[int] = None
+            response_metadata: Dict[str, Any] = {}
 
             if runtime.kind == CollectionKind.DENSE:
                 query = self._dense_query_vector(runtime, request)
@@ -2033,14 +2229,41 @@ class SearchService:
                     self._record_search_metrics(elapsed_ms)
                     return SearchResponse(results=[], total=0, time_ms=elapsed_ms)
                 retrieval_k = self._dense_refine_candidate_k(request)
-                result = runtime.engine.search(
-                    query_text=request.query_text or "",
-                    query_vector=query,
-                    k=retrieval_k,
-                    filters=request.filter,
+                search_kwargs: Dict[str, Any] = {
+                    "query_text": request.query_text or "",
+                    "query_vector": query,
+                    "k": retrieval_k,
+                    "filters": request.filter,
+                }
+                if request.graph_mode != GraphMode.OFF or self._graph_request_options(request):
+                    search_kwargs.update(
+                        {
+                            "query_payload": request.query_payload,
+                            "graph_mode": request.graph_mode.value,
+                            "graph_options": self._graph_request_options(request),
+                        }
+                    )
+                result = runtime.engine.search(**search_kwargs)
+                fused = self._fuse_dense_sparse(
+                    result.get("dense", []),
+                    result.get("sparse", []),
+                    retrieval_k,
+                    graph_results=result.get("graph", []),
                 )
-                fused = self._fuse_dense_sparse(result.get("dense", []), result.get("sparse", []), retrieval_k)
                 dense_pairs, refined = self._refine_dense_pairs(runtime, request, query, fused)
+                graph_summary = dict(result.get("graph_summary") or {})
+                if graph_summary.get("merge_mode") == "additive":
+                    graph_summary.setdefault("base_order_preserved", True)
+                response_metadata = {
+                    "graph": {
+                        "graph_applied": bool(graph_summary.get("graph_applied") or result.get("graph")),
+                        "reason": graph_summary.get("reason") or dict(result.get("graph_policy") or {}).get("reason"),
+                        "policy": dict(result.get("graph_policy") or {}),
+                        "summary": graph_summary,
+                    }
+                }
+                if request.graph_explain and result.get("graph_provenance"):
+                    response_metadata["graph"]["provenance"] = dict(result.get("graph_provenance") or {})
                 vectors_by_id = {}
                 if request.with_vector:
                     refined_vectors = refined.get("selected_vectors", {}) if refined is not None else {}
@@ -2063,6 +2286,8 @@ class SearchService:
                     refined.get("solver_output", {}).get("objective_score") if refined is not None else None
                 )
                 total_tokens = refined.get("solver_output", {}).get("total_tokens") if refined is not None else None
+                if refined is not None and refined.get("feature_summary"):
+                    response_metadata["solver"] = dict(refined.get("feature_summary") or {})
             elif runtime.kind == CollectionKind.LATE_INTERACTION:
                 if request.query_text:
                     raise ValidationError("Late-interaction collections do not support query_text search")
@@ -2098,7 +2323,13 @@ class SearchService:
                     if int(doc_id) in runtime.record_index
                     and self._matches_filter(runtime.record_index[int(doc_id)]["payload"], request.filter)
                 ]
-                selected_pairs = filtered_pairs[: request.top_k]
+                selected_pairs, graph_metadata = self._augment_pairs_with_graph_sidecar(
+                    runtime,
+                    request,
+                    filtered_pairs,
+                    query_text=request.query_text or "",
+                )
+                response_metadata = {"graph": graph_metadata}
                 internal_ids = [doc_id for doc_id, _ in selected_pairs]
                 vectors_by_id = {}
                 if request.with_vector and internal_ids:
@@ -2146,9 +2377,13 @@ class SearchService:
                     n_probes=request.n_probes,
                     **shard_overrides,
                 )
-                selected_pairs = [(did, sc) for did, sc in shard_results if did in runtime.record_index][
-                    : request.top_k
-                ]
+                selected_pairs, graph_metadata = self._augment_pairs_with_graph_sidecar(
+                    runtime,
+                    request,
+                    [(did, sc) for did, sc in shard_results if did in runtime.record_index],
+                    query_text=request.query_text or "",
+                )
+                response_metadata = {"graph": graph_metadata}
                 results = [
                     self._build_scored_point(
                         runtime,
@@ -2237,12 +2472,22 @@ class SearchService:
                         candidate_ids,
                         screening_profile,
                     )
+                multimodal_pairs, graph_metadata = self._augment_pairs_with_graph_sidecar(
+                    runtime,
+                    request,
+                    [
+                        (int(result.doc_id), float(result.score))
+                        for result in raw_results
+                        if int(result.doc_id) in runtime.record_index
+                        and self._matches_filter(runtime.record_index[int(result.doc_id)]["payload"], request.filter)
+                    ],
+                    query_text=request.query_text or "",
+                )
+                response_metadata = {"graph": graph_metadata}
                 selected_results = [
-                    result
-                    for result in raw_results
-                    if int(result.doc_id) in runtime.record_index
-                    and self._matches_filter(runtime.record_index[int(result.doc_id)]["payload"], request.filter)
-                ][: request.top_k]
+                    type("GraphResult", (), {"doc_id": int(doc_id), "score": float(score)})()
+                    for doc_id, score in multimodal_pairs
+                ]
                 vectors_by_id = {}
                 if request.with_vector and selected_results:
                     vectors_by_id = runtime.engine.get_document_embeddings(
@@ -2269,6 +2514,7 @@ class SearchService:
                 time_ms=elapsed_ms,
                 objective_score=objective_score,
                 total_tokens=total_tokens,
+                metadata=response_metadata,
             )
 
     def collection_info(self, name: str) -> CollectionInfo:
@@ -2315,6 +2561,8 @@ class SearchService:
                 store = getattr(runtime.engine, "_store", None)
                 if store and store.manifest:
                     shard_total_tokens = store.manifest.total_tokens
+            graph_sidecar = self._graph_sidecar_for_runtime(runtime)
+            graph_stats = graph_sidecar.get_statistics() if graph_sidecar is not None else {}
 
             return CollectionInfo(
                 name=runtime.name,
@@ -2347,6 +2595,14 @@ class SearchService:
                 n_centroid_approx=shard_n_centroid_approx,
                 variable_length_strategy=shard_variable_length_strategy,
                 hybrid_search=(runtime.kind == CollectionKind.DENSE),
+                graph_health=graph_sidecar.health if graph_sidecar is not None else None,
+                graph_dataset_id=graph_sidecar.dataset_id if graph_sidecar is not None else None,
+                graph_contract_version=graph_stats.get("contract_version"),
+                graph_sync_status=graph_stats.get("sync_status"),
+                graph_sync_reason=graph_stats.get("sync_reason"),
+                graph_last_sync_at=graph_stats.get("last_sync_at"),
+                graph_last_successful_sync_at=graph_stats.get("last_successful_sync_at"),
+                graph_sync_job_id=dict(graph_stats.get("dataset_job") or {}).get("job_id"),
             )
 
     def reference_preprocess_documents(self, request: RenderDocumentsRequest) -> Dict[str, Any]:
@@ -2669,6 +2925,12 @@ class SearchService:
             self.collections = {}
             self._collection_locks = {}
         for runtime in runtimes:
+            graph_sidecar = self._graph_sidecar_for_runtime(runtime)
+            if graph_sidecar is not None and hasattr(graph_sidecar, "close"):
+                try:
+                    graph_sidecar.close()
+                except Exception as exc:
+                    logger.warning("Failed to close graph sidecar for collection '%s': %s", runtime.name, exc)
             close_method = getattr(runtime.engine, "close", None)
             if callable(close_method):
                 try:
@@ -2748,6 +3010,28 @@ class SearchService:
                         "detail": "Optimized multimodal search is currently routing back to exact search until sidecar trust is restored.",
                     }
                 )
+
+        graph_sidecar = self._graph_sidecar_for_runtime(runtime)
+        if graph_sidecar is not None and str(getattr(graph_sidecar, "health", "")) == "degraded":
+            issues.append(
+                {
+                    "scope": "collection",
+                    "name": runtime.name,
+                    "kind": runtime.kind.value,
+                    "reason": "latence_graph_degraded",
+                    "detail": str(getattr(graph_sidecar, "reason", "Latence graph sidecar is degraded.")),
+                }
+            )
+        if graph_sidecar is not None and str(getattr(graph_sidecar, "sync_status", "")).lower() in {"error", "failed"}:
+            issues.append(
+                {
+                    "scope": "collection",
+                    "name": runtime.name,
+                    "kind": runtime.kind.value,
+                    "reason": "latence_graph_sync_failed",
+                    "detail": str(getattr(graph_sidecar, "sync_reason", "Latence graph dataset sync failed.")),
+                }
+            )
 
         try:
             indexed_matches_records = not runtime.meta.get("records") or self._is_runtime_indexed(runtime)

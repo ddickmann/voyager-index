@@ -36,6 +36,7 @@ with the results, skips, and boundary checks.
 | Dense + BM25 hybrid search | reference HTTP API | runnable |
 | Dense hybrid mode selection (`rrf`, `tabu`) | reference HTTP API | runnable |
 | Dense optimized refinement with `latence_solver` | reference HTTP API + optional native package | runnable when installed |
+| Optional Latence graph-aware retrieval | reference HTTP API + optional commercial dependency | runnable when installed |
 | Stateless `/reference/optimize` solver API | reference HTTP API + optional native package | runnable when installed |
 | Late-interaction retrieval | reference HTTP API | runnable |
 | Multimodal retrieval | reference HTTP API | runnable |
@@ -46,7 +47,7 @@ with the results, skips, and boundary checks.
 | vLLM pooling provider | public provider seam | runnable as optional integration |
 | Document-processing / `PageBundle` preprocessing | reference HTTP API + public helper | runnable |
 | Ontology / `OntologySidecar` seam | adapter contract | documented with workflow |
-| Graph / Neo4j-adjacent concepts | library-side config concepts | documented as not part of HTTP contract |
+| Latence graph sidecar boundary | adapter contract + search metadata surface | documented with workflow and API knobs |
 
 ## Step 0. Install The Profile You Need
 
@@ -66,11 +67,13 @@ Optional extras:
 ```bash
 pip install "voyager-index[server,shard,multimodal]"  # + multimodal helpers
 pip install "voyager-index[server,shard,native]"      # + Tabu Search solver
+pip install "voyager-index[server,shard,latence-graph]"  # + optional Latence graph lane
 ```
 
 What the native extras add:
 
 - `latence_solver`: canonical OSS solver package for dense refinement and `/reference/optimize`
+- `latence`: optional LatenceAI SDK used by the premium graph sidecar
 
 ### Install from source (contributors)
 
@@ -256,7 +259,34 @@ curl -X POST http://127.0.0.1:8080/collections/dense-guide/search \
 Use `dense_hybrid_mode: "tabu"` when `latence_solver` is installed and you want
 solver refinement over the fused pool.
 
-### 3D. Payload filters
+### 3D. Optional Latence graph-aware search
+
+The premium graph lane stays behind the normal search contract. It does not add
+another retrieval endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/dense-guide/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vector": [1, 0, 0, 0],
+    "query_text": "invoice dependency",
+    "graph_mode": "auto",
+    "graph_local_budget": 4,
+    "graph_community_budget": 4,
+    "graph_evidence_budget": 8,
+    "graph_explain": true,
+    "top_k": 3
+  }'
+```
+
+Important behavior:
+
+- graph augmentation runs after the dense and BM25 first stage
+- graph candidates are appended additively instead of replacing the base order
+- provenance is returned in `metadata.graph.provenance` when `graph_explain=true`
+- collection info exposes sidecar health and freshness metadata
+
+### 3E. Payload filters
 
 Filters are flat payload equality checks and work across supported collection kinds.
 
@@ -270,7 +300,7 @@ curl -X POST http://127.0.0.1:8080/collections/dense-guide/search \
   }'
 ```
 
-### 3E. Return stored vectors
+### 3F. Return stored vectors
 
 ```bash
 curl -X POST http://127.0.0.1:8080/collections/dense-guide/search \
@@ -282,7 +312,7 @@ curl -X POST http://127.0.0.1:8080/collections/dense-guide/search \
   }'
 ```
 
-### 3F. Prefer base64 transport for new clients
+### 3G. Prefer base64 transport for new clients
 
 Float arrays remain valid, but the preferred/default transport for larger
 vectors is the shared base64 payload contract used by the optimizer surface.
@@ -299,7 +329,7 @@ body = {
 }
 ```
 
-### 3G. Dot-product dense collections
+### 3H. Dot-product dense collections
 
 The dense HTTP surface also supports `distance: "dot"`:
 
@@ -309,7 +339,7 @@ curl -X POST http://127.0.0.1:8080/collections/dense-dot \
   -d '{"dimension": 2, "kind": "dense", "distance": "dot"}'
 ```
 
-### 3H. Shard collections for the max-performance path
+### 3I. Shard collections for the max-performance path
 
 When you want the LEMUR-routed production path with ColBANDIT and quantized
 scoring controls, create a `shard` collection instead of a plain dense one:
@@ -735,9 +765,10 @@ Minimal `OntologySidecar` shape:
 
 Important truth:
 
-- ontology generation and graph construction are outside the OSS runtime
-- the reference HTTP API does not expose a dedicated ontology or graph endpoint
-- `Neo4jConfig` and graph-adjacent concepts are library-side concepts, not part of the current OSS HTTP contract
+- ontology generation and graph construction still come from external producer or commercial systems
+- the reference HTTP API exposes graph-aware search knobs, but not a standalone graph CRUD or traversal API
+- the Latence graph lane is additive and optional; the OSS retrieval path remains valid without it
+- `Neo4jConfig` and other graph-adjacent research concepts are not part of the supported OSS HTTP contract
 
 ## Step 14. What Is Deliberately Not In The OSS HTTP API
 
@@ -746,7 +777,7 @@ These are important so users do not mistake documented seams for shipped HTTP fe
 - `/collections/{name}/optimize` is only a compatibility placeholder; use `/reference/optimize`
 - premium solver backends are not in OSS
 - Voyager reasoning/research code is not in OSS; it now lives in the separate `latence-voyager` repo
-- graph / knowledge-graph serving is not part of the reference API
+- dedicated graph management or traversal endpoints are not part of the reference API
 - document intelligence and embedding serving are external producer/provider roles
 - multimodal screening-backend selection and quantization tuning are not yet public HTTP knobs
 

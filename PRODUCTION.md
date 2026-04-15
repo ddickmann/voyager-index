@@ -26,6 +26,13 @@ Use:
 - `int8`, `fp8`, and `roq4` shard scoring modes
 - dense BM25 hybrid search with `rrf` or `tabu`
 - multimodal preprocessing and collection flows
+- optional Latence graph augmentation as an additive premium lane when `voyager-index[latence-graph]` is installed
+
+The production story is:
+
+- `shard` is the high-performance HTTP lane for vector-first retrieval
+- GPU and CPU performance claims in the README come from the shard benchmark harness
+- the optional graph lane augments post-retrieval results and provenance; it does not replace the shard hot path
 
 ## Recommended Deploy Shapes
 
@@ -49,6 +56,14 @@ Use:
 - preload the corpus into VRAM when it fits
 - report GPU-corpus numbers separately from streamed numbers
 
+### Optional Latence graph plane
+
+- install `voyager-index[server,shard,latence-graph]`
+- keep `graph_mode="off"` as the safe baseline and enable `auto` or `force` per workflow
+- use `query_payload` to steer graph policy on vector-only HTTP routes such as shard search
+- inspect `GET /collections/{name}/info` for `graph_health`, `graph_sync_status`, and freshness timestamps
+- rely on `/ready` to surface degraded or failed graph sync states without taking down the base retrieval lane
+
 ## Minimal Server Start
 
 ```bash
@@ -66,6 +81,7 @@ voyager-index-server
 - use `/health` for liveness and `/ready` for degraded-state checks
 - prefer base64 request payloads for dense and multivector traffic
 - benchmark recall and latency together before changing `k_candidates` or `n_full_scores`
+- treat graph benchmark evidence separately from shard performance evidence when publishing claims
 
 ## Where To Go Next
 

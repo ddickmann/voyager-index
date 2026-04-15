@@ -1,0 +1,172 @@
+{
+  "name": "representative_enterprise_graph_eval",
+  "description": "Representative graph-aware retrieval evaluation split covering dependency, community, compliance, and ordinary known-item queries.",
+  "documents": [
+    {
+      "id": 1,
+      "text": "Team Alpha owns Service B and manages escalation.",
+      "vector": [1.0, 0.0],
+      "payload": {
+        "token_count": 72,
+        "ontology_terms": ["Team Alpha", "Service B"],
+        "relations": [{"source": "Team Alpha", "relation": "owns", "target": "Service B", "confidence": 0.96}],
+        "concepts": ["ownership"]
+      }
+    },
+    {
+      "id": 2,
+      "text": "Service B causes Service C outage during dependency failures.",
+      "vector": [0.05, 0.95],
+      "payload": {
+        "token_count": 78,
+        "ontology_terms": ["Service B", "Service C"],
+        "relations": [{"source": "Service B", "relation": "causes", "target": "Service C", "confidence": 0.98}],
+        "concepts": ["incident"]
+      }
+    },
+    {
+      "id": 3,
+      "text": "Service C reliability overview and operating posture.",
+      "vector": [0.85, 0.15],
+      "payload": {
+        "token_count": 74,
+        "ontology_terms": ["Service C"],
+        "concepts": ["reliability"]
+      }
+    },
+    {
+      "id": 4,
+      "text": "Reliability playbook for Service C recovery and incident support.",
+      "vector": [0.1, 0.88],
+      "payload": {
+        "token_count": 84,
+        "ontology_terms": ["Playbook"],
+        "concepts": ["reliability"]
+      }
+    },
+    {
+      "id": 5,
+      "text": "Invoice operations manual and approval workflow.",
+      "vector": [0.25, 0.1],
+      "payload": {
+        "token_count": 68,
+        "ontology_terms": ["Invoice Manual"],
+        "concepts": ["operations"]
+      }
+    },
+    {
+      "id": 6,
+      "text": "General FAQ for employee navigation.",
+      "vector": [0.0, 0.2],
+      "payload": {
+        "token_count": 60,
+        "ontology_terms": ["FAQ"],
+        "concepts": ["navigation"]
+      }
+    },
+    {
+      "id": 7,
+      "text": "Policy lineage map for Service C export controls and compliance traceability.",
+      "vector": [0.4, 0.75],
+      "payload": {
+        "token_count": 88,
+        "ontology_terms": ["Service C", "Export Control"],
+        "relations": [{"source": "Service C", "relation": "connected", "target": "Export Control", "confidence": 0.94}],
+        "concepts": ["compliance", "lineage"]
+      }
+    },
+    {
+      "id": 8,
+      "text": "Dependency ownership directory linking Team Alpha, Service B, and Service C.",
+      "vector": [0.75, 0.35],
+      "payload": {
+        "token_count": 82,
+        "ontology_terms": ["Team Alpha", "Service B", "Service C"],
+        "relations": [
+          {"source": "Team Alpha", "relation": "owns", "target": "Service B", "confidence": 0.96},
+          {"source": "Service B", "relation": "depends", "target": "Service C", "confidence": 0.92}
+        ],
+        "concepts": ["ownership"]
+      }
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "local_chain",
+      "subset": "graph_shaped",
+      "query_input": "team alpha",
+      "query_text": "how is team alpha related to service c",
+      "query_payload": {"ontology_terms": ["Team Alpha", "Service B"]},
+      "gold_ids": [2],
+      "top_k": 2,
+      "expected_graph_auto": true,
+      "expected_lane": "graph_local"
+    },
+    {
+      "query_id": "root_cause",
+      "subset": "graph_shaped",
+      "query_input": "team alpha dependency",
+      "query_text": "why did service c outage happen",
+      "query_payload": {"ontology_terms": ["Service B", "Service C"]},
+      "gold_ids": [2],
+      "top_k": 2,
+      "expected_graph_auto": true,
+      "expected_lane": "graph_local"
+    },
+    {
+      "query_id": "community_support",
+      "subset": "graph_shaped",
+      "query_input": "overview posture",
+      "query_text": "what reliability asset is connected to service c",
+      "query_payload": {"ontology_terms": ["Service C", "support path"]},
+      "gold_ids": [4],
+      "top_k": 3,
+      "expected_graph_auto": true,
+      "expected_lane": "graph_community"
+    },
+    {
+      "query_id": "compliance_trace",
+      "subset": "graph_shaped",
+      "query_input": "service c lineage policy",
+      "query_text": "show compliance lineage for service c export controls",
+      "query_payload": {
+        "ontology_terms": ["Service C", "Export Control"],
+        "workflow_type": "compliance"
+      },
+      "gold_ids": [7],
+      "top_k": 2,
+      "expected_graph_auto": true,
+      "expected_lane": "graph_local"
+    },
+    {
+      "query_id": "invoice_manual",
+      "subset": "ordinary",
+      "query_input": "invoice manual",
+      "query_text": "invoice manual",
+      "query_payload": {},
+      "gold_ids": [5],
+      "top_k": 1,
+      "expected_graph_auto": false
+    },
+    {
+      "query_id": "employee_faq",
+      "subset": "ordinary",
+      "query_input": "employee faq",
+      "query_text": "employee faq",
+      "query_payload": {},
+      "gold_ids": [6],
+      "top_k": 1,
+      "expected_graph_auto": false
+    },
+    {
+      "query_id": "direct_playbook",
+      "subset": "ordinary",
+      "query_input": "reliability playbook",
+      "query_text": "reliability playbook",
+      "query_payload": {},
+      "gold_ids": [4],
+      "top_k": 1,
+      "expected_graph_auto": false
+    }
+  ]
+}

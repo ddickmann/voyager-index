@@ -9,10 +9,13 @@ pip install "voyager-index[shard]"
 pip install "voyager-index[shard,gpu]"
 pip install "voyager-index[server,shard]"
 pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
+pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 
 `engine="shard"` is the mainline production path. `gem` and `hnsw` remain
 compatibility backends, but they are not the default user journey in these docs.
+The Latence graph sidecar is optional and additive; it is not required for the
+base retrieval flow.
 
 ## Minimal Local Index
 
@@ -124,6 +127,23 @@ print(response.json()["results"][0])
 
 JSON float arrays still work, but base64 is the preferred/default transport for
 large dense and multivector payloads.
+
+## Optional Graph Start
+
+If the Latence graph dependency is installed, the same search contract can
+enable the premium graph lane:
+
+```json
+{
+  "graph_mode": "auto",
+  "graph_local_budget": 4,
+  "graph_community_budget": 4,
+  "graph_evidence_budget": 8,
+  "graph_explain": true
+}
+```
+
+Graph augmentation runs after first-stage retrieval and is merged additively.
 
 ## What To Tune First
 

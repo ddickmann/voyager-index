@@ -19,6 +19,7 @@ Then continue with:
 ```bash
 pip install "voyager-index[server,shard]"
 pip install "voyager-index[server,shard,native]"  # adds Tabu Search solver
+pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 
 The `server` extra includes the supported document-rendering stack for
@@ -27,6 +28,9 @@ The `server` extra includes the supported document-rendering stack for
 The optional `native` extra currently adds one supported native wheel:
 
 - `latence_solver` for `dense_hybrid_mode="tabu"` and `/reference/optimize`
+
+The optional `latence-graph` extra enables the premium Latence graph sidecar.
+Without it, graph-aware search requests fall back to the OSS retrieval path.
 
 ## 2. Start The Server
 
@@ -126,6 +130,29 @@ Use solver refinement when `latence_solver` is installed:
 }
 ```
 
+Use the optional Latence graph lane when the sidecar is installed and the
+collection payloads carry graph-aware metadata:
+
+```json
+{
+  "graph_mode": "auto",
+  "graph_local_budget": 4,
+  "graph_community_budget": 4,
+  "graph_evidence_budget": 8,
+  "graph_explain": true
+}
+```
+
+The graph lane runs after the dense and BM25 first stage and is merged
+additively. Inspect the sidecar lifecycle with:
+
+```bash
+curl http://127.0.0.1:8080/collections/tutorial-dense/info
+```
+
+Look for `graph_health`, `graph_dataset_id`, `graph_sync_status`, and
+`graph_last_successful_sync_at` in the response.
+
 ## 4. Late-Interaction Collection
 
 Create the collection:
@@ -172,6 +199,11 @@ response = requests.post(
 response.raise_for_status()
 print(response.json()["results"][0])
 ```
+
+Late-interaction collections can use the same `graph_mode`,
+`graph_local_budget`, `graph_community_budget`, `graph_evidence_budget`, and
+`graph_explain` knobs. The base late-interaction order is preserved and graph
+rescues are appended additively.
 
 ## 5. Multimodal Collection
 
@@ -239,6 +271,7 @@ Practical guidance:
 - `multimodal_optimize_mode="auto"` is the safe default
 - explicit solver orderings are for targeted experiments
 - pure multimodal retrieval usually wants exact MaxSim first, not solver-first packing
+- the optional graph lane is available here too and follows the same additive merge contract
 
 ## 6. Shard Collection
 
@@ -286,11 +319,38 @@ response.raise_for_status()
 print(response.json()["results"][0])
 ```
 
+Enable the optional graph lane on shard collections with the same endpoint:
+
+```python
+response = requests.post(
+    "http://127.0.0.1:8080/collections/tutorial-shard/search",
+    json={
+        "vectors": encode_vector_payload(query, dtype="float16"),
+        "top_k": 10,
+        "quantization_mode": "fp8",
+        "graph_mode": "auto",
+        "graph_local_budget": 4,
+        "graph_community_budget": 4,
+        "graph_evidence_budget": 8,
+        "graph_explain": True,
+        "query_payload": {
+            "ontology_terms": ["Service C", "Export Control"],
+            "workflow_type": "compliance",
+        },
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["metadata"]["graph"])
+```
+
 Important truth-in-advertising note:
 
 - shard HTTP search does not take `query_text`
 - dense BM25 hybrid stays on `dense` collections over HTTP
 - shard + BM25 fusion is an in-process `HybridSearchManager` workflow
+- shard collections can still use the optional graph lane after first-stage retrieval
+- on shard HTTP search, use `query_payload` rather than `query_text` to steer graph policy
 
 ## 7. Persistence And Inspection
 
@@ -302,6 +362,10 @@ curl http://127.0.0.1:8080/collections/tutorial-shard/info
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/ready
 ```
+
+When the graph lane is enabled, collection info also exposes sidecar health and
+freshness metadata. Readiness will report degraded or failed graph sync states
+without taking down the base retrieval service.
 
 Shard-only admin endpoints:
 

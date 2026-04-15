@@ -6,7 +6,7 @@ paths.
 Install:
 
 - `pip install "voyager-index[shard]"` is the mainline install path
-- optional extras: `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`, `[native]`
+- optional extras: `[server]`, `[multimodal]`, `[preprocessing]`, `[gpu]`, `[native]`, `[latence-graph]`
 - contributors and developers can install from source: `bash scripts/install_from_source.sh --cpu` or `make install-cpu`
 - the install commands in `docs/reference_api_tutorial.md` and `docs/full_feature_cookbook.md` cover both paths
 - `README.md` is the product homepage; the docs below expand the same public OSS story rather than replacing it
@@ -23,6 +23,8 @@ Install:
 ## Engine Guides
 
 - Shard engine (LEMUR-routed): `docs/guides/shard-engine.md`
+- Latence graph sidecar: `docs/guides/latence-graph-sidecar.md`
+- Enterprise control-plane boundary: `docs/guides/control-plane.md`
 - ColBERT late-interaction: `docs/guides/colbert.md`
 - ColPali multimodal: `docs/guides/colpali.md`
 - Scaling and memory: `docs/guides/scaling.md`

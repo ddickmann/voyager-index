@@ -4,6 +4,20 @@ This changelog tracks the official shipped OSS release line. Older draft notes
 that did not correspond to a published release were removed so version history
 reads in release order again.
 
+## Unreleased
+
+### Optional Latence graph lane
+
+- added an optional `latence-graph` install extra for the premium graph-aware retrieval lane
+- documented the Latence graph sidecar as a post-retrieval, additive graph plane rather than a mandatory OSS dependency
+- exposed graph health, sync lifecycle, and provenance guidance across the docs and reference API tutorial
+
+### Architecture and evidence
+
+- added explicit docs for the Latence graph sidecar and the enterprise control-plane boundary
+- documented graph benchmark methodology, route-conformance checks, and additive candidate-coverage interpretation
+- updated cookbook and quickstart guidance so graph-aware retrieval is described consistently across dense, late-interaction, shard, and multimodal flows
+
 ## 0.1.2 — Shard Production Surface
 
 This release makes the shard engine the clear public product surface.

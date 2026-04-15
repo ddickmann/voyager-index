@@ -33,6 +33,9 @@ jobs:
       - name: Run nightly shard regression suite
         run: |
           pytest \
+            tests/test_latence_graph_lightrag.py \
+            tests/test_latence_graph_crud.py \
+            tests/test_latence_graph_quality.py \
             tests/test_reference_api_contract.py \
             tests/test_reference_api_persistence.py \
             tests/test_shard_http_api.py \
@@ -45,10 +48,14 @@ jobs:
           mkdir -p validation-reports/nightly
           python benchmarks/oss_reference_benchmark.py --device cpu --points 32 --top-k 5 > validation-reports/nightly/nightly_benchmark.json
           python -c "import json; payload = json.load(open('validation-reports/nightly/nightly_benchmark.json', 'r', encoding='utf-8')); assert 'reference_api_search' in payload; assert 'multimodal_search' in payload"
+          python tools/benchmarks/benchmark_latence_graph_quality.py --mode benchmark --output-json validation-reports/nightly/nightly_graph_benchmark.json
+          python -c "import json; payload = json.load(open('validation-reports/nightly/nightly_graph_benchmark.json', 'r', encoding='utf-8')); rep = payload['representative']; assert rep['graph']['route_checks']['all_passed']; assert payload['representative']['comparison']['graph_shaped']['recall'] > 0.0"
 
       - name: Upload nightly artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nightly-shard-surface
-          path: validation-reports/nightly/nightly_benchmark.json
+          path: |
+            validation-reports/nightly/nightly_benchmark.json
+            validation-reports/nightly/nightly_graph_benchmark.json

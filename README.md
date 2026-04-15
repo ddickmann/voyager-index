@@ -7,10 +7,15 @@
 **Late-interaction retrieval for on-prem AI systems.**
 **Runs on a single machine, supports CPU or GPU execution, and keeps MaxSim as the truth scorer.**
 
-voyager-index is built for teams that want **ColBERT / ColPali-style retrieval
+voyager-index is built for teams that want a **multi-vector native**
+**ColBERT / ColPali-style retrieval
 quality** without adopting a distributed search stack. It combines proxy routing,
 exact or quantized MaxSim, multimodal preprocessing, and database-grade
 operations behind one API.
+
+The OSS engine stays fast on its own. An optional **Latence graph sidecar**
+adds graph-aware candidate rescue, provenance, and freshness-aware metadata as a
+premium plane without becoming a hard dependency of the base retrieval path.
 
 ```bash
 pip install "voyager-index[server,shard,gpu]"
@@ -28,9 +33,11 @@ Most retrieval systems optimize the shortlist and treat late interaction as an
 add-on. voyager-index is built the other way around: **MaxSim is the final
 scorer, and the rest of the system exists to make that practical in production.**
 
-- **Proxy routing instead of graph build dependency.** A learned proxy router
+- **Proxy routing instead of mandatory graph dependency.** A learned proxy router
   collapses multi-vector candidate generation to ANN over compact routing
-  representations, then hands off to exact or quantized MaxSim.
+  representations, then hands off to exact or quantized MaxSim. The optional
+  Latence graph lane augments after first-stage retrieval instead of replacing
+  the router.
 - **Fast CPU and GPU execution.** Rust fused scoring for CPU, Triton kernels for
   GPU, with the same retrieval contract across both modes.
 - **Operational features included.** CRUD, WAL, checkpoint, recovery, metadata,
@@ -66,8 +73,8 @@ These results are meant to show three things:
   practical on A5000-class hardware.
 - **CPU mode remains viable** when GPU capacity is limited or reserved for model
   serving.
-- Quality metrics are strong while using the same serving architecture that
-  powers the production API.
+- Quality metrics are strong while using the same shard/Rust/Triton retrieval
+  stack that powers the production API.
 
 ### Comparison note: next-plaid
 
@@ -99,6 +106,20 @@ includes encoding in QPS, while our numbers are search-only on a smaller GPU.
 The table above uses full-query evaluation specifically to avoid publishing a
 flattering slice.
 
+## Current Shipped Evidence
+
+`voyager-index` has two different proof layers today, and they should be read
+together:
+
+| Surface | What is proven today | Evidence |
+|---------|----------------------|----------|
+| Core production lane | The shard-first route delivers strong search-only throughput and recall on both GPU and CPU. The BEIR harness measures GPU-corpus Triton MaxSim and CPU multiworker fused Rust scoring. | `benchmarks/beir_benchmark.py`, plus the BEIR table above |
+| Optional Latence graph lane | The graph lane is additive, policy-driven, and valuable on graph-shaped queries without taxing ordinary queries. The current representative graph benchmark shows `+0.75 recall`, `+0.333 NDCG`, and `+0.75 support_coverage` on graph-shaped queries, `0.0` deltas on ordinary queries, `57%` graph activation, `3.5` average added candidates on graph-shaped queries, and passing route-conformance checks. | `tools/benchmarks/benchmark_latence_graph_quality.py`, `tests/test_latence_graph_quality.py`, `tests/test_latence_graph_lightrag.py`, `tests/test_latence_graph_crud.py` |
+
+The graph evidence is real but intentionally scoped: it proves the shipped
+graph contract, additive rescue semantics, provenance tagging, and retrieval
+uplift on graph-shaped fixtures. It is not presented as a graph-on BEIR table.
+
 ## Architecture
 
 voyager-index separates the problem into **routing, storage, exact scoring,
@@ -110,13 +131,16 @@ query vectors (token / patch embeddings)
   → LEMUR routing MLP
   → FAISS ANN over routing representations
   → candidate document IDs
+  → optional BM25 fusion when query_text is available
   → optional centroid-approx or doc-mean proxy pruning
   → optional ColBANDIT query-time pruning
   → exact or quantized MaxSim
        Rust fused exact (CPU, mmap, SIMD, GIL-free)
        Triton FP16 / INT8 / FP8 / ROQ-4 (GPU)
        GPU-corpus gather + rerank
-  → top-K results
+  → optional Latence graph augmentation
+  → optional solver/context packing
+  → top-K results or packed context
 ```
 
 | Layer | What it does | Why it matters |
@@ -125,16 +149,18 @@ query vectors (token / patch embeddings)
 | **Storage** | Safetensors shards, merged mmap, GPU-resident corpus | Honest CPU and GPU layouts for any corpus size |
 | **Exact scoring** | Triton MaxSim, Rust fused MaxSim, quantized kernels | MaxSim stays the truth scorer across all deployment shapes |
 | **Optimization** | ColBANDIT pruning, centroid approximation, ROQ-4 | Moves the latency/recall frontier without changing the retrieval contract |
+| **Optional graph plane** | Latence graph sidecar, additive rescue, provenance | Keeps graph awareness premium and post-retrieval |
 | **Durability** | WAL, memtable, checkpoint, crash recovery | A retrieval engine that behaves like a real database |
 | **Serving** | FastAPI, base64 transport, multi-worker, OpenAPI | One `pip install`, one server, one API contract |
 
 ## What Makes It Different
 
-### No graph build dependency
+### No mandatory graph dependency
 
-voyager-index uses proxy routing plus exact MaxSim reranking, avoiding graph
-construction and graph maintenance in the serving path. That keeps the system
-simpler to operate while preserving late-interaction quality.
+voyager-index uses proxy routing plus exact MaxSim reranking without requiring a
+graph build step in the OSS serving path. When installed, the optional Latence
+graph sidecar is invoked after first-stage retrieval and merged additively. That
+keeps the system simpler to operate while preserving a premium graph lane.
 
 ### Rust + Triton hot paths
 
@@ -187,6 +213,7 @@ pip install "voyager-index[shard]"               # CPU only
 pip install "voyager-index[server,shard]"         # + FastAPI server
 pip install "voyager-index[server,shard,gpu]"     # + Triton GPU kernels
 pip install "voyager-index[server,shard,native]"  # + Tabu Search solver
+pip install "voyager-index[server,shard,latence-graph]"  # + optional Latence graph lane
 ```
 
 ### Python SDK
@@ -282,15 +309,22 @@ semantics. Start with CPU, add GPU when latency matters.
 ## Hybrid and Multimodal
 
 - **BM25 + dense fusion** via `rrf` or Tabu Search refinement
+- **Optional Latence graph augmentation** via `graph_mode`, independent graph budgets, and `graph_explain`
 - **Multimodal collections** share the same base64 vector contract as text
 - **Document preprocessing** handles PDF, DOCX, XLSX, and images via
   `render_documents()` and the `/reference/preprocess/documents` API endpoint
+
+Production note:
+
+- `dense` HTTP collections are where BM25 + `query_text` hybrid search lives today
+- `shard` HTTP collections are the high-performance vector route and can still use the optional graph lane additively through `graph_mode` and `query_payload`
 
 ## API Surface
 
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /collections/{name}` | Create collection |
+| `GET /collections/{name}/info` | Inspect collection tuning, health, and graph sync state |
 | `POST /collections/{name}/points` | Add / upsert documents |
 | `POST /collections/{name}/search` | Search |
 | `POST /collections/{name}/search/batch` | Batch search |
@@ -302,6 +336,15 @@ semantics. Start with CPU, add GPU when latency matters.
 | `POST /encode` | Encode text/images to vectors |
 | `POST /rerank` | Rerank results |
 | `POST /reference/optimize` | Context packing (Tabu Search) |
+
+Graph-aware search uses the same search endpoint and adds:
+
+- `graph_mode`
+- `graph_local_budget`
+- `graph_community_budget`
+- `graph_evidence_budget`
+- `graph_explain`
+- `query_payload` for ontology hints, workflow hints, and vector-only graph policy steering
 
 ## Public Python Surface
 
@@ -319,6 +362,8 @@ semantics. Start with CPU, add GPU when latency matters.
 - [Python API Reference](docs/api/python.md)
 - [Reference API Tutorial](docs/reference_api_tutorial.md)
 - [Shard Engine Guide](docs/guides/shard-engine.md)
+- [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md)
+- [Enterprise Control Plane Boundary](docs/guides/control-plane.md)
 - [Max-Performance Guide](docs/guides/max-performance-reference-api.md)
 - [Scaling Guide](docs/guides/scaling.md)
 - [Benchmarks And Methodology](docs/benchmarks.md)

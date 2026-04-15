@@ -97,6 +97,9 @@ solver = [
 native = [
   "latence-solver>=0.1.1",
 ]
+latence-graph = [
+  "latence",
+]
 dev = [
   "pytest>=8,<9",
   "pytest-cov>=5,<6",

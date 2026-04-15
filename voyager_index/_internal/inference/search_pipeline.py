@@ -82,6 +82,22 @@ class SearchPipeline:
             logger.info(f"Indexing {len(corpus)} documents (Single-Vector)...")
             self.manager.index(corpus, vectors, ids, payloads)
 
+    @staticmethod
+    def _ranked_ids_from_search_output(search_output: Dict[str, Any]) -> List[int]:
+        fused_scores: Dict[int, float] = {}
+        rrf_k = 60.0
+        for key in ("dense", "sparse"):
+            for rank, (doc_id, _score) in enumerate(list(search_output.get(key) or []), start=1):
+                fused_scores[int(doc_id)] = fused_scores.get(int(doc_id), 0.0) + 1.0 / (rrf_k + rank)
+        ordered = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)]
+        graph_ranked_ids = [int(doc_id) for doc_id, _ in list(search_output.get("graph") or [])]
+        rescued_ids = [doc_id for doc_id in graph_ranked_ids if doc_id not in ordered]
+        if ordered:
+            return ordered + rescued_ids
+        if graph_ranked_ids:
+            return graph_ranked_ids
+        return [int(doc_id) for doc_id in list(search_output.get("union_ids") or [])]
+
     def search(
         self,
         query: Union[str, np.ndarray],
@@ -92,6 +108,8 @@ class SearchPipeline:
         solver_config: Optional[Dict[str, Any]] = None,
         optimizer_policy: Optional[Any] = None,
         refine_options: Optional[Dict[str, Any]] = None,
+        graph_mode: str = "off",
+        graph_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Execute retrieval with optional solver refinement.
@@ -107,19 +125,28 @@ class SearchPipeline:
             optimizer_policy: Optional optimizer policy preset or override dict.
             refine_options: Optional refinement options, including cross-encoder settings.
         """
+        graph_kwargs: Dict[str, Any] = {}
+        if str(graph_mode or "off").strip().lower() not in {"", "off", "disabled"} or graph_options:
+            graph_kwargs = {
+                "query_payload": query_payload,
+                "graph_mode": graph_mode,
+                "graph_options": dict(graph_options or {}),
+            }
         if isinstance(query, str):
             search_output = self.manager.search(
                 query_text=query,
                 query_vector=None,
                 k=top_k_retrieval,
+                **graph_kwargs,
             )
             retrieval_ids = search_output.get('union_ids', [])
-            ordered_ids = retrieval_ids
+            ordered_ids = self._ranked_ids_from_search_output(search_output)
             return {
                 "retrieval": search_output,
                 "retrieval_count": len(retrieval_ids),
                 "solver_output": None,
                 "selected_ids": ordered_ids[: min(10, len(ordered_ids))],
+                "graph_summary": search_output.get("graph_summary"),
             }
 
         query_vector = np.asarray(query, dtype=np.float32)
@@ -132,13 +159,12 @@ class SearchPipeline:
         search_output = self.manager.search(
             query_text=query_text,
             query_vector=query_vector,
-            k=top_k_retrieval
+            k=top_k_retrieval,
+            **graph_kwargs,
         )
 
         retrieval_ids = search_output.get('union_ids', [])
-        dense_ids = [doc_id for doc_id, _ in search_output.get("dense", [])]
-        sparse_ids = [doc_id for doc_id, _ in search_output.get("sparse", [])]
-        ordered_ids = dense_ids + [doc_id for doc_id in sparse_ids if doc_id not in dense_ids]
+        ordered_ids = self._ranked_ids_from_search_output(search_output)
 
         # Local refinement is optional and remains distinct from any future
         # remote compute productization.
@@ -148,6 +174,7 @@ class SearchPipeline:
                 "retrieval_count": len(retrieval_ids),
                 "solver_output": None,
                 "selected_ids": ordered_ids[: min(10, len(ordered_ids))],
+                "graph_summary": search_output.get("graph_summary"),
             }
 
         refine_results = self.manager.refine(
@@ -166,4 +193,5 @@ class SearchPipeline:
             "solver_output": refine_results.get('solver_output'),
             "selected_ids": refine_results.get('selected_ids'),
             "solver_backend": refine_results.get("backend_kind"),
+            "graph_summary": search_output.get("graph_summary"),
         }

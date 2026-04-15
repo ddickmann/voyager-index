@@ -36,6 +36,8 @@ except ImportError:
 from voyager_index._internal.inference.stateless_optimizer import (
     GpuFulfilmentPipeline,
 )
+from voyager_index._internal.inference.index_core.graph_policy import LatenceGraphPolicy
+from voyager_index._internal.inference.index_core.latence_graph_sidecar import LatenceGraphSidecar
 
 logger = logging.getLogger(__name__)
 DEFAULT_REFINE_CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -176,6 +178,54 @@ class HybridSearchManager:
         self._last_refine_context: Optional[Dict[str, Any]] = None
         self._cross_encoder_models: Dict[str, Any] = {}
         self._nli_models: Dict[str, Any] = {}
+        self.graph_sidecar = LatenceGraphSidecar(self.shard_path / "latence_graph_state.json")
+        self.graph_policy = LatenceGraphPolicy()
+
+    def sync_graph_records(
+        self,
+        ids: List[int],
+        payloads: Optional[List[Dict[str, Any]]] = None,
+        *,
+        external_ids: Optional[List[Any]] = None,
+        rebuild: bool = False,
+    ) -> None:
+        if not ids:
+            return
+        records: List[Dict[str, Any]] = []
+        for idx, item_id in enumerate(ids):
+            payload = dict((payloads or [])[idx] or {}) if payloads and idx < len(payloads) else {}
+            external_id = (
+                external_ids[idx]
+                if external_ids is not None and idx < len(external_ids)
+                else payload.get("external_id", item_id)
+            )
+            payload.setdefault("internal_id", int(item_id))
+            payload.setdefault("external_id", external_id)
+            records.append(
+                {
+                    "internal_id": int(item_id),
+                    "external_id": str(external_id),
+                    "payload": payload,
+                }
+            )
+        if rebuild:
+            self.graph_sidecar.rebuild_from_records(records, target_kind="document")
+        else:
+            self.graph_sidecar.append_records(records, target_kind="document")
+
+    def delete_graph_records(
+        self,
+        ids: List[int],
+        *,
+        external_ids: Optional[List[Any]] = None,
+    ) -> int:
+        target_ids: List[str] = []
+        for idx, item_id in enumerate(ids):
+            if external_ids is not None and idx < len(external_ids):
+                target_ids.append(str(external_ids[idx]))
+            else:
+                target_ids.append(str(self.graph_sidecar.internal_to_target.get(int(item_id), item_id)))
+        return self.graph_sidecar.delete(target_ids)
 
     def _load_bm25(self):
         """Load BM25 index if exists, falling back to LegacyBM25Engine."""
@@ -375,6 +425,7 @@ class HybridSearchManager:
         next_ids = [*self.ids_buffer, *[int(item_id) for item_id in ids]]
         next_payloads = [*self.payload_buffer, *[dict(payload or {}) for payload in (payloads or [])]]
         self.mark_sparse_dirty(next_corpus, next_ids, next_payloads)
+        self.sync_graph_records([int(item_id) for item_id in ids], payloads)
 
     def index_multivector(
         self,
@@ -391,6 +442,7 @@ class HybridSearchManager:
         next_ids = [*self.ids_buffer, *[int(item_id) for item_id in ids]]
         next_payloads = [*self.payload_buffer, *[dict(payload or {}) for payload in (payloads or [])]]
         self.mark_sparse_dirty(next_corpus, next_ids, next_payloads)
+        self.sync_graph_records([int(item_id) for item_id in ids], payloads)
 
     def search(
         self,
@@ -399,6 +451,9 @@ class HybridSearchManager:
         k: int = 50,
         filters: Optional[Dict[str, Any]] = None,
         dense_search_kwargs: Optional[Dict[str, Any]] = None,
+        query_payload: Optional[Dict[str, Any]] = None,
+        graph_mode: str = "off",
+        graph_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Perform Hybrid Search.
@@ -454,7 +509,16 @@ class HybridSearchManager:
                 sparse_results.append((sr.doc_id, sr.score))
         elif query_text.strip() and self.sparse_dirty:
             self._ensure_sparse_ready()
-            return self.search(query_text=query_text, query_vector=query_vector, k=k, filters=filters)
+            return self.search(
+                query_text=query_text,
+                query_vector=query_vector,
+                k=k,
+                filters=filters,
+                dense_search_kwargs=dense_search_kwargs,
+                query_payload=query_payload,
+                graph_mode=graph_mode,
+                graph_options=graph_options,
+            )
 
         sparse_ids = {rid for rid, _ in sparse_results}
 
@@ -475,18 +539,79 @@ class HybridSearchManager:
             rrf_meta[int(doc_id)] = rrf_meta.get(int(doc_id), 0.0) + 1.0 / (rrf_k + rank)
         for rank, (doc_id, _) in enumerate(sparse_results, start=1):
             rrf_meta[int(doc_id)] = rrf_meta.get(int(doc_id), 0.0) + 1.0 / (rrf_k + rank)
+        graph_options = dict(graph_options or {})
+        graph_results: List[tuple[int, float]] = []
+        graph_meta: Dict[int, Dict[str, Any]] = {}
+        graph_provenance: Dict[str, Dict[str, Any]] = {}
+        graph_sidecar = getattr(self, "graph_sidecar", None)
+        graph_policy_engine = getattr(self, "graph_policy", None)
+        graph_policy = (
+            graph_policy_engine.decide(
+                graph_mode=graph_mode,
+                query_text=query_text,
+                query_payload=query_payload,
+                dense_results=dense_results,
+                sparse_results=sparse_results,
+                graph_available=bool(graph_sidecar is not None and graph_sidecar.is_available()),
+            )
+            if graph_policy_engine is not None
+            else LatenceGraphPolicy().decide(
+                graph_mode="off",
+                query_text=query_text,
+                query_payload=query_payload,
+                dense_results=dense_results,
+                sparse_results=sparse_results,
+                graph_available=False,
+            )
+        )
+        graph_summary: Dict[str, Any] = {"policy": graph_policy.to_dict()}
+        if graph_policy.applied and graph_sidecar is not None:
+            graph_aug = graph_sidecar.augment_candidates(
+                union_ids,
+                query_text=query_text,
+                query_payload=query_payload,
+                local_budget=int(graph_options["local_budget"]) if graph_options.get("local_budget") is not None else 4,
+                community_budget=(
+                    int(graph_options["community_budget"]) if graph_options.get("community_budget") is not None else 4
+                ),
+                evidence_budget=(
+                    int(graph_options["evidence_budget"]) if graph_options.get("evidence_budget") is not None else 8
+                ),
+                max_hops=int(graph_options["max_hops"]) if graph_options.get("max_hops") is not None else 2,
+                explain=bool(graph_options.get("explain", False)),
+            )
+            graph_results = list(graph_aug.graph_results)
+            graph_meta = {int(doc_id): dict(payload) for doc_id, payload in graph_aug.retrieval_features.items()}
+            graph_provenance = {str(key): dict(value) for key, value in graph_aug.provenance_by_target.items()}
+            graph_summary.update(graph_aug.summary)
+            graph_summary.setdefault("reason", graph_aug.reason)
+            graph_summary.setdefault("invoked_after_first_stage", True)
+            graph_summary.setdefault("merge_mode", "additive")
+            for doc_id in graph_aug.added_candidate_ids:
+                if int(doc_id) not in union_ids:
+                    union_ids.append(int(doc_id))
+        else:
+            graph_summary["reason"] = graph_policy.reason
+
         self._last_search_context = {
             "dense": dense_meta,
             "sparse": sparse_meta,
             "rrf": rrf_meta,
+            "graph": graph_meta,
+            "graph_provenance": graph_provenance,
+            "graph_policy": graph_policy.to_dict(),
             "query_text": query_text,
         }
 
         return {
             "dense": dense_results,
             "sparse": sparse_results,
+            "graph": graph_results,
             "union_ids": union_ids,
             "sparse_error": self.sparse_error,
+            "graph_policy": graph_policy.to_dict(),
+            "graph_summary": graph_summary,
+            "graph_provenance": graph_provenance,
         }
 
     @staticmethod
@@ -1585,6 +1710,36 @@ class HybridSearchManager:
             if not isinstance(cluster_id, int):
                 cluster_id = dynamic_clusters[idx]
             retrieval_metadata = dict(merged_retrieval_features.get(int(item["id"]), {}))
+            graph_distance = self._clamp01(float(retrieval_metadata.get("graph_distance", 0.0) or 0.0))
+            graph_relation_confidence = self._clamp01(
+                float(retrieval_metadata.get("graph_relation_confidence", 0.0) or 0.0)
+            )
+            graph_path_coherence = self._clamp01(
+                float(retrieval_metadata.get("graph_path_coherence", 0.0) or 0.0)
+            )
+            graph_support_count = max(0.0, float(retrieval_metadata.get("graph_support_count", 0.0) or 0.0))
+            graph_provenance_strength = self._clamp01(
+                float(retrieval_metadata.get("graph_provenance_strength", 0.0) or 0.0)
+            )
+            graph_community_score = self._clamp01(
+                float(retrieval_metadata.get("graph_community_score", 0.0) or 0.0)
+            )
+            graph_score = self._clamp01(
+                float(
+                    retrieval_metadata.get(
+                        "graph_score",
+                        (
+                            0.30 * graph_distance
+                            + 0.20 * graph_relation_confidence
+                            + 0.15 * graph_path_coherence
+                            + 0.15 * min(1.0, graph_support_count / 3.0)
+                            + 0.10 * graph_provenance_strength
+                            + 0.10 * graph_community_score
+                        ),
+                    )
+                    or 0.0
+                )
+            )
 
             solver_candidates.append(
                 {
@@ -1593,9 +1748,16 @@ class HybridSearchManager:
                     "embedding": vector.tolist(),
                     "token_count": self._estimate_token_count(payload, text),
                     "fact_density": fact_density,
-                    "centrality_score": centrality,
+                    "centrality_score": self._clamp01(
+                        0.85 * centrality + 0.10 * graph_score + 0.05 * graph_path_coherence
+                    ),
                     "recency_score": recency,
-                    "auxiliary_score": auxiliary,
+                    "auxiliary_score": self._clamp01(
+                        0.70 * auxiliary
+                        + 0.10 * graph_relation_confidence
+                        + 0.10 * graph_provenance_strength
+                        + 0.10 * graph_community_score
+                    ),
                     "rhetorical_role": self._infer_role(payload, text),
                     "cluster_id": int(cluster_id) if isinstance(cluster_id, int) else -1,
                     "ontology_entity_coverage": ontology_features["entity_coverage"],
@@ -1604,6 +1766,13 @@ class HybridSearchManager:
                     "ontology_concept_density": ontology_features["concept_density"],
                     "ontology_relation_density": ontology_features["relation_density"],
                     "ontology_confidence": ontology_features["confidence"],
+                    "graph_distance_score": graph_distance,
+                    "graph_relation_confidence": graph_relation_confidence,
+                    "graph_path_coherence": graph_path_coherence,
+                    "graph_support_count": graph_support_count,
+                    "graph_provenance_strength": graph_provenance_strength,
+                    "graph_community_score": graph_community_score,
+                    "graph_score": graph_score,
                     **retrieval_metadata,
                 }
             )
@@ -1643,12 +1812,15 @@ class HybridSearchManager:
             dense_meta = self._last_search_context.get("dense", {})
             sparse_meta = self._last_search_context.get("sparse", {})
             rrf_meta = self._last_search_context.get("rrf", {})
+            graph_meta = self._last_search_context.get("graph", {})
             for candidate_id in candidate_ids:
                 dense_entry = dict(dense_meta.get(int(candidate_id), {}))
                 sparse_entry = dict(sparse_meta.get(int(candidate_id), {}))
+                graph_entry = dict(graph_meta.get(int(candidate_id), {}))
                 combined = {
                     **dense_entry,
                     **sparse_entry,
+                    **graph_entry,
                 }
                 if int(candidate_id) in rrf_meta:
                     combined["rrf_score"] = float(rrf_meta[int(candidate_id)])
@@ -1798,6 +1970,28 @@ class HybridSearchManager:
                 "selected_avg_ontology_entity_coverage": _mean_feature(selected_candidates, "ontology_entity_coverage"),
                 "candidate_avg_ontology_type_match": _mean_feature(solver_candidates, "ontology_type_match"),
                 "selected_avg_ontology_type_match": _mean_feature(selected_candidates, "ontology_type_match"),
+                "candidate_avg_graph_score": _mean_feature(solver_candidates, "graph_score"),
+                "selected_avg_graph_score": _mean_feature(selected_candidates, "graph_score"),
+                "candidate_avg_graph_distance": _mean_feature(solver_candidates, "graph_distance_score"),
+                "selected_avg_graph_distance": _mean_feature(selected_candidates, "graph_distance_score"),
+                "candidate_avg_graph_relation_confidence": _mean_feature(
+                    solver_candidates,
+                    "graph_relation_confidence",
+                ),
+                "selected_avg_graph_relation_confidence": _mean_feature(
+                    selected_candidates,
+                    "graph_relation_confidence",
+                ),
+                "candidate_avg_graph_path_coherence": _mean_feature(solver_candidates, "graph_path_coherence"),
+                "selected_avg_graph_path_coherence": _mean_feature(selected_candidates, "graph_path_coherence"),
+                "candidate_avg_graph_provenance_strength": _mean_feature(
+                    solver_candidates,
+                    "graph_provenance_strength",
+                ),
+                "selected_avg_graph_provenance_strength": _mean_feature(
+                    selected_candidates,
+                    "graph_provenance_strength",
+                ),
             }
             if isinstance(extra, dict):
                 summary.update(extra)
@@ -1972,5 +2166,7 @@ class HybridSearchManager:
 
     def close(self) -> None:
         """Release native HNSW resources for in-process restarts."""
+        if getattr(self, "graph_sidecar", None) is not None and hasattr(self.graph_sidecar, "close"):
+            self.graph_sidecar.close()
         if self.hnsw is not None and hasattr(self.hnsw, "close"):
             self.hnsw.close()

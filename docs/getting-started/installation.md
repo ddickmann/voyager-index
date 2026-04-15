@@ -7,6 +7,7 @@ pip install "voyager-index[shard]"
 pip install "voyager-index[shard,gpu]"
 pip install "voyager-index[server,shard]"
 pip install "voyager-index[server,shard,native]"
+pip install "voyager-index[server,shard,latence-graph]"
 ```
 
 What they mean:
@@ -15,6 +16,7 @@ What they mean:
 - `gpu`: Triton GPU kernels
 - `server`: FastAPI reference API plus document rendering dependencies
 - `native`: optional `latence_solver` wheel for `tabu` refinement and `/reference/optimize`
+- `latence-graph`: optional LatenceAI SDK dependency for the premium graph-aware retrieval lane
 
 ## Mainline Install Profiles
 
@@ -24,6 +26,8 @@ What they mean:
 | Shard retrieval with Triton MaxSim | `pip install "voyager-index[shard,gpu]"` |
 | Reference API on CPU | `pip install "voyager-index[server,shard]"` |
 | Reference API + solver refinement | `pip install "voyager-index[server,shard,native]"` |
+| Reference API + optional Latence graph lane | `pip install "voyager-index[server,shard,latence-graph]"` |
+| Reference API + solver + optional graph lane | `pip install "voyager-index[server,shard,native,latence-graph]"` |
 
 ## From Source
 
@@ -43,6 +47,15 @@ The only native package in the supported PyPI story today is:
 | Package | Purpose |
 |---|---|
 | `latence-solver` | Tabu Search solver for `dense_hybrid_mode="tabu"` and `/reference/optimize` |
+
+The optional premium graph lane is Python-only from the `voyager-index` side:
+
+| Package | Purpose |
+|---|---|
+| `latence` via `voyager-index[latence-graph]` | LatenceAI Dataset Intelligence and graph sidecar integration |
+
+If the graph dependency is missing or unavailable, the runtime falls back to the
+OSS retrieval path and reports the graph lane as unavailable or skipped.
 
 Build it directly if needed:
 

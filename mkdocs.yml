@@ -36,6 +36,8 @@ nav:
     - ColBERT Search: guides/colbert.md
     - ColPali Multimodal: guides/colpali.md
     - Shard Engine: guides/shard-engine.md
+    - Latence Graph Sidecar: guides/latence-graph-sidecar.md
+    - Enterprise Control Plane Boundary: guides/control-plane.md
     - Scaling: guides/scaling.md
     - Max-Performance Reference API: guides/max-performance-reference-api.md
   - API Reference:

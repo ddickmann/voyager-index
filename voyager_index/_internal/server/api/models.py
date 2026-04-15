@@ -32,6 +32,12 @@ class DenseHybridMode(str, Enum):
     TABU = "tabu"
 
 
+class GraphMode(str, Enum):
+    OFF = "off"
+    AUTO = "auto"
+    FORCE = "force"
+
+
 class MultimodalOptimizeMode(str, Enum):
     AUTO = "auto"
     MAXSIM_ONLY = "maxsim_only"
@@ -96,6 +102,106 @@ class ScoredPoint(BaseModel):
     payload: Optional[Dict[str, Any]] = None
     vector: Optional[List[float]] = None
     vectors: Optional[List[List[float]]] = None
+
+
+class _DictLikeModel(BaseModel):
+    """Pydantic model with lightweight dict-style access for compatibility."""
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def keys(self):
+        return self.model_dump(mode="python").keys()
+
+    def items(self):
+        return self.model_dump(mode="python").items()
+
+    def values(self):
+        return self.model_dump(mode="python").values()
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(*args, **kwargs)
+
+
+class GraphPolicyMetadata(_DictLikeModel):
+    """Typed graph policy metadata surfaced in search responses."""
+
+    applied: bool = Field(default=False, description="Whether the optional graph lane was applied.")
+    reason: Optional[str] = Field(default=None, description="Why the graph lane was applied or skipped.")
+    mode: Optional[str] = Field(default=None, description="Resolved graph mode after policy evaluation.")
+    entity_count: Optional[int] = Field(default=None, description="Number of entity cues detected in the request.")
+    relation_cue_count: Optional[int] = Field(default=None, description="Number of relation cues detected in the request.")
+    low_agreement: Optional[bool] = Field(default=None, description="Whether first-stage dense and sparse routes disagreed.")
+    low_confidence: Optional[bool] = Field(default=None, description="Whether first-stage confidence was too low.")
+    graph_available: Optional[bool] = Field(default=None, description="Whether the graph sidecar was healthy and available.")
+    query_class: Optional[str] = Field(default=None, description="Policy classification such as ordinary, relation, or graph_native.")
+    trigger_reasons: List[str] = Field(default_factory=list, description="Triggers that caused graph activation.")
+    mandatory_reason: Optional[str] = Field(default=None, description="Mandatory workflow override, when present.")
+
+
+class GraphProvenanceRecord(_DictLikeModel):
+    """Typed graph provenance record for a rescued or graph-scored target."""
+
+    reason: Optional[str] = Field(default=None, description="Primary graph reason for this target.")
+    lanes: List[str] = Field(default_factory=list, description="Graph lanes contributing to this target, e.g. graph_local.")
+    graph_score: Optional[float] = Field(default=None, description="Merged graph score for this target.")
+    community_ids: List[str] = Field(default_factory=list, description="Community identifiers contributing to this target.")
+    support_count: Optional[float] = Field(default=None, description="Support count or neighborhood support strength.")
+    path: Optional[List[str]] = Field(default=None, description="Optional explain path labels when graph_explain is enabled.")
+
+
+class GraphSearchSummary(_DictLikeModel):
+    """Structured summary of post-retrieval graph augmentation."""
+
+    model_config = ConfigDict(extra="allow")
+
+    reason: Optional[str] = Field(default=None, description="Summary reason emitted by the graph sidecar or policy.")
+    graph_available: Optional[bool] = Field(default=None, description="Whether the graph sidecar was healthy for this request.")
+    graph_applied: Optional[bool] = Field(default=None, description="Whether graph augmentation actually ran.")
+    graph_result_count: Optional[int] = Field(default=None, description="Total graph-scored candidates returned by the sidecar.")
+    added_candidate_count: Optional[int] = Field(default=None, description="How many candidates were added additively beyond the base order.")
+    merge_mode: Optional[str] = Field(default=None, description="Merge behavior for graph candidates. The shipped mode is additive.")
+    invoked_after_first_stage: Optional[bool] = Field(default=None, description="Whether graph augmentation ran only after first-stage retrieval.")
+    base_order_preserved: Optional[bool] = Field(default=None, description="Whether the base retrieval order was preserved ahead of graph rescues.")
+    local_budget: Optional[int] = Field(default=None, description="Configured local rescue budget for this request.")
+    community_budget: Optional[int] = Field(default=None, description="Configured community rescue budget for this request.")
+    evidence_budget: Optional[int] = Field(default=None, description="Configured linked-evidence rescue budget for this request.")
+    max_hops: Optional[int] = Field(default=None, description="Configured graph hop limit for this request.")
+    rescued_ids: List[int] = Field(default_factory=list, description="Document ids appended by graph rescue when available.")
+
+
+class GraphSearchMetadata(_DictLikeModel):
+    """Typed graph metadata surfaced under search response metadata."""
+
+    model_config = ConfigDict(extra="allow")
+
+    graph_applied: Optional[bool] = Field(default=None, description="Whether the optional graph lane was applied.")
+    reason: Optional[str] = Field(default=None, description="Top-level graph reason for this request.")
+    policy: Optional[GraphPolicyMetadata] = Field(default=None, description="Resolved graph policy decision.")
+    summary: Optional[GraphSearchSummary] = Field(default=None, description="Post-retrieval graph augmentation summary.")
+    provenance: Dict[str, GraphProvenanceRecord] = Field(
+        default_factory=dict,
+        description="Optional graph provenance keyed by external or logical target id.",
+    )
+
+
+class SearchResponseMetadata(_DictLikeModel):
+    """Structured metadata returned alongside search results."""
+
+    model_config = ConfigDict(extra="allow")
+
+    graph: Optional[GraphSearchMetadata] = Field(
+        default=None,
+        description="Optional Latence graph metadata including policy, additive merge summary, and provenance.",
+    )
+    solver: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional solver feature summary for optimized dense or multimodal flows.",
+    )
 
 
 class CreateCollectionRequest(BaseModel):
@@ -238,8 +344,19 @@ class SearchRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "vectors": [[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]],
-                "top_k": 10,
+                "vector": [0.1, 0.2, 0.3],
+                "query_text": "service c lineage policy",
+                "query_payload": {
+                    "ontology_terms": ["Service C", "Export Control"],
+                    "workflow_type": "compliance",
+                },
+                "graph_mode": "auto",
+                "graph_local_budget": 4,
+                "graph_community_budget": 4,
+                "graph_evidence_budget": 8,
+                "graph_explain": True,
+                "dense_hybrid_mode": "rrf",
+                "top_k": 5,
                 "with_payload": True,
             }
         }
@@ -256,10 +373,25 @@ class SearchRequest(BaseModel):
         default=None,
         description="Multi-vector query as raw floats or a base64 transport payload",
     )
-    query_text: Optional[str] = Field(default=None, description="Optional sparse text query")
+    query_text: Optional[str] = Field(
+        default=None,
+        description="Optional sparse text query. Dense collections accept it over HTTP; shard, late-interaction, and multimodal collections remain vector-only over HTTP.",
+    )
     query_payload: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Optional query-side metadata forwarded to solver refinement (e.g. ontology hints or refine options).",
+        description=(
+            "Optional query-side metadata forwarded to solver refinement and the optional Latence graph lane "
+            "(for example ontology hints, graph_required flags, tenant_graph_policy, workflow_type, or refine options). "
+            "This is the preferred way to steer graph policy on vector-only routes such as shard HTTP search."
+        ),
+    )
+    graph_mode: GraphMode = Field(
+        default=GraphMode.OFF,
+        description=(
+            "Optional LatenceAI premium graph routing mode. "
+            "'off' keeps the base OSS path only, 'auto' applies post-retrieval graph augmentation when the query looks graph-shaped, "
+            "and 'force' requires the premium graph sidecar when available. Requires the optional voyager-index[latence-graph] extra for the full premium lane."
+        ),
     )
     top_k: int = Field(default=10, ge=1, le=1000, description="Number of results")
     filter: Optional[Dict[str, Any]] = Field(
@@ -416,6 +548,34 @@ class SearchRequest(BaseModel):
         ge=2,
         le=512,
         description="Minimum candidate count before confidence gating is considered.",
+    )
+    graph_max_hops: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=4,
+        description="Optional maximum hop depth for the post-retrieval Latence graph sidecar expansion.",
+    )
+    graph_local_budget: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=128,
+        description="Optional additive budget for local entity or neighborhood graph candidate rescue.",
+    )
+    graph_community_budget: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=128,
+        description="Optional additive budget for high-level community or thematic graph candidate rescue.",
+    )
+    graph_evidence_budget: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=256,
+        description="Optional additive budget for graph-linked evidence candidates fetched after graph expansion.",
+    )
+    graph_explain: bool = Field(
+        default=False,
+        description="Include graph provenance details in response metadata when the optional Latence graph lane is used.",
     )
     multimodal_optimize_mode: Optional[MultimodalOptimizeMode] = Field(
         default=None,
@@ -643,11 +803,52 @@ class RenderDocumentsResponse(BaseModel):
 class SearchResponse(BaseModel):
     """Search results."""
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "results": [
+                    {
+                        "id": "doc-1",
+                        "score": 1.0,
+                        "rank": 1,
+                        "payload": {"text": "Team Alpha owns Service B."},
+                    }
+                ],
+                "total": 2,
+                "time_ms": 4.2,
+                "metadata": {
+                    "graph": {
+                        "graph_applied": True,
+                        "reason": "entity_heavy",
+                        "policy": {"applied": True, "mode": "auto", "reason": "entity_heavy"},
+                        "summary": {
+                            "merge_mode": "additive",
+                            "invoked_after_first_stage": True,
+                            "added_candidate_count": 1,
+                            "base_order_preserved": True,
+                        },
+                        "provenance": {
+                            "doc-2": {
+                                "reason": "graph_local",
+                                "lanes": ["graph_local"],
+                                "graph_score": 0.93,
+                            }
+                        },
+                    }
+                },
+            }
+        }
+    )
+
     results: List[ScoredPoint] = Field(..., description="Scored results")
     total: int = Field(..., description="Total results returned")
     time_ms: float = Field(..., description="Search time in milliseconds")
     objective_score: Optional[float] = Field(default=None, description="Solver objective score")
     total_tokens: Optional[int] = Field(default=None, description="Total tokens in result")
+    metadata: SearchResponseMetadata = Field(
+        default_factory=SearchResponseMetadata,
+        description="Optional structured response metadata. Graph details are returned under metadata.graph with policy, summary, and provenance.",
+    )
 
 
 class CollectionInfo(BaseModel):
@@ -681,6 +882,17 @@ class CollectionInfo(BaseModel):
     n_centroid_approx: Optional[int] = None
     variable_length_strategy: Optional[str] = None
     hybrid_search: Optional[bool] = None
+    graph_health: Optional[str] = Field(default=None, description="Optional Latence graph sidecar health for this collection.")
+    graph_dataset_id: Optional[str] = Field(default=None, description="Latence dataset identifier backing the optional graph lane.")
+    graph_contract_version: Optional[str] = Field(default=None, description="Version of the stored graph contract bundle.")
+    graph_sync_status: Optional[str] = Field(default=None, description="Most recent graph Dataset Intelligence sync status.")
+    graph_sync_reason: Optional[str] = Field(default=None, description="Reason associated with the latest graph sync status.")
+    graph_last_sync_at: Optional[str] = Field(default=None, description="Timestamp of the latest graph sync attempt.")
+    graph_last_successful_sync_at: Optional[str] = Field(
+        default=None,
+        description="Timestamp of the latest successful graph sync.",
+    )
+    graph_sync_job_id: Optional[str] = Field(default=None, description="Dataset Intelligence job id when the latest sync created one.")
 
 
 class CollectionListResponse(BaseModel):

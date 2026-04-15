@@ -1,10 +1,12 @@
 # Shard Engine Guide
 
 The shard engine is a LEMUR-routed late-interaction retrieval backend built for
-simplicity and high-throughput exact or quantized scoring. It avoids graph
-construction entirely, relying instead on a learned routing MLP (LEMUR) to
-reduce multi-vector candidate generation to single-vector MIPS, then scoring
-candidates with Triton on CUDA or exact/full-precision fallback paths on CPU.
+simplicity and high-throughput exact or quantized scoring. It does not require
+graph construction in its hot path, relying instead on a learned routing MLP
+(LEMUR) to reduce multi-vector candidate generation to single-vector MIPS, then
+scoring candidates with Triton on CUDA or exact/full-precision fallback paths
+on CPU. When the optional Latence graph lane is installed, graph augmentation
+still happens after first-stage shard retrieval.
 
 ## Who this is for
 
@@ -34,7 +36,8 @@ Query tokens
 Key properties:
 
 - **No graph construction**: build time is dominated by LEMUR MLP training
-  and FAISS index construction (seconds, not minutes)
+  and FAISS index construction (seconds, not minutes); optional Latence graph
+  augmentation is layered on later and does not change the shard hot path
 - **GPU-resident fast path**: when corpus fits in VRAM, scoring is a single
   `D[candidate_ids]` gather followed by a fused MaxSim kernel launch
 - **Disk-backed fallback**: for large corpora, safetensors-backed shards
@@ -109,6 +112,27 @@ curl -X POST http://localhost:8080/collections/my_col/points \
 curl -X POST http://localhost:8080/collections/my_col/search \
   -H "Content-Type: application/json" \
   -d '{"vectors": {"encoding":"float16","shape":[32,128],"dtype":"float16","data_b64":"..."}, "top_k": 10, "quantization_mode": "fp8"}'
+```
+
+Optional graph-aware shard search uses the same endpoint:
+
+```bash
+curl -X POST http://localhost:8080/collections/my_col/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vectors": {"encoding":"float16","shape":[32,128],"dtype":"float16","data_b64":"..."},
+    "top_k": 10,
+    "quantization_mode": "fp8",
+    "graph_mode": "auto",
+    "graph_local_budget": 4,
+    "graph_community_budget": 4,
+    "graph_evidence_budget": 8,
+    "graph_explain": true,
+    "query_payload": {
+      "ontology_terms": ["Service C", "Export Control"],
+      "workflow_type": "compliance"
+    }
+  }'
 ```
 
 ## Configuration
@@ -205,6 +229,20 @@ HTTP search request. Shard collection HTTP search remains vector-only and does
 not accept `query_text`; use `HybridSearchManager` if you want BM25 fusion with
 the shard backend in-process.
 
+## Optional Latence graph sidecar on shard
+
+Shard collections are still the mainline high-performance lane when the graph
+sidecar is enabled:
+
+- first stage remains routed shard retrieval with Triton or fused Rust scoring
+- graph augmentation happens only after shard retrieval returns candidates
+- merge behavior is additive, so the base shard order stays intact
+- shard HTTP search remains vector-only, so graph policy should be steered with
+  `query_payload` instead of `query_text`
+
+Use `GET /collections/{name}/info` and `/ready` to inspect graph health and sync
+status when the optional premium lane is installed.
+
 ## GPU Memory and Auto-Tiering
 
 The shard engine automatically detects available GPU memory:
@@ -231,3 +269,4 @@ Example: 100K docs × 128 tokens × 128 dim = ~3.3 GB.
 - HTTP shard search is vector-only
 - dense BM25 hybrid remains on `dense` collections over HTTP
 - `latence_solver` is the optional native add-on for `tabu`
+- `voyager-index[latence-graph]` adds the optional premium graph lane on top of the shard production path

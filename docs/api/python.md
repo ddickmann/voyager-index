@@ -8,6 +8,10 @@ The mainline local API is `Index(..., engine="shard")`.
 want the shard production path described in the docs, pass `engine="shard"`
 explicitly.
 
+The optional Latence graph lane is not exposed through `Index.search()` on local
+shard collections. The programmatic graph-aware surface today is
+`SearchPipeline`, and the HTTP surface is the reference API.
+
 ## `voyager_index.Index`
 
 Primary local interface for creating, mutating, and querying indexes.
@@ -225,9 +229,55 @@ class Neo4jConfig:
     relationship_types: Optional[List[str]] = None
 ```
 
+`Neo4jConfig` is a legacy graph-adjacent config surface. It is not the shipped
+Latence graph sidecar product lane documented elsewhere in this repo.
+
 ### `voyager_index.SearchPipeline`
 
 Programmatic dense + BM25 retrieval surface.
+
+This is the main local Python entry point for graph-aware retrieval today. It
+accepts:
+
+- `query_payload` for ontology hints, workflow hints, or graph policy cues
+- `graph_mode` with `off`, `auto`, or `force`
+- `graph_options` such as `local_budget`, `community_budget`,
+  `evidence_budget`, `max_hops`, and `explain`
+
+Example:
+
+```python
+import numpy as np
+
+from voyager_index import SearchPipeline
+
+pipeline = SearchPipeline("graph-demo", dim=128, use_roq=False, on_disk=False)
+query = np.random.default_rng(7).normal(size=(128,)).astype("float32")
+
+response = pipeline.search(
+    query,
+    top_k_retrieval=16,
+    query_text="service c lineage policy",
+    query_payload={
+        "ontology_terms": ["Service C", "Export Control"],
+        "workflow_type": "compliance",
+    },
+    graph_mode="auto",
+    graph_options={
+        "local_budget": 4,
+        "community_budget": 4,
+        "evidence_budget": 8,
+        "max_hops": 2,
+        "explain": True,
+    },
+)
+```
+
+Behavioral notes:
+
+- `SearchPipeline` is where dense + BM25 + optional graph retrieval comes together in-process
+- shard HTTP search remains vector-only, so use `query_payload` rather than `query_text` to steer graph policy there
+- graph candidates are merged additively after first-stage retrieval
 
 ### `voyager_index.ColbertIndex`
 

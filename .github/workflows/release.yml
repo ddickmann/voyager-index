@@ -69,8 +69,43 @@ jobs:
           name: wheels-${{ matrix.crate }}-${{ matrix.os }}-${{ matrix.target }}
           path: src/kernels/${{ matrix.crate }}/target/wheels/*.whl
 
+  graph-release-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package and graph validation extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[server,multimodal,dev,shard]"
+      - name: Run graph release gate
+        run: |
+          pytest \
+            tests/test_latence_graph_lightrag.py \
+            tests/test_latence_graph_crud.py \
+            tests/test_latence_graph_quality.py \
+            -v --tb=short
+          python tools/benchmarks/benchmark_latence_graph_quality.py --mode benchmark --output-json graph-benchmark.json
+          python - <<'PY'
+          import json
+          payload = json.load(open("graph-benchmark.json", "r", encoding="utf-8"))
+          representative = payload["representative"]
+          assert representative["graph"]["route_checks"]["all_passed"], "graph route checks failed"
+          assert payload["representative"]["comparison"]["graph_shaped"]["recall"] > 0.0, "graph-shaped uplift missing"
+          assert payload["representative"]["graph"]["graph_applied_rate"] < 1.0, "ordinary queries should not all trigger graph"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graph-release-gate-report
+          path: graph-benchmark.json
+
   publish:
-    needs: [build-python, build-native-wheels]
+    needs: [build-python, build-native-wheels, graph-release-gate]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
