@@ -49,7 +49,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.26,<3",
-  "torch>=2.2,<3",
+  "torch>=2.11.0,<3",
   "h5py>=3.10,<4",
   "bm25s>=0.2,<1",
   "PyStemmer>=2.2,<3",
