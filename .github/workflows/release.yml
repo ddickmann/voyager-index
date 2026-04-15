@@ -406,7 +406,7 @@ jobs:
             --output-dir validation-reports/solver-validation-${{ github.run_id }}
       - name: Assert solver validation status
         run: |
-          python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); assert set(report['native_packages']) == {'latence_shard_engine', 'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_shard_engine']['status'] == 'installed_and_importable'; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert report['lanes']['solver']['summary']['gpu']['status'] in {'passed', 'gpu_unavailable_for_cuda_lane'}"
+          python -c "import json, pathlib; report = json.loads(pathlib.Path('validation-reports/solver-validation-${{ github.run_id }}/report.json').read_text(encoding='utf-8')); summary = report['lanes']['solver']['summary']; assert set(report['native_packages']) == {'latence_shard_engine', 'latence_solver'}; assert 'native_hnsw' not in report['lanes']; assert 'gem_router' not in report['lanes']; assert report['native_packages']['latence_shard_engine']['status'] == 'installed_and_importable'; assert report['native_packages']['latence_solver']['status'] == 'installed_and_importable'; assert report['lanes']['solver']['status'] == 'passed'; assert summary['backend_probe_cpu']['constraints_satisfied'] is True; assert summary['accelerated'].get('parity_with_cpu', {}).get('status', 'passed') == 'passed'"
       - uses: actions/upload-artifact@v4
         with:
           name: solver-validation-report

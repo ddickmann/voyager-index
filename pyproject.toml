@@ -122,6 +122,7 @@ full = [
 dev = [
   "pytest>=8,<9",
   "pytest-cov>=5,<6",
+  "tomli>=2,<3; python_version<'3.11'",
 ]
 
 [project.scripts]

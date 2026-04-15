@@ -8,6 +8,11 @@ import pytest
 
 from voyager_index._internal.inference.index_core.feature_bridge import FeatureBridge
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python <3.11
+    import tomli as tomllib
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "release_validation_report",
@@ -145,8 +150,6 @@ def test_no_test_or_benchmark_files_in_published_package() -> None:
 
 
 def test_native_crate_licenses_are_consistent() -> None:
-    import tomllib
-
     for crate_dir in ["knapsack_solver", "shard_engine"]:
         pyproject_path = REPO_ROOT / "src" / "kernels" / crate_dir / "pyproject.toml"
         if pyproject_path.exists():
@@ -160,8 +163,6 @@ def test_native_crate_licenses_are_consistent() -> None:
 
 
 def test_pyproject_install_contract_matches_public_release_story() -> None:
-    import tomllib
-
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
 
@@ -179,8 +180,6 @@ def test_pyproject_install_contract_matches_public_release_story() -> None:
 
 
 def test_changelog_covers_current_version() -> None:
-    import tomllib
-
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     current_version = pyproject["project"]["version"]
 
