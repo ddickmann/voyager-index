@@ -5,13 +5,13 @@ Runs 6 standard BEIR datasets in two modes:
   1. GPU-corpus  -- full corpus preloaded into VRAM, LEMUR routing, Triton MaxSim
   2. CPU-8-worker -- shard-fetch from mmap, 8-worker parallel, CPU scoring
 
-Reports: NDCG@10, MAP@100, Recall@100, search-only QPS (encoding excluded),
-         indexing throughput (encoding excluded).
+Reports: search-only BEIR metrics and latency/throughput tables.
 
 Reference hardware: NVIDIA RTX A5000 (24 GB VRAM) / consumer-grade CPU.
 
 Usage:
     python benchmarks/beir_benchmark.py
+    python benchmarks/beir_benchmark.py --n-eval 100   # quick sample
     python benchmarks/beir_benchmark.py --datasets fiqa scifact
     python benchmarks/beir_benchmark.py --modes gpu cpu
 """
@@ -570,7 +570,7 @@ def run_dataset(
     name: str,
     modes: List[str],
     n_workers: int = 8,
-    n_eval: Optional[int] = 100,
+    n_eval: Optional[int] = 0,
 ) -> List[Dict[str, Any]]:
     all_vectors, doc_offsets, doc_ids, query_vecs, graded_qrels, dim = load_beir_npz(name)
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
@@ -746,7 +746,12 @@ def main():
     parser.add_argument("--datasets", nargs="*", default=DATASETS)
     parser.add_argument("--modes", nargs="*", default=["gpu", "cpu"], choices=["gpu", "cpu"])
     parser.add_argument("--n-workers", type=int, default=8)
-    parser.add_argument("--n-eval", type=int, default=100)
+    parser.add_argument(
+        "--n-eval",
+        type=int,
+        default=0,
+        help="Number of queries to evaluate per dataset. Use 0 for the full query set.",
+    )
     parser.add_argument("--output", type=str, default="benchmarks/beir_results.jsonl")
     args = parser.parse_args()
 

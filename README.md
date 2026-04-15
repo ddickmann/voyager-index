@@ -39,49 +39,54 @@ reranking over an ANN shortlist.  voyager-index is built the other way around:
 ## BEIR Benchmark
 
 Measured on NVIDIA RTX A5000 (24 GB) with `lightonai/GTE-ModernColBERT-v1`,
-`top_k=100`, search-only (encoding excluded).  CPU uses 8 native Rust workers.
+`top_k=100`, search-only (encoding excluded). CPU uses 8 native Rust workers.
+These are **full-query-set results**, not a first-100-query sample.
 
 | Dataset | Documents | MAP@100 | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
 |---------|----------:|--------:|--------:|---------:|----------:|-----------:|--------:|-------------:|--------:|-------------:|
-| arguana | 8,674 | 0.2737 | 0.3785 | 0.4289 | 0.7400 | 0.9600 | 270.2 | 4.2 | 40.2 | 274.3 |
-| fiqa | 57,638 | 0.4616 | 0.5120 | 0.5758 | 0.5626 | 0.7958 | 60.3 | 5.9 | 74.2 | 153.5 |
-| nfcorpus | 3,633 | 0.1874 | 0.3805 | 0.3078 | 0.3388 | 0.2820 | 284.3 | 3.8 | 132.3 | 129.5 |
-| quora | 15,675 | 0.9842 | 0.9871 | 0.9896 | 0.9929 | 1.0000 | 99.6 | 2.7 | 278.8 | 63.7 |
-| scidocs | 25,657 | 0.1165 | 0.1719 | 0.2494 | 0.1795 | 0.4065 | 237.2 | 4.6 | 73.2 | 148.1 |
-| scifact | 5,183 | 0.7343 | 0.7705 | 0.7836 | 0.8790 | 0.9300 | 261.4 | 4.0 | 58.7 | 147.0 |
+| arguana | 8,674 | 0.2598 | 0.3679 | 0.4171 | 0.7402 | 0.9586 | 270.0 | 4.1 | 41.6 | 202.7 |
+| fiqa | 57,638 | 0.3818 | 0.4436 | 0.5049 | 0.5059 | 0.7297 | 164.8 | 5.0 | 80.2 | 115.7 |
+| nfcorpus | 3,633 | 0.1963 | 0.3833 | 0.3485 | 0.3404 | 0.3348 | 282.6 | 3.8 | 123.3 | 84.4 |
+| quora | 15,675 | 0.9686 | 0.9766 | 0.9790 | 0.9930 | 0.9993 | 346.8 | 2.6 | 271.7 | 46.9 |
+| scidocs | 25,657 | 0.1383 | 0.1977 | 0.2763 | 0.2070 | 0.4369 | 246.8 | 4.3 | 83.9 | 111.8 |
+| scifact | 5,183 | 0.7141 | 0.7544 | 0.7730 | 0.8766 | 0.9567 | 263.4 | 4.0 | 69.1 | 138.4 |
 
 ### Comparison with next-plaid
 
 [next-plaid](https://github.com/lightonai/next-plaid) (LightOn) is the current
 open-source reference for ColBERT-style late-interaction serving.  Their numbers
 below are from their README, measured on NVIDIA H100 80 GB with the same
-embedding model.  Their QPS **includes** encoding time; ours excludes it
-(search-only).
+embedding model. Their QPS **includes** encoding time; ours excludes it
+(search-only). Quora is omitted from the head-to-head below because their README
+uses a much larger corpus for that dataset.
 
 | Dataset | System | NDCG@10 | MAP@100 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
 |---------|--------|--------:|--------:|-----------:|--------:|-------------:|--------:|-------------:|
-| arguana | **voyager** | **0.3785** | **0.2737** | **0.9600** | **270.2** | **4.2** | **40.2** | **274.3** |
+| arguana | **voyager** | **0.3679** | **0.2598** | **0.9586** | **270.0** | **4.1** | **41.6** | **202.7** |
 | | next-plaid | 0.3499 | 0.2457 | 0.9337 | 13.6 | 170.1 | 17.4 | 454.7 |
-| fiqa | **voyager** | **0.5120** | **0.4616** | **0.7958** | **60.3** | **5.9** | **74.2** | **153.5** |
-| | next-plaid | 0.4506 | 0.3871 | 0.7459 | 18.2 | 170.6 | 17.6 | 259.1 |
-| nfcorpus | **voyager** | 0.3805 | **0.1874** | 0.2820 | **284.3** | **3.8** | **132.3** | **129.5** |
-| | next-plaid | **0.3828** | 0.1870 | **0.3228** | 6.6 | 262.1 | 16.9 | 219.4 |
-| scidocs | **voyager** | 0.1719 | 0.1165 | 0.4065 | **237.2** | **4.6** | **73.2** | **148.1** |
-| | next-plaid | **0.1914** | **0.1352** | **0.4418** | 17.5 | 139.3 | 16.5 | 281.7 |
-| scifact | **voyager** | **0.7705** | **0.7343** | 0.9300 | **261.4** | **4.0** | **58.7** | **147.0** |
-| | next-plaid | 0.7593 | 0.7186 | **0.9633** | 7.9 | 169.5 | 16.9 | 305.4 |
+| fiqa | voyager | 0.4436 | 0.3818 | 0.7297 | **164.8** | **5.0** | **80.2** | **115.7** |
+| | **next-plaid** | **0.4506** | **0.3871** | **0.7459** | 18.2 | 170.6 | 17.6 | 259.1 |
+| nfcorpus | **voyager** | **0.3833** | **0.1963** | **0.3348** | **282.6** | **3.8** | **123.3** | **84.4** |
+| | next-plaid | 0.3828 | 0.1870 | 0.3228 | 6.6 | 262.1 | 16.9 | 219.4 |
+| scidocs | **voyager** | **0.1977** | **0.1383** | 0.4369 | **246.8** | **4.3** | **83.9** | **111.8** |
+| | next-plaid | 0.1914 | 0.1352 | **0.4418** | 17.5 | 139.3 | 16.5 | 281.7 |
+| scifact | voyager | 0.7544 | 0.7141 | 0.9567 | **263.4** | **4.0** | **69.1** | **138.4** |
+| | **next-plaid** | **0.7593** | **0.7186** | **0.9633** | 7.9 | 169.5 | 16.9 | 305.4 |
 
-**Summary:** voyager-index matches or exceeds next-plaid on quality across most
-datasets while delivering **10–40x higher GPU throughput** and **2–8x higher CPU
-throughput** on a smaller GPU (A5000 vs H100).  GPU P95 latency is consistently
-under 6 ms versus 130–260 ms.
+**Summary:** the strong claim that voyager wins quality everywhere does **not**
+hold once you rerun on the full query sets. What *does* hold is the throughput
+story: voyager remains quality-competitive and delivers roughly **9–43x higher
+GPU search throughput** and **2–7x higher CPU search throughput** on a smaller
+GPU (A5000 vs H100), while keeping GPU P95 latency around **4–5 ms** versus
+roughly **140–260 ms**.
 
 > **Note on QPS methodology:** next-plaid reports near-constant QPS across
 > corpus sizes because their retrieval cost is dominated by a fixed candidate
 > budget (`n_full_scores=4096`, limited IVF probes) and their QPS includes
-> encoding.  Our QPS is pure search-only wall-clock throughput, which scales
-> with corpus size as routing and exact scoring do real work over the full
-> candidate set.
+> encoding. Our QPS is pure search-only throughput. Also note that a 100-query
+> sample can be materially different from the full-query distribution on BEIR;
+> the table above uses full-query evaluation specifically to avoid publishing a
+> flattering slice.
 
 ## Architecture
 
