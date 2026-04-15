@@ -27,6 +27,46 @@ real failure recovery.
 **For infrastructure leaders:** strong late-interaction search on modest
 hardware, without taking on distributed search complexity.
 
+## Start Here
+
+Use the shard-first production lane first, then add optional planes only when
+they earn their keep:
+
+```bash
+pip install "voyager-index[server,shard]"         # production lane on CPU
+pip install "voyager-index[server,shard,gpu]"     # add Triton GPU scoring
+pip install "voyager-index[server,shard,native]"  # add Tabu Search solver
+pip install "voyager-index[server,shard,latence-graph]"  # add optional Latence graph lane
+```
+
+```bash
+HOST=0.0.0.0 WORKERS=4 voyager-index-server
+# OpenAPI docs at http://127.0.0.1:8080/docs
+```
+
+If you are evaluating quickly:
+
+- run the [Quickstart](docs/getting-started/quickstart.md)
+- use the [Reference API Tutorial](docs/reference_api_tutorial.md) for the HTTP path
+- use the [Shard Engine Guide](docs/guides/shard-engine.md) for the high-performance lane
+- use the [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md) for the optional premium lane
+
+## Who This Fits
+
+`voyager-index` is a strong fit when:
+
+- late-interaction retrieval quality matters
+- on-prem deployment matters
+- single-node operability matters
+- CPU and GPU flexibility matters
+- you want an API-facing retrieval service, not just an offline benchmark artifact
+
+It is probably **not** the first choice if you need:
+
+- a large distributed control plane across many nodes
+- purely dense ANN retrieval at extreme scale
+- a hosted multi-tenant SaaS search platform
+
 ## Why
 
 Most retrieval systems optimize the shortlist and treat late interaction as an
@@ -44,6 +84,34 @@ scorer, and the rest of the system exists to make that practical in production.*
   and API serving are part of the system, not an afterthought.
 - **Built for single-node deployment.** No distributed control plane required for
   the common on-prem use case.
+
+## Current Public Proof
+
+`voyager-index` has two public proof layers, and they should be read together:
+
+- **Core production lane:** the shard-first route is proven by the BEIR shard
+  benchmark in `benchmarks/beir_benchmark.py`. That harness measures
+  search-only GPU-corpus Triton MaxSim and CPU multiworker fused Rust scoring on
+  the same production lane the API serves, with current public results showing
+  `2.6-5.0 ms` GPU P95, `164.8-346.8` GPU QPS, and `41.6-271.7` CPU QPS across
+  the listed BEIR sets.
+- **Optional Latence graph lane:** the graph lane is proven separately by
+  `tools/benchmarks/benchmark_latence_graph_quality.py` plus the graph tests. In
+  the current representative harness it delivers `+0.75` recall, `+0.333`
+  NDCG, and `+0.75` support coverage on graph-shaped queries, `0.0` ordinary-
+  query deltas, `57%` graph activation, `3.5` average added candidates on
+  graph-shaped queries, and passing route-conformance checks.
+
+The graph proof is intentionally scoped: it shows the shipped graph contract,
+additive rescue semantics, provenance tagging, and retrieval uplift on
+graph-shaped fixtures. It is not presented as a graph-on BEIR table.
+
+The graph data itself comes from structured Latence graph data derived from the
+indexed corpus and synchronized into the sidecar as target-linked graph
+contracts. The public guide explains the architecture and provenance model
+without exposing proprietary internals.
+
+For full methodology and benchmark caveats, see [Benchmarks And Methodology](docs/benchmarks.md).
 
 ## BEIR Benchmark
 
@@ -106,20 +174,6 @@ includes encoding in QPS, while our numbers are search-only on a smaller GPU.
 The table above uses full-query evaluation specifically to avoid publishing a
 flattering slice.
 
-## Current Shipped Evidence
-
-`voyager-index` has two different proof layers today, and they should be read
-together:
-
-| Surface | What is proven today | Evidence |
-|---------|----------------------|----------|
-| Core production lane | The shard-first route delivers strong search-only throughput and recall on both GPU and CPU. The BEIR harness measures GPU-corpus Triton MaxSim and CPU multiworker fused Rust scoring. | `benchmarks/beir_benchmark.py`, plus the BEIR table above |
-| Optional Latence graph lane | The graph lane is additive, policy-driven, and valuable on graph-shaped queries without taxing ordinary queries. The current representative graph benchmark shows `+0.75 recall`, `+0.333 NDCG`, and `+0.75 support_coverage` on graph-shaped queries, `0.0` deltas on ordinary queries, `57%` graph activation, `3.5` average added candidates on graph-shaped queries, and passing route-conformance checks. | `tools/benchmarks/benchmark_latence_graph_quality.py`, `tests/test_latence_graph_quality.py`, `tests/test_latence_graph_lightrag.py`, `tests/test_latence_graph_crud.py` |
-
-The graph evidence is real but intentionally scoped: it proves the shipped
-graph contract, additive rescue semantics, provenance tagging, and retrieval
-uplift on graph-shaped fixtures. It is not presented as a graph-on BEIR table.
-
 ## Architecture
 
 voyager-index separates the problem into **routing, storage, exact scoring,
@@ -149,7 +203,7 @@ query vectors (token / patch embeddings)
 | **Storage** | Safetensors shards, merged mmap, GPU-resident corpus | Honest CPU and GPU layouts for any corpus size |
 | **Exact scoring** | Triton MaxSim, Rust fused MaxSim, quantized kernels | MaxSim stays the truth scorer across all deployment shapes |
 | **Optimization** | ColBANDIT pruning, centroid approximation, ROQ-4 | Moves the latency/recall frontier without changing the retrieval contract |
-| **Optional graph plane** | Latence graph sidecar, additive rescue, provenance | Keeps graph awareness premium and post-retrieval |
+| **Optional graph plane** | Latence graph sidecar, target-linked graph contracts, additive rescue, provenance | Keeps graph awareness premium and post-retrieval |
 | **Durability** | WAL, memtable, checkpoint, crash recovery | A retrieval engine that behaves like a real database |
 | **Serving** | FastAPI, base64 transport, multi-worker, OpenAPI | One `pip install`, one server, one API contract |
 
@@ -186,23 +240,6 @@ not just benchmark wins.
 The same serving stack supports text token embeddings (ColBERT) and image patch
 embeddings (ColPali/ColQwen), with preprocessing for PDF, DOCX, XLSX, and image
 inputs.
-
-## When To Use voyager-index
-
-voyager-index is a strong fit when:
-
-- late-interaction retrieval quality matters
-- on-prem deployment matters
-- single-node operability matters
-- CPU and GPU flexibility matters
-- you want an API-facing retrieval service, not just an offline benchmark
-  artifact
-
-It is probably **not** the first choice if you need:
-
-- a large distributed control plane across many nodes
-- purely dense ANN retrieval at extreme scale
-- a hosted multi-tenant SaaS search platform
 
 ## Quickstart
 

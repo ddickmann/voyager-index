@@ -16,6 +16,42 @@ The important boundary is that the OSS engine stays usable with `graph_mode="off
 or without the commercial dependency installed. The graph lane is additive and
 post-retrieval.
 
+## What Graph Data Comes From
+
+The optional graph lane is grounded in **Latence graph data derived from the
+customer corpus**, not in a disconnected hand-authored graph.
+
+Publicly, the model is:
+
+- indexed targets remain the source of truth for retrieval and serving
+- Latence Dataset Intelligence or equivalent sync paths derive graph fragments
+  from those targets
+- the sidecar stores target-linked graph contracts such as entities, relations,
+  community assignments, and evidence links
+- search-time graph rescue always resolves back to real target IDs and real
+  retrieval candidates
+
+What stays intentionally abstract in public docs:
+
+- exact extraction thresholds and scoring weights
+- proprietary policy lexicons and trigger heuristics
+- non-public SDK and persistence internals
+
+## Public Algorithm Summary
+
+The graph lane follows the same architectural cut described in the README and
+production guide:
+
+1. base retrieval runs first through LEMUR-routed dense search, with BM25 when the route supports it
+2. the graph policy checks whether graph augmentation is worth paying for
+3. the sidecar resolves entities from the query plus first-stage documents
+4. local neighborhoods, community-level themes, and linked evidence are fetched
+5. graph-derived candidates and feature payloads are appended before final solver packing
+
+That is the practical LightRAG-inspired shape: low-level entity/relation rescue,
+high-level thematic/community rescue, and additive evidence stitching without
+turning graph traversal into the default first-stage router.
+
 ## Retrieval Flow
 
 ```text
@@ -150,17 +186,6 @@ python tools/benchmarks/benchmark_latence_graph_quality.py --mode benchmark
 python tools/benchmarks/benchmark_latence_graph_quality.py --mode ablation
 ```
 
-Current representative evidence snapshot:
-
-- graph-shaped recall delta: `+0.75`
-- graph-shaped NDCG delta: `+0.333`
-- graph-shaped support coverage delta: `+0.75`
-- ordinary-query deltas: `0.0`
-- graph applied rate: `0.571`
-- average added candidates on graph-shaped queries: `3.5`
-- route-conformance checks: `all passed`
-
-These numbers come from the shipped fixture-backed graph harness. They prove the
-current premium lane is working as intended and adding value, but they are not a
-replacement for the shard BEIR benchmark that proves the core GPU/CPU
-performance path.
+The representative public metrics live in [Benchmarks And Methodology](../benchmarks.md).
+This guide stays focused on the graph contract, architecture boundary, data
+origin, and operational behavior rather than duplicating the benchmark report.

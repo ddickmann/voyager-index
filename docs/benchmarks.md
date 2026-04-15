@@ -45,6 +45,16 @@ It includes:
 - latency, candidate-growth, and solver-overhead summaries
 - ablations for local-only, community-only, and full graph settings
 
+What the harness is actually exercising:
+
+- the base retrieval lane still runs first; graph is not the primary router
+- graph inputs are target-linked Latence graph contracts derived from the corpus
+  through the Dataset Intelligence / sidecar sync path
+- rescue happens across local neighborhoods, community themes, and linked
+  evidence targets
+- public reporting proves additive uplift and route correctness without
+  disclosing every proprietary threshold or cue list
+
 Run it with:
 
 ```bash
@@ -74,6 +84,9 @@ Current representative snapshot from the shipped fixture-backed harness:
 These numbers are valuable because they prove the shipped graph lane is working
 as intended, but they are still fixture-backed graph evidence. They are not the
 same thing as a public graph-on shard BEIR benchmark.
+
+For the architecture and graph-data provenance model behind those numbers, see
+[Latence Graph Sidecar Guide](guides/latence-graph-sidecar.md).
 
 ### 2. Product benchmark
 

@@ -34,6 +34,13 @@ The production story is:
 - GPU and CPU performance claims in the README come from the shard benchmark harness
 - the optional graph lane augments post-retrieval results and provenance; it does not replace the shard hot path
 
+Operational sequence:
+
+- first-stage retrieval stays shard-first, or dense-first on routes that expose `query_text`
+- BM25 runs in parallel when the route supports it
+- the graph policy decides whether the optional Latence graph lane runs after first-stage retrieval
+- solver or result packing is the final arbitration layer
+
 ## Recommended Deploy Shapes
 
 ### CPU-first
@@ -60,6 +67,7 @@ The production story is:
 
 - install `voyager-index[server,shard,latence-graph]`
 - keep `graph_mode="off"` as the safe baseline and enable `auto` or `force` per workflow
+- graph data comes from Latence graph data derived from the customer corpus and linked back to collection targets through the sidecar sync path
 - use `query_payload` to steer graph policy on vector-only HTTP routes such as shard search
 - inspect `GET /collections/{name}/info` for `graph_health`, `graph_sync_status`, and freshness timestamps
 - rely on `/ready` to surface degraded or failed graph sync states without taking down the base retrieval lane

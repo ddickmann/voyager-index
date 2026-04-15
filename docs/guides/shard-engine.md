@@ -33,6 +33,19 @@ Query tokens
   → top-K results
 ```
 
+When the optional planes are enabled around shard, the broader production
+sequence is:
+
+```text
+query
+  -> shard first-stage retrieval
+  -> optional BM25 in parallel where the route supports query_text
+  -> exact or quantized MaxSim
+  -> optional graph policy check
+  -> optional Latence graph augmentation
+  -> solver / result packing
+```
+
 Key properties:
 
 - **No graph construction**: build time is dominated by LEMUR MLP training
@@ -237,11 +250,14 @@ sidecar is enabled:
 - first stage remains routed shard retrieval with Triton or fused Rust scoring
 - graph augmentation happens only after shard retrieval returns candidates
 - merge behavior is additive, so the base shard order stays intact
+- graph data comes from Latence graph data derived from the indexed corpus and
+  synchronized as target-linked graph contracts
 - shard HTTP search remains vector-only, so graph policy should be steered with
   `query_payload` instead of `query_text`
 
 Use `GET /collections/{name}/info` and `/ready` to inspect graph health and sync
-status when the optional premium lane is installed.
+status when the optional premium lane is installed. The deeper graph data and
+provenance story lives in the [Latence Graph Sidecar Guide](latence-graph-sidecar.md).
 
 ## GPU Memory and Auto-Tiering
 

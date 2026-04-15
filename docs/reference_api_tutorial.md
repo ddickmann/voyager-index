@@ -153,6 +153,11 @@ curl http://127.0.0.1:8080/collections/tutorial-dense/info
 Look for `graph_health`, `graph_dataset_id`, `graph_sync_status`, and
 `graph_last_successful_sync_at` in the response.
 
+Public transparency note: the graph lane works on Latence graph data derived
+from the indexed corpus and linked back to collection targets. The API exposes
+sync, health, and provenance metadata without publishing proprietary extraction
+heuristics.
+
 ## 4. Late-Interaction Collection
 
 Create the collection:
