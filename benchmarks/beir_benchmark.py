@@ -25,7 +25,7 @@ import os
 import shutil
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -204,6 +204,51 @@ def build_index(
     return index_dir, build_elapsed
 
 
+def ensure_merged_layout(
+    index_dir: Path,
+    all_vectors: np.ndarray,
+    doc_offsets: list,
+    doc_ids: list,
+    dim: int,
+) -> None:
+    """Persist merged mmap files for native Rust exact CPU scoring."""
+    emb_path = index_dir / "merged_embeddings.bin"
+    offsets_path = index_dir / "merged_offsets.bin"
+    doc_map_path = index_dir / "merged_doc_map.bin"
+
+    if emb_path.exists() and offsets_path.exists() and doc_map_path.exists():
+        return
+
+    index_dir.mkdir(parents=True, exist_ok=True)
+    total_tokens = int(all_vectors.shape[0])
+    f16_vectors = np.ascontiguousarray(all_vectors.astype(np.float16, copy=False))
+    merged_offsets = np.array(
+        [int(s) for s, _e in doc_offsets] + [int(doc_offsets[-1][1]) if doc_offsets else 0],
+        dtype=np.int64,
+    )
+    merged_doc_ids = np.array(doc_ids, dtype=np.uint64)
+
+    with open(emb_path, "wb") as f:
+        f.write(np.array([total_tokens], dtype=np.int64).tobytes())
+        f.write(np.array([dim], dtype=np.int64).tobytes())
+        f.write(f16_vectors.tobytes())
+
+    with open(offsets_path, "wb") as f:
+        f.write(np.array([len(merged_offsets)], dtype=np.int64).tobytes())
+        f.write(merged_offsets.tobytes())
+
+    with open(doc_map_path, "wb") as f:
+        f.write(np.array([len(merged_doc_ids)], dtype=np.int64).tobytes())
+        f.write(merged_doc_ids.tobytes())
+
+    log.info(
+        "Merged mmap files written at %s (%d docs, %d tokens)",
+        index_dir,
+        len(doc_ids),
+        total_tokens,
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Search modes
 # ─────────────────────────────────────────────────────────────
@@ -312,37 +357,58 @@ def run_gpu_corpus_mode(
     }
 
 
-def _cpu_worker_search(args):
-    """Worker function for CPU parallel search."""
-    index_dir, query_vec_bytes, query_shape, params, dim, k = args
-    query_vec = np.frombuffer(query_vec_bytes, dtype=np.float32).reshape(query_shape)
+class _RustCpuWorker:
+    """Independent CPU worker using native Rust exact scoring."""
 
-    store = ShardStore(index_dir)
-    router = LemurRouter(
-        index_dir / "lemur",
-        ann_backend=params["ann_backend"].value,
-        device="cpu",
-    )
-    router.load()
-    pipeline = FetchPipeline(store=store, mode=TransferMode.PAGEABLE, pinned_pool=None, device="cpu")
+    def __init__(self, worker_id: int, index_dir: Path, dim: int, ann_backend: AnnBackend):
+        import latence_shard_engine
 
-    qv = torch.from_numpy(query_vec).float()
-    ids, scores, elapsed = _single_query_search(qv, router, pipeline, params, k, "cpu")
-    return ids, elapsed
+        runtime_dir = index_dir / f"_rust_cpu_runtime_w{worker_id}"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "shard.wal").touch(exist_ok=True)
+
+        self._rust_idx = latence_shard_engine.ShardIndex(str(runtime_dir), dim)
+        self._rust_idx.load_merged(str(index_dir))
+        self._router = LemurRouter(
+            index_dir / "lemur",
+            ann_backend=ann_backend.value,
+            device="cpu",
+        )
+        self._router.load()
+
+    def search(self, query_vec: np.ndarray, params: dict, k: int) -> Tuple[List[int], List[float], float]:
+        t0 = time.perf_counter()
+        q_np = np.ascontiguousarray(query_vec, dtype=np.float32)
+        q_t = torch.from_numpy(q_np).float()
+        routed = self._router.route(
+            q_t,
+            k_candidates=params["k_candidates"],
+            prefetch_doc_cap=params["max_docs_exact"],
+        )
+        candidate_ids = [int(doc_id) for doc_id in routed.doc_ids[: params["max_docs_exact"]]]
+        if candidate_ids:
+            ids, scores = self._rust_idx.score_candidates_exact(q_np, candidate_ids, k)
+            out_ids = ids.tolist()
+            out_scores = scores.tolist()
+        else:
+            out_ids = []
+            out_scores = []
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        return out_ids, out_scores, elapsed_ms
 
 
-def run_cpu_multiworker_mode(
+def _run_cpu_fallback_mode(
     name: str,
     index_dir: Path,
     query_vecs: list,
     dim: int,
     params: dict,
     n_workers: int = 8,
-    n_warmup: int = 3,
+    n_warmup: int = 5,
 ) -> Dict[str, Any]:
-    """CPU multi-worker mode: shard-fetch with parallel workers."""
+    """Sequential fallback when the native Rust CPU path is unavailable."""
     device = "cpu"
-    log.info("[CPU-%dw] %s: running %d queries ...", n_workers, name, len(query_vecs))
+    log.info("[CPU-%dw] %s: native CPU path unavailable, using fallback path ...", n_workers, name)
 
     store = ShardStore(index_dir)
     router = LemurRouter(
@@ -358,23 +424,18 @@ def run_cpu_multiworker_mode(
         qv = torch.from_numpy(query_vecs[i]).float()
         _single_query_search(qv, router, pipeline, params, TOP_K, device)
 
+    log.info("[CPU-%dw] %s: running %d queries (sequential fallback) ...", n_workers, name, len(query_vecs))
     all_ids = []
     all_elapsed = []
 
-    def _search_one(qi):
+    for qi in range(len(query_vecs)):
         qv = torch.from_numpy(query_vecs[qi]).float()
         ids, _, elapsed = _single_query_search(qv, router, pipeline, params, TOP_K, device)
-        return ids, elapsed
-
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        futures = [pool.submit(_search_one, qi) for qi in range(len(query_vecs))]
-        for f in futures:
-            ids, elapsed = f.result()
-            all_ids.append(ids)
-            all_elapsed.append(elapsed)
+        all_ids.append(ids)
+        all_elapsed.append(elapsed)
 
     total_s = sum(all_elapsed) / 1000.0
-    qps = len(query_vecs) / total_s * n_workers if total_s > 0 else 0
+    qps = len(query_vecs) / total_s if total_s > 0 else 0
     p50 = float(np.median(all_elapsed))
     p95 = float(np.percentile(all_elapsed, 95))
 
@@ -386,6 +447,95 @@ def run_cpu_multiworker_mode(
         "dataset": name,
         "n_queries": len(query_vecs),
         "all_ids": all_ids,
+        "qps": qps,
+        "p50_ms": p50,
+        "p95_ms": p95,
+    }
+
+
+def run_cpu_multiworker_mode(
+    name: str,
+    index_dir: Path,
+    all_vectors: np.ndarray,
+    doc_offsets: list,
+    doc_ids: list,
+    query_vecs: list,
+    dim: int,
+    params: dict,
+    n_workers: int = 8,
+    n_warmup: int = 2,
+) -> Dict[str, Any]:
+    """CPU multi-worker mode using native Rust exact scoring over merged mmap."""
+    log.info("[CPU-%dw] %s: preparing native CPU runtime ...", n_workers, name)
+
+    try:
+        ensure_merged_layout(index_dir, all_vectors, doc_offsets, doc_ids, dim)
+        worker_count = max(1, min(n_workers, len(query_vecs)))
+        workers = [
+            _RustCpuWorker(i, index_dir, dim, params["ann_backend"])
+            for i in range(worker_count)
+        ]
+    except Exception as exc:
+        log.warning("Native CPU runtime init failed for %s: %s", name, exc)
+        return _run_cpu_fallback_mode(
+            name,
+            index_dir,
+            query_vecs,
+            dim,
+            params,
+            n_workers=n_workers,
+            n_warmup=max(n_warmup, 5),
+        )
+
+    query_partitions = [list(range(i, len(query_vecs), worker_count)) for i in range(worker_count)]
+
+    for worker, indices in zip(workers, query_partitions):
+        for qi in indices[: min(n_warmup, len(indices))]:
+            worker.search(query_vecs[qi], params, TOP_K)
+
+    log.info("[CPU-%dw] %s: running %d queries (native exact, %d workers) ...",
+             worker_count, name, len(query_vecs), worker_count)
+
+    def _run_partition(worker: _RustCpuWorker, indices: List[int]) -> List[Tuple[int, List[int], float]]:
+        out = []
+        for qi in indices:
+            ids, _scores, elapsed = worker.search(query_vecs[qi], params, TOP_K)
+            out.append((qi, ids, elapsed))
+        return out
+
+    wall_t0 = time.perf_counter()
+    all_results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [
+            pool.submit(_run_partition, worker, indices)
+            for worker, indices in zip(workers, query_partitions)
+            if indices
+        ]
+        for future in futures:
+            all_results.extend(future.result())
+    wall_s = time.perf_counter() - wall_t0
+
+    ordered_ids = [[] for _ in range(len(query_vecs))]
+    all_elapsed = []
+    for qi, ids, elapsed in all_results:
+        ordered_ids[qi] = ids
+        all_elapsed.append(elapsed)
+
+    qps = len(query_vecs) / wall_s if wall_s > 0 else 0
+    p50 = float(np.median(all_elapsed)) if all_elapsed else 0.0
+    p95 = float(np.percentile(all_elapsed, 95)) if all_elapsed else 0.0
+
+    log.info("[CPU-%dw] %s: QPS=%.1f  p50=%.1fms  p95=%.1fms",
+             worker_count, name, qps, p50, p95)
+
+    del workers
+    gc.collect()
+
+    return {
+        "mode": f"CPU-{worker_count}w",
+        "dataset": name,
+        "n_queries": len(query_vecs),
+        "all_ids": ordered_ids,
         "qps": qps,
         "p50_ms": p50,
         "p95_ms": p95,
@@ -415,10 +565,23 @@ def evaluate(
 # Main
 # ─────────────────────────────────────────────────────────────
 
-def run_dataset(name: str, modes: List[str], n_workers: int = 8) -> List[Dict[str, Any]]:
+def run_dataset(
+    name: str,
+    modes: List[str],
+    n_workers: int = 8,
+    n_eval: Optional[int] = 100,
+) -> List[Dict[str, Any]]:
     all_vectors, doc_offsets, doc_ids, query_vecs, graded_qrels, dim = load_beir_npz(name)
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
     n_docs = len(doc_ids)
+    eval_query_vecs = query_vecs[: min(len(query_vecs), n_eval)] if n_eval else query_vecs
+
+    log.info(
+        "%s: evaluating %d/%d queries to mirror prior shard-bench runs",
+        name,
+        len(eval_query_vecs),
+        len(query_vecs),
+    )
 
     results = []
 
@@ -434,9 +597,9 @@ def run_dataset(name: str, modes: List[str], n_workers: int = 8) -> List[Dict[st
 
             search_result = run_gpu_corpus_mode(
                 name, index_dir, all_vectors, doc_offsets, doc_ids,
-                query_vecs, dim, params,
+                eval_query_vecs, dim, params,
             )
-            metrics = evaluate(search_result["all_ids"], graded_qrels, len(query_vecs))
+            metrics = evaluate(search_result["all_ids"], graded_qrels, len(eval_query_vecs))
 
             results.append({
                 **{k: v for k, v in search_result.items() if k != "all_ids"},
@@ -458,9 +621,17 @@ def run_dataset(name: str, modes: List[str], n_workers: int = 8) -> List[Dict[st
             indexing_throughput = n_docs / build_s if build_s > 0 else float("inf")
 
             search_result = run_cpu_multiworker_mode(
-                name, index_dir, query_vecs, dim, params, n_workers=n_workers,
+                name,
+                index_dir,
+                all_vectors,
+                doc_offsets,
+                doc_ids,
+                eval_query_vecs,
+                dim,
+                params,
+                n_workers=n_workers,
             )
-            metrics = evaluate(search_result["all_ids"], graded_qrels, len(query_vecs))
+            metrics = evaluate(search_result["all_ids"], graded_qrels, len(eval_query_vecs))
 
             results.append({
                 **{k: v for k, v in search_result.items() if k != "all_ids"},
@@ -480,23 +651,46 @@ def run_dataset(name: str, modes: List[str], n_workers: int = 8) -> List[Dict[st
     return results
 
 
+def _merge_gpu_cpu(all_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Group results by dataset and merge GPU/CPU rows into one per dataset."""
+    by_ds: Dict[str, Dict[str, Any]] = {}
+    for r in all_results:
+        ds = r["dataset"]
+        if ds not in by_ds:
+            by_ds[ds] = {"dataset": ds, "n_docs": r.get("n_docs", 0)}
+        row = by_ds[ds]
+        if "GPU" in r.get("mode", ""):
+            row["gpu_qps"] = r["qps"]
+            row["gpu_p95"] = r["p95_ms"]
+            for k in ("NDCG@10", "NDCG@100", "MAP@100", "recall@10", "recall@100"):
+                if k in r:
+                    row[k] = r[k]
+        elif "CPU" in r.get("mode", ""):
+            row["cpu_qps"] = r["qps"]
+            row["cpu_p95"] = r["p95_ms"]
+            for k in ("NDCG@10", "NDCG@100", "MAP@100", "recall@10", "recall@100"):
+                if k not in row and k in r:
+                    row[k] = r[k]
+    return sorted(by_ds.values(), key=lambda x: x["dataset"])
+
+
 def format_results_table(all_results: List[Dict[str, Any]]) -> str:
     lines = []
     hdr = (
-        f"{'Dataset':<12} {'Mode':<14} {'n_docs':>8} "
-        f"{'NDCG@10':>8} {'MAP@100':>8} {'R@100':>8} "
-        f"{'QPS':>8} {'p50ms':>8} {'p95ms':>8} "
-        f"{'Idx d/s':>10}"
+        f"{'Dataset':<12} {'Docs':>8} "
+        f"{'MAP@100':>8} {'NDCG@10':>8} {'NDCG@100':>9} {'R@10':>7} {'R@100':>7} "
+        f"{'GPU QPS':>9} {'GPU P95':>9} {'CPU QPS':>9} {'CPU P95':>9}"
     )
     lines.append(hdr)
     lines.append("-" * len(hdr))
 
-    for r in sorted(all_results, key=lambda x: (x["dataset"], x["mode"])):
+    for row in _merge_gpu_cpu(all_results):
         lines.append(
-            f"{r['dataset']:<12} {r['mode']:<14} {r['n_docs']:>8} "
-            f"{r.get('NDCG@10', 0):>8.4f} {r.get('MAP@100', 0):>8.4f} {r.get('recall@100', 0):>8.4f} "
-            f"{r['qps']:>8.1f} {r['p50_ms']:>8.1f} {r['p95_ms']:>8.1f} "
-            f"{r['indexing_docs_per_sec']:>10.0f}"
+            f"{row['dataset']:<12} {row['n_docs']:>8} "
+            f"{row.get('MAP@100', 0):>8.4f} {row.get('NDCG@10', 0):>8.4f} {row.get('NDCG@100', 0):>9.4f} "
+            f"{row.get('recall@10', 0):>7.4f} {row.get('recall@100', 0):>7.4f} "
+            f"{row.get('gpu_qps', 0):>9.1f} {row.get('gpu_p95', 0):>9.1f} "
+            f"{row.get('cpu_qps', 0):>9.1f} {row.get('cpu_p95', 0):>9.1f}"
         )
 
     return "\n".join(lines)
@@ -504,14 +698,43 @@ def format_results_table(all_results: List[Dict[str, Any]]) -> str:
 
 def format_markdown_table(all_results: List[Dict[str, Any]]) -> str:
     lines = []
-    lines.append("| Dataset | Mode | Docs | NDCG@10 | MAP@100 | Recall@100 | QPS | p50 (ms) | p95 (ms) |")
-    lines.append("|---------|------|-----:|--------:|--------:|-----------:|----:|---------:|---------:|")
+    lines.append(
+        "| Dataset | Documents | MAP@100 | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 "
+        "| GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |"
+    )
+    lines.append(
+        "|---------|----------:|--------:|--------:|---------:|----------:|-----------:"
+        "|--------:|-------------:|--------:|-------------:|"
+    )
 
-    for r in sorted(all_results, key=lambda x: (x["dataset"], x["mode"])):
+    for row in _merge_gpu_cpu(all_results):
         lines.append(
-            f"| {r['dataset']} | {r['mode']} | {r['n_docs']:,} "
-            f"| {r.get('NDCG@10', 0):.4f} | {r.get('MAP@100', 0):.4f} | {r.get('recall@100', 0):.4f} "
-            f"| {r['qps']:.1f} | {r['p50_ms']:.1f} | {r['p95_ms']:.1f} |"
+            f"| {row['dataset']} | {row['n_docs']:,} "
+            f"| {row.get('MAP@100', 0):.4f} | {row.get('NDCG@10', 0):.4f} | {row.get('NDCG@100', 0):.4f} "
+            f"| {row.get('recall@10', 0):.4f} | {row.get('recall@100', 0):.4f} "
+            f"| {row.get('gpu_qps', 0):.1f} | {row.get('gpu_p95', 0):.1f} "
+            f"| {row.get('cpu_qps', 0):.1f} | {row.get('cpu_p95', 0):.1f} |"
+        )
+
+    return "\n".join(lines)
+
+
+def format_comparison_table(all_results: List[Dict[str, Any]]) -> str:
+    """Compact GPU vs CPU speedup comparison."""
+    lines = []
+    lines.append("| Dataset | GPU QPS | CPU QPS | Speedup | GPU P95 (ms) | CPU P95 (ms) | Latency Ratio |")
+    lines.append("|---------|--------:|--------:|--------:|-------------:|-------------:|--------------:|")
+
+    for row in _merge_gpu_cpu(all_results):
+        gpu_q = row.get("gpu_qps", 0)
+        cpu_q = row.get("cpu_qps", 0)
+        gpu_p = row.get("gpu_p95", 0)
+        cpu_p = row.get("cpu_p95", 0)
+        speedup = gpu_q / cpu_q if cpu_q > 0 else float("inf")
+        lat_ratio = cpu_p / gpu_p if gpu_p > 0 else float("inf")
+        lines.append(
+            f"| {row['dataset']} | {gpu_q:.1f} | {cpu_q:.1f} | {speedup:.1f}x "
+            f"| {gpu_p:.1f} | {cpu_p:.1f} | {lat_ratio:.1f}x |"
         )
 
     return "\n".join(lines)
@@ -522,6 +745,7 @@ def main():
     parser.add_argument("--datasets", nargs="*", default=DATASETS)
     parser.add_argument("--modes", nargs="*", default=["gpu", "cpu"], choices=["gpu", "cpu"])
     parser.add_argument("--n-workers", type=int, default=8)
+    parser.add_argument("--n-eval", type=int, default=100)
     parser.add_argument("--output", type=str, default="benchmarks/beir_results.jsonl")
     args = parser.parse_args()
 
@@ -533,20 +757,23 @@ def main():
         log.info("=" * 70)
 
         try:
-            ds_results = run_dataset(name, args.modes, n_workers=args.n_workers)
+            ds_results = run_dataset(name, args.modes, n_workers=args.n_workers, n_eval=args.n_eval)
             all_results.extend(ds_results)
         except Exception as e:
             log.error("Failed on %s: %s", name, e, exc_info=True)
             continue
 
-    print("\n" + "=" * 100)
-    print("BEIR BENCHMARK RESULTS — voyager-index")
+    print("\n" + "=" * 120)
+    print("BEIR BENCHMARK RESULTS — voyager-index (search-only, encoding excluded)")
     print(f"Model: lightonai/GTE-ModernColBERT-v1 | top_k={TOP_K}")
-    print("=" * 100)
+    print("=" * 120)
     print(format_results_table(all_results))
     print()
-    print("Markdown:")
+    print("Markdown (next-plaid style):")
     print(format_markdown_table(all_results))
+    print()
+    print("GPU vs CPU comparison:")
+    print(format_comparison_table(all_results))
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

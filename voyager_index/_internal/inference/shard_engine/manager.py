@@ -201,6 +201,7 @@ class ShardSegmentManager:
         self._doc_mean_id_to_idx: Optional[Dict[int, int]] = None
         self._rust_index = None
         self._rust_tmpdir: Optional[str] = None
+        self._rust_merged_ready: bool = False
         self._colbandit_reranker: Optional[ColBanditReranker] = None
         self._roq_quantizer = None
         self._checkpoint_mgr = ShardCheckpointManager(self._path)
@@ -368,6 +369,8 @@ class ShardSegmentManager:
             self._try_gpu_preload()
             self._init_wal_and_memtable()
             self._build_and_save_doc_means(all_vecs, doc_offsets, list(ids))
+            store.persist_merged_layout(all_vecs, doc_offsets, list(ids), self._dim)
+            self._init_rust_index()
 
             logger.info("Shard index built: %d docs at %s", n_docs, self._path)
 
@@ -1734,19 +1737,23 @@ class ShardSegmentManager:
             logger.warning("Could not load doc means for proxy scoring: %s", exc)
 
     def _init_rust_index(self) -> None:
-        """Initialize the Rust ShardIndex for centroid-code approximate scoring."""
-        centroids_path = self._path / "centroids.npy"
+        """Initialize the Rust ShardIndex.
+
+        The index is created whenever ``doc_index.npz`` and shard files
+        exist.  Centroids and codec are loaded optionally for approximate
+        scoring.  Merged mmap files, when present, enable the fused exact
+        scoring CPU fast-path (``score_candidates_exact``).
+        """
         doc_index_path = self._path / "doc_index.npz"
-        if not centroids_path.exists() or not doc_index_path.exists():
-            logger.info("Centroid codes not available — skipping Rust approx scoring")
+        if not doc_index_path.exists():
+            logger.info("doc_index.npz not found — skipping Rust index init")
             return
         try:
             import latence_shard_engine
         except ImportError:
-            logger.warning("latence_shard_engine not installed — skipping Rust approx scoring")
+            logger.warning("latence_shard_engine not installed — skipping Rust index init")
             return
         try:
-            centroids = np.load(str(centroids_path)).astype(np.float32)
             doc_index = np.load(str(doc_index_path), allow_pickle=True)
             doc_ids = doc_index["doc_ids"]
             shard_ids = doc_index["shard_ids"]
@@ -1756,7 +1763,7 @@ class ShardSegmentManager:
             shard_dir = self._path / "shards"
             shard_files = sorted(shard_dir.glob("shard_*.safetensors"))
             if not shard_files:
-                logger.warning("No shard files found — skipping Rust approx scoring")
+                logger.warning("No shard files found — skipping Rust index init")
                 return
 
             import os
@@ -1778,33 +1785,39 @@ class ShardSegmentManager:
                 local_starts.tolist(),
                 local_ends.tolist(),
             )
-            rust_idx.set_centroids(centroids)
 
-            codec_meta_path = self._path / "codec_meta.npz"
-            if codec_meta_path.exists():
-                meta = np.load(str(codec_meta_path))
-                bw = meta["bucket_weights"].astype(np.float32)
-                nbits_val = int(meta["nbits"][0])
-                rust_idx.set_codec(bw.tolist(), nbits_val)
-                logger.info(
-                    "Residual codec loaded: nbits=%d, %d bucket weights",
-                    nbits_val,
-                    len(bw),
-                )
+            centroids_path = self._path / "centroids.npy"
+            if centroids_path.exists():
+                centroids = np.load(str(centroids_path)).astype(np.float32)
+                rust_idx.set_centroids(centroids)
+                logger.info("Centroids loaded: %d centroids for approx scoring", len(centroids))
+
+                codec_meta_path = self._path / "codec_meta.npz"
+                if codec_meta_path.exists():
+                    meta = np.load(str(codec_meta_path))
+                    bw = meta["bucket_weights"].astype(np.float32)
+                    nbits_val = int(meta["nbits"][0])
+                    rust_idx.set_codec(bw.tolist(), nbits_val)
+                    logger.info(
+                        "Residual codec loaded: nbits=%d, %d bucket weights",
+                        nbits_val,
+                        len(bw),
+                    )
 
             merged_emb_path = self._path / "merged_embeddings.bin"
             if merged_emb_path.exists():
                 try:
                     rust_idx.load_merged(str(self._path))
-                    logger.info("Merged mmap files loaded for zero-copy access")
+                    self._rust_merged_ready = True
+                    logger.info("Merged mmap files loaded — native fused exact scoring enabled")
                 except Exception as e:
                     logger.warning("Failed to load merged mmap files: %s", e)
 
             self._rust_index = rust_idx
             logger.info(
-                "Rust ShardIndex ready: %d docs, %d centroids for approx scoring",
+                "Rust ShardIndex ready: %d docs, merged_exact=%s",
                 rust_idx.doc_count,
-                len(centroids),
+                getattr(self, "_rust_merged_ready", False),
             )
         except Exception as exc:
             logger.warning("Failed to initialize Rust ShardIndex: %s", exc)

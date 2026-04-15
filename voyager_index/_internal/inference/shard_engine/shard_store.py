@@ -328,6 +328,8 @@ class ShardStore:
         self._meta_cache = {m.shard_id: m for m in shard_metas}
         self._save_doc_index(doc_index_rows)
 
+        self.persist_merged_layout(all_vectors, doc_offsets, doc_ids, dim)
+
         logger.info(
             "ShardStore built: %d shards, %d docs, %d tokens, compression=%s, uniform=%s",
             len(shard_metas), len(doc_ids), int(all_vectors.shape[0]),
@@ -790,6 +792,58 @@ class ShardStore:
         if "roq_codes" not in data:
             return None
         return data["roq_codes"], data["roq_meta"], data["doc_offsets"], data["doc_ids"]
+
+    def persist_merged_layout(
+        self,
+        all_vectors: np.ndarray,
+        doc_offsets: List[Tuple[int, int]],
+        doc_ids: List[int],
+        dim: int,
+    ) -> None:
+        """Write merged mmap files for native Rust fused exact scoring.
+
+        Produces ``merged_embeddings.bin``, ``merged_offsets.bin``, and
+        ``merged_doc_map.bin`` at the store root.  These are consumed by
+        ``latence_shard_engine.ShardIndex.load_merged()`` and enable the
+        ``score_candidates_exact()`` CPU fast-path.
+        """
+        emb_path = self.root / "merged_embeddings.bin"
+        off_path = self.root / "merged_offsets.bin"
+        map_path = self.root / "merged_doc_map.bin"
+
+        if emb_path.exists() and off_path.exists() and map_path.exists():
+            return
+
+        self.root.mkdir(parents=True, exist_ok=True)
+        total_tokens = int(all_vectors.shape[0])
+        f16 = np.ascontiguousarray(all_vectors.astype(np.float16, copy=False))
+
+        offsets = np.array(
+            [int(s) for s, _e in doc_offsets]
+            + [int(doc_offsets[-1][1]) if doc_offsets else 0],
+            dtype=np.int64,
+        )
+        doc_id_arr = np.array(doc_ids, dtype=np.uint64)
+
+        with open(emb_path, "wb") as f:
+            f.write(np.array([total_tokens], dtype=np.int64).tobytes())
+            f.write(np.array([dim], dtype=np.int64).tobytes())
+            f.write(f16.tobytes())
+
+        with open(off_path, "wb") as f:
+            f.write(np.array([len(offsets)], dtype=np.int64).tobytes())
+            f.write(offsets.tobytes())
+
+        with open(map_path, "wb") as f:
+            f.write(np.array([len(doc_id_arr)], dtype=np.int64).tobytes())
+            f.write(doc_id_arr.tobytes())
+
+        logger.info(
+            "Merged mmap layout persisted: %d docs, %d tokens at %s",
+            len(doc_ids),
+            total_tokens,
+            self.root,
+        )
 
     def _save_doc_index(self, rows: List[Tuple[int, int, int, int, int]]) -> None:
         rows = sorted(rows, key=lambda x: x[0])
