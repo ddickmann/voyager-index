@@ -299,7 +299,7 @@ def run_gpu_corpus_mode(
     query_vecs: list,
     dim: int,
     params: dict,
-    n_warmup: int = 5,
+    n_warmup: int = 10,
 ) -> Dict[str, Any]:
     """GPU-corpus mode: entire corpus preloaded into VRAM."""
     device = "cuda"
@@ -315,7 +315,8 @@ def run_gpu_corpus_mode(
 
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
     gpu_corpus = PreloadedGpuCorpus(doc_vecs, doc_ids, dim, device=device)
-    warmup_maxsim(dim=dim, doc_token_counts=[128, 256], device=device)
+    tok_counts = sorted({e - s for s, e in doc_offsets})
+    warmup_maxsim(dim=dim, doc_token_counts=tok_counts, device=device)
 
     pool = PinnedBufferPool(max_tokens=50_000, dim=dim, n_buffers=3)
     pipeline = FetchPipeline(store=store, mode=TransferMode.PINNED, pinned_pool=pool, device=device)
