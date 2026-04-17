@@ -106,7 +106,7 @@ def _load_provider(model_name: str, use_prompts: bool):
             max_concurrency=int(os.environ.get("VOYAGER_GROUNDEDNESS_VLLM_MAX_CONCURRENCY", "8")),
         )
         provider.healthcheck()
-        return provider, None, None
+        return provider, None, None, {"transport": "vllm_factory", "endpoint": vllm_endpoint}
 
     from pylate import models
 
@@ -118,7 +118,7 @@ def _load_provider(model_name: str, use_prompts: bool):
     )
     query_prompt_name = "query" if use_prompts else None
     document_prompt_name = "document" if use_prompts else None
-    return provider, query_prompt_name, document_prompt_name
+    return provider, query_prompt_name, document_prompt_name, {"transport": "local_pylate", "device": device}
 
 
 def _provider_token_count(provider, text: str) -> int:
@@ -534,14 +534,21 @@ def render_markdown(
     raw_context_chunk_tokens: int,
     encoder_token_limit: Optional[int],
     hardest_case_comparison: Optional[Dict[str, Any]] = None,
+    transport_info: Optional[Dict[str, Any]] = None,
 ) -> str:
     metrics = summary["metrics"]
+    transport_label = (transport_info or {}).get("transport", "local_pylate")
+    transport_endpoint = (transport_info or {}).get("endpoint")
+    transport_line = f"- transport: `{transport_label}`"
+    if transport_endpoint:
+        transport_line += f" (endpoint: `{transport_endpoint}`)"
     lines = [
         "# Groundedness Service Validation",
         "",
         f"- profile: `{profile}`",
         f"- model: `{model_name}`",
         f"- prompts: `{use_prompts}`",
+        transport_line,
         f"- packed raw_context chunk tokens: `{raw_context_chunk_tokens}`",
         f"- latency repeats per case: `{_latency_repeats()}`",
         f"- encoder token limit: `{encoder_token_limit}`",
@@ -657,13 +664,14 @@ def run(
 ) -> Tuple[Dict[str, Any], Path, Path]:
     hardest_case_comparison: Optional[Dict[str, Any]] = None
     encoder_token_limit: Optional[int] = None
+    transport_info: Dict[str, Any] = {"transport": "local_pylate"}
     if profile == "default":
         embedded = load_or_build(rebuild=rebuild, model_name=model_name, use_prompts=use_prompts)
         if embedded:
             score_embedded_case(embedded[0])
         rows = [score_embedded_case(case) for case in embedded]
     elif profile == "long_ambiguous":
-        provider, query_prompt_name, document_prompt_name = _load_provider(model_name, use_prompts)
+        provider, query_prompt_name, document_prompt_name, transport_info = _load_provider(model_name, use_prompts)
         encoder_token_limit = provider_token_limit(provider, is_query=False)
         if LONG_AMBIGUOUS_CASES:
             score_long_context_case(
@@ -718,6 +726,7 @@ def run(
         "score_batch_units": _score_batch_units(),
         "latency_repeats": _latency_repeats(),
         "encoder_token_limit": encoder_token_limit,
+        "transport": transport_info,
         "summary": summary,
         "rows": rows,
         "hardest_case_comparison": hardest_case_comparison,
@@ -735,6 +744,7 @@ def run(
             raw_context_chunk_tokens=raw_context_chunk_tokens,
             encoder_token_limit=encoder_token_limit,
             hardest_case_comparison=hardest_case_comparison,
+            transport_info=transport_info,
         ),
         encoding="utf-8",
     )

@@ -1248,11 +1248,62 @@ class GroundednessScores(BaseModel):
     primary_name: str
     primary_score: float
     reverse_context: float
+    reverse_context_calibrated: Optional[float] = None
+    literal_guarded: Optional[float] = None
+    literal_mismatch_count: Optional[int] = None
+    literal_match_count: Optional[int] = None
+    literal_total_count: Optional[int] = None
+    nli_aggregate: Optional[float] = None
+    nli_claim_count: Optional[int] = None
+    nli_skipped_count: Optional[int] = None
+    groundedness_v2: Optional[float] = None
     consensus_hardened: Optional[float] = None
     reverse_query_context: Optional[float] = None
     triangular: Optional[float] = None
     echo_mean: Optional[float] = None
     grounded_coverage: Optional[float] = None
+    null_bank_size: Optional[int] = None
+
+
+class GroundednessLiteral(BaseModel):
+    """A narrow-scope literal extracted from response or support text."""
+
+    kind: str
+    value: str
+    normalized: str
+    start: int
+    end: int
+
+
+class GroundednessLiteralDiagnostics(BaseModel):
+    """Per-request literal extraction and matching diagnostics."""
+
+    response_literals: List[GroundednessLiteral] = Field(default_factory=list)
+    matches: List[GroundednessLiteral] = Field(default_factory=list)
+    mismatches: List[GroundednessLiteral] = Field(default_factory=list)
+
+
+class GroundednessNLIClaim(BaseModel):
+    """Per-claim entailment record returned by the NLI verifier."""
+
+    index: int
+    text: str
+    char_start: int
+    char_end: int
+    entailment: float
+    neutral: float
+    contradiction: float
+    score: float
+    skipped: bool
+    skip_reason: Optional[str] = None
+    premise_count: int
+
+
+class GroundednessNLIDiagnostics(BaseModel):
+    """Per-request NLI verification diagnostics."""
+
+    aggregate_score: Optional[float] = None
+    claims: List[GroundednessNLIClaim] = Field(default_factory=list)
 
 
 class GroundednessQueryToken(BaseModel):
@@ -1270,6 +1321,11 @@ class GroundednessResponseToken(BaseModel):
     token: str
     weight: float
     reverse_context: float
+    reverse_context_calibrated: Optional[float] = None
+    reverse_context_z: Optional[float] = None
+    null_mean: Optional[float] = None
+    null_std: Optional[float] = None
+    nli_score: Optional[float] = None
     consensus_hardened: Optional[float] = None
     support_unit_hits_above_threshold: Optional[int] = None
     support_unit_soft_breadth: Optional[float] = None
@@ -1417,6 +1473,8 @@ class GroundednessResponse(BaseModel):
     query_tokens: Optional[List[GroundednessQueryToken]] = None
     debug: Optional[GroundednessDebugPayload] = None
     warnings: List[str] = Field(default_factory=list)
+    literal_diagnostics: Optional[GroundednessLiteralDiagnostics] = None
+    nli_diagnostics: Optional[GroundednessNLIDiagnostics] = None
     time_ms: float
 
 

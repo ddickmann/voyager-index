@@ -279,6 +279,17 @@ class VllmFactoryModernColBERTProvider:
                 normalized.append(str(token))
         return normalized
 
+    def encoded_token_count(self, text: str, *, is_query: bool = False) -> int:
+        """Strict, server-parity token count for packing budgets.
+
+        Returns the exact length of the token id sequence the provider will send
+        to the backend, including special tokens and the ``[D]/[Q]`` prefix. The
+        groundedness packer prefers this over a naive tokenizer call so packed
+        windows match what the encoder will actually consume.
+        """
+
+        return len(self._token_ids(text, is_query=is_query))
+
     def build_payload(self, text: str, *, is_query: bool) -> dict[str, Any]:
         return {
             "model": self.model,
@@ -312,9 +323,22 @@ class VllmFactoryModernColBERTProvider:
             if array.size == 0:
                 return np.zeros((0, self.colbert_dim), dtype=np.float32)
             if array.size % self.colbert_dim != 0:
-                return array.reshape(1, -1)
+                raise ValueError(
+                    "ModernColBERT /pooling response length {size} is not divisible by colbert_dim={dim}; "
+                    "the server did not return a multi-vector matrix. Check the model id and IO processor wiring.".format(
+                        size=array.size,
+                        dim=self.colbert_dim,
+                    )
+                )
             return array.reshape(-1, self.colbert_dim)
         if array.ndim == 2:
+            if array.shape[1] != self.colbert_dim:
+                raise ValueError(
+                    "ModernColBERT /pooling response inner dim {got} does not match colbert_dim={expected}".format(
+                        got=int(array.shape[1]),
+                        expected=self.colbert_dim,
+                    )
+                )
             return array
         raise TypeError("Unsupported ModernColBERT /pooling payload shape")
 

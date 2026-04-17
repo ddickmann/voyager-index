@@ -61,6 +61,7 @@ from .models import (
 )
 from .groundedness import (
     SupportUnitInput,
+    default_null_bank_texts,
     encode_texts,
     partition_support_units,
     provider_token_limit,
@@ -68,6 +69,15 @@ from .groundedness import (
     score_groundedness_chunked,
     segment_text,
     tokenize_text,
+)
+from .groundedness_nli import (
+    default_max_batch as nli_default_max_batch,
+    default_max_claims as nli_default_max_claims,
+    default_max_latency_ms as nli_default_max_latency_ms,
+    default_top_k_premises as nli_default_top_k_premises,
+    fusion_weights_from_env as nli_fusion_weights_from_env,
+    is_enabled as nli_is_enabled,
+    resolve_default_provider as nli_resolve_default_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +185,10 @@ class SearchService:
         self._task_thread_lock = threading.Lock()
         self._collections_lock = threading.RLock()
         self._collection_locks: Dict[str, threading.RLock] = {}
+        self._cached_groundedness_providers = {}
+        self._cached_groundedness_null_banks = {}
+        self._nli_provider = None
+        self._nli_provider_resolved = False
         logger.info("Reference API runtime capabilities: %s", self.runtime_capabilities)
         self._recover_pending_journals()
         self._load_collections()
@@ -3016,6 +3030,62 @@ class SearchService:
         )
 
     _cached_groundedness_providers: Dict[str, Any] = {}
+    _cached_groundedness_null_banks: Dict[str, List["torch.Tensor"]] = {}
+
+    def _groundedness_null_bank_embeddings(
+        self,
+        provider: Any,
+        *,
+        prompt_name: Optional[str],
+    ) -> List["torch.Tensor"]:
+        """Lazily encode and cache the calibration null bank for ``provider``."""
+
+        if os.environ.get("VOYAGER_GROUNDEDNESS_DISABLE_CALIBRATION", "").lower() in {"1", "true", "yes"}:
+            return []
+
+        bank_texts = default_null_bank_texts()
+        if not bank_texts:
+            return []
+
+        provider_key = (
+            getattr(provider, "model_name", None)
+            or getattr(provider, "model_name_or_path", None)
+            or getattr(provider, "model", None)
+            or repr(provider)
+        )
+        cache_key = f"{provider_key}::{id(provider)}::{prompt_name or ''}::v{len(bank_texts)}"
+        cached = self._cached_groundedness_null_banks.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            tensors = encode_texts(
+                provider,
+                list(bank_texts),
+                is_query=False,
+                prompt_name=prompt_name,
+            )
+        except Exception as exc:
+            logger.warning("groundedness_null_bank_encode_failed", extra={"error": str(exc)})
+            self._cached_groundedness_null_banks[cache_key] = []
+            return []
+        bank: List["torch.Tensor"] = [torch.as_tensor(t, dtype=torch.float32) for t in tensors]
+        self._cached_groundedness_null_banks[cache_key] = bank
+        return bank
+
+    def _get_nli_provider(self):
+        """Return the NLI provider when enabled; cached after first resolution."""
+
+        if not nli_is_enabled():
+            return None
+        if self._nli_provider_resolved:
+            return self._nli_provider
+        try:
+            self._nli_provider = nli_resolve_default_provider()
+        except Exception as exc:
+            logger.warning("nli_resolve_failed", extra={"error": str(exc)})
+            self._nli_provider = None
+        self._nli_provider_resolved = True
+        return self._nli_provider
 
     def _get_groundedness_provider(
         self,
@@ -3225,6 +3295,22 @@ class SearchService:
                     is_query=True,
                 )
 
+            null_bank_embeddings = self._groundedness_null_bank_embeddings(
+                provider,
+                prompt_name=request.document_prompt_name,
+            )
+            nli_provider = self._get_nli_provider()
+            nli_kwargs: Dict[str, Any] = {}
+            if nli_provider is not None:
+                nli_kwargs = {
+                    "nli_provider": nli_provider,
+                    "nli_max_claims": nli_default_max_claims(),
+                    "nli_top_k_premises": nli_default_top_k_premises(),
+                    "nli_max_batch": nli_default_max_batch(),
+                    "nli_max_latency_ms": nli_default_max_latency_ms(),
+                    "fusion_weights": nli_fusion_weights_from_env(),
+                }
+
             if request.chunk_ids:
                 scored = score_groundedness(
                     support_units=support_units,
@@ -3235,6 +3321,9 @@ class SearchService:
                     evidence_limit=request.evidence_limit,
                     primary_metric=request.primary_metric.value,
                     debug_dense_matrices=request.debug_dense_matrices,
+                    null_bank_embeddings=null_bank_embeddings or None,
+                    response_text=request.response_text,
+                    **nli_kwargs,
                 )
             else:
                 support_batches = partition_support_units(
@@ -3250,6 +3339,9 @@ class SearchService:
                     evidence_limit=request.evidence_limit,
                     primary_metric=request.primary_metric.value,
                     debug_dense_matrices=request.debug_dense_matrices,
+                    null_bank_embeddings=null_bank_embeddings or None,
+                    response_text=request.response_text,
+                    **nli_kwargs,
                 )
             warnings.extend(scored.pop("warnings", []))
             warnings = list(dict.fromkeys(warnings))
@@ -3274,6 +3366,8 @@ class SearchService:
                 query_tokens=scored.get("query_tokens"),
                 debug=scored.get("debug"),
                 warnings=warnings,
+                literal_diagnostics=scored.get("literal_diagnostics"),
+                nli_diagnostics=scored.get("nli_diagnostics"),
                 time_ms=elapsed_ms,
             )
 

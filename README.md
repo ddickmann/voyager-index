@@ -445,8 +445,14 @@ post-generation answers:
   to the LLM, without re-encoding support context
 - fallback path: score against `raw_context` when chunk IDs are unavailable,
   using sentence-aware packed support windows by default
-- output: headline `reverse_context`, secondary `consensus_hardened`,
-  response-token heatmaps, top evidence links, and optional dense debug matrices
+- output: headline `reverse_context`, calibrated headline
+  `reverse_context_calibrated` (standardized against an internal null bank of
+  unrelated short documents), secondary `consensus_hardened`, secondary
+  `literal_guarded` plus `literal_diagnostics` for unsupported dates, numbers,
+  units, currencies, URLs, emails, and explicit identifiers, optional fused
+  `groundedness_v2` with claim-level `nli_aggregate` and `nli_diagnostics`
+  when the NLI verifier is enabled, response-token heatmaps (with per-token
+  `nli_score`), top evidence links, and optional dense debug matrices
 
 This is already a **useful support signal and evidence trace**, not a final
 factuality oracle. It is useful for product debugging, QA, and user-facing
@@ -479,13 +485,49 @@ HTTP knobs `VOYAGER_GROUNDEDNESS_VLLM_BATCH_SIZE`,
 `VOYAGER_GROUNDEDNESS_VLLM_MAX_CONCURRENCY`, and
 `VOYAGER_GROUNDEDNESS_VLLM_TIMEOUT`.
 
-The production headline score uses **naive reverse-context MaxSim**.
+The production headline score uses **naive reverse-context MaxSim**, with a
+calibrated companion (`reverse_context_calibrated`) that standardizes per-token
+scores against an internal null bank of unrelated short documents and squashes
+the result into `(0, 1)` so the dynamic range is readable in UIs. Each response
+token also carries `reverse_context_z`, `null_mean`, and `null_std` for audit.
+The aggregate `null_bank_size` reports the calibration sample size; if it is
+`0`, the calibrated score falls back to the raw headline and the response
+includes a `calibration_disabled` warning. Disable calibration with
+`VOYAGER_GROUNDEDNESS_DISABLE_CALIBRATION=1` if you need the raw headline
+shape for a specific workflow.
+
 `consensus_hardened` is a conservative secondary score that lightly discounts
 narrow single-unit support and pairs with per-token breadth diagnostics such as
 `support_unit_hits_above_threshold` and `effective_support_units`. It is a
-calibrated robustness signal, not an IID significance test. Optional
-query-conditioned channels remain diagnostic-only and are not the recommended
-product path.
+calibrated robustness signal, not an IID significance test.
+
+`literal_guarded` discounts the calibrated headline by `(1 - rate)^k` where `k`
+is the number of unsupported response literals (dates, numbers, units,
+currency, percent, URLs, emails, identifiers). Use it together with
+`literal_diagnostics` whenever the answer should be verifiable lexically; the
+embedding-only headline can otherwise be too forgiving on date or number
+swaps.
+
+Optional **NLI / claim-level verifier** (Phase D, opt-in). Set
+`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1` to load a HuggingFace MNLI model
+(default `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`, override with
+`VOYAGER_GROUNDEDNESS_NLI_MODEL`). The verifier splits the response into
+sentence-level claims, picks top-`k` lexically overlapping support premises,
+runs batched entailment under a strict latency budget, and projects per-claim
+scores back to response tokens (`response_tokens[*].nli_score`). The aggregate
+`nli_aggregate` and the fused `groundedness_v2` (convex combination of
+`reverse_context_calibrated`, `literal_guarded`, and `nli_aggregate`) are then
+the recommended UI score. When the verifier is disabled or the budget is
+exhausted, `groundedness_v2` automatically renormalizes over the remaining
+peer channels so the response stays well defined. Tune the verifier with
+`VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS`,
+`VOYAGER_GROUNDEDNESS_NLI_TOP_K`,
+`VOYAGER_GROUNDEDNESS_NLI_BATCH`,
+`VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS`, and the fusion weights
+`VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED|_LITERAL|_NLI`.
+
+Optional query-conditioned channels remain diagnostic-only and are not the
+recommended product path.
 
 Current audit boundary: on the hardest long-context suite (about `7.8k` tokens,
 `lightonai/GTE-ModernColBERT-v1`, `256`-token packed windows), anchor AUROC

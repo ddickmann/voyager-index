@@ -20,6 +20,16 @@ offer strong evidence for each response token and then applies a small
 conservative discount when support is narrow. It is a robustness hint, not a
 formal statistical confidence estimate.
 
+The `reverse_context_calibrated` headline (Real-Hardening Phase B) is the same
+per-token reverse-context maxima, but standardized against an internal **null
+bank** of unrelated short documents and squashed into `(0, 1)`. The null bank
+is encoded once per provider and document-prompt name and cached on the
+service. Each per-response-token row also returns `reverse_context_z`,
+`null_mean`, and `null_std`. When the null bank cannot be encoded (provider
+failure or `VOYAGER_GROUNDEDNESS_DISABLE_CALIBRATION=1`), the calibrated value
+falls back to the raw `reverse_context`, the response includes a
+`calibration_disabled` warning, and `null_bank_size` is `0`.
+
 ## Exact Formulas
 
 Let response token embeddings be `R = {r_t}` and support units be
@@ -89,6 +99,84 @@ consensus_hardened(R | U) = (sum_t w_t consensus_hardened_t) / (sum_t w_t)
 This construction keeps the secondary score close to `reverse_context` while
 slightly discounting narrow single-unit support.
 
+Calibrated headline (Phase B):
+
+```text
+g_t^(b) = max_j s(r_t, b_j)            for each null bank document b
+mu_null_t = mean_b g_t^(b)
+sigma_null_t = max(std_b g_t^(b), epsilon)
+z_t = (g_t - mu_null_t) / sigma_null_t
+p_t = sigmoid(z_t / T)
+reverse_context_calibrated(R | U) = (sum_t w_t p_t) / (sum_t w_t)
+```
+
+Notes:
+
+- `T` is a fixed temperature constant.
+- `epsilon` is a clamp on `sigma_null_t` to keep z-scores numerically safe.
+- The null bank `B` is small, deterministic, and shipped with the service.
+- The same response embeddings `R` are reused, so calibration is `O(|R| * |B|)`
+  in similarity work and is computed once per request.
+
+NLI / claim-level fused score (Phase D, opt-in):
+
+```text
+claims(R) = split_claims(response_text)
+premises(c) = top_k_lex_overlap(c, support_units)
+(p_e^{c,p}, p_n^{c,p}, p_c^{c,p}) = NLI(premise=p, hypothesis=c.text)
+entail_c = max_p p_e^{c,p}
+contradict_c = max_p p_c^{c,p}
+score_c = clip(entail_c - contradict_c, -1, 1)
+nli_aggregate(R | S) = 0.5 + 0.5 * mean_{c not skipped} score_c
+groundedness_v2 = renormalized_convex_combination(
+                      reverse_context_calibrated, literal_guarded, nli_aggregate;
+                      weights = (0.5, 0.2, 0.3) by default)
+```
+
+Notes:
+
+- Claims are sentence-level segments with optional split on `;`/``but``/``however``
+  for very long sentences; capped at `VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS`.
+- Premise selection is bag-of-words content overlap; falls back to a single
+  concatenated premise of all support text only if no overlap is found.
+- The NLI provider call is batched and bounded by
+  `VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS`. On budget exhaustion remaining claims
+  are marked `skip_reason="latency_budget"` and contribute nothing to the
+  aggregate; an `nli_budget_exceeded` warning is appended.
+- The fused `groundedness_v2` is a convex combination over the channels that
+  successfully produced a value; channels with `value is None` are dropped and
+  the remaining weights are renormalized so the output is in `[0, 1]`. When all
+  channels are missing the value is `None`.
+- Per-claim scores are projected back to response tokens by walking token
+  surfaces left-to-right against `response_text` and assigning each token the
+  score of the claim whose character span contains the cursor.
+
+Literal-guarded secondary score (Phase C):
+
+```text
+L_R = extract_literals(response_text)
+L_S = union_u extract_literals(text_u)
+mismatches(R, S) = { ell in L_R : (kind(ell), normalized(ell)) not in L_S }
+                   with year-vs-date and number-vs-measurement back-off rules
+literal_guarded(R | S) = base * (1 - rate)^|mismatches(R, S)|
+                          where base = reverse_context_calibrated when available
+                                else reverse_context
+```
+
+Notes:
+
+- The literal set is intentionally narrow: dates (ISO, slash, long-form),
+  bare years, currency, percent, common measurement units, large numbers with
+  thousands separators, URLs, email addresses, and mixed letter+digit
+  identifiers.
+- Overlapping literal spans are resolved greedily by length so the most
+  informative literal wins (e.g. a full date beats an embedded year).
+- Year literals match against any support date that contains the same year so
+  paraphrased "in 1981" responses are not penalized.
+- Number literals match against support measurements that begin with the same
+  numeric prefix to avoid double-counting numeric vs unit-bearing literals.
+- The penalty is multiplicative and clamped to a configurable floor.
+
 ## What Is Algorithmically Exact
 
 - Sentence-packed `raw_context` chunking preserves sentence boundaries and
@@ -112,7 +200,10 @@ slightly discounting narrow single-unit support.
 - `consensus_hardened` is not an IID significance test. Repeated paraphrases or
   duplicated evidence across support units can still inflate breadth.
 - Dense similarity remains weak on negation, role swaps, exact dates, numbers,
-  and entity substitutions.
+  and entity substitutions. The optional Phase D NLI verifier addresses the
+  first two when enabled; literal guardrails (Phase C) address the rest. The
+  fused `groundedness_v2` is the recommended UI score when both peers are
+  configured.
 - Query-conditioned channels remain diagnostic-only. On the current hard suite,
   triangular scoring did not beat the naive reverse-context baseline.
 

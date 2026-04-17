@@ -369,7 +369,10 @@ Use groundedness after generation, not as a replacement for retrieval:
 - fast path: score a final answer against the exact `chunk_ids` passed to the LLM
 - fallback path: score against `raw_context` when chunk IDs are unavailable,
   using sentence-aware packed windows by default
-- output: headline `reverse_context`, secondary `consensus_hardened`,
+- output: headline `reverse_context`, calibrated headline
+  `reverse_context_calibrated` (with per-token z-scores against an internal
+  null bank), secondary `consensus_hardened`, secondary `literal_guarded` plus
+  `literal_diagnostics` for unsupported dates/numbers/units/identifiers,
   response-token heatmaps, and top evidence links
 
 For text collections, start the server with a groundedness-capable encoder:
@@ -428,10 +431,45 @@ Look for these response fields:
 - `top_evidence`
 - `eligibility`
 
-`scores.reverse_context` remains the product headline. `scores.consensus_hardened`
-is a conservative secondary score that should be read alongside per-token
-`support_unit_hits_above_threshold`, `support_unit_soft_breadth`, and
-`effective_support_units`.
+`scores.reverse_context` remains the raw product headline.
+`scores.reverse_context_calibrated` is the same signal standardized against an
+internal null bank of unrelated short documents and squashed into `(0, 1)`; it
+is the recommended UI-facing aggregate when you need a wide, readable dynamic
+range. `scores.null_bank_size` reports the calibration sample size (`0` when
+calibration is disabled, in which case the calibrated value falls back to the
+raw headline and a `calibration_disabled` warning is emitted).
+`scores.consensus_hardened` is a conservative secondary score that should be
+read alongside per-token `support_unit_hits_above_threshold`,
+`support_unit_soft_breadth`, and `effective_support_units`. Per-token
+calibration diagnostics (`reverse_context_calibrated`, `reverse_context_z`,
+`null_mean`, `null_std`) appear inside each `response_tokens` row.
+
+`scores.literal_guarded` discounts the calibrated headline by `(1 - rate)^k`
+where `k` is the number of unsupported response literals (dates, numbers,
+units, currency, percent, URLs, emails, identifiers). The corresponding
+`literal_diagnostics.response_literals`, `literal_diagnostics.matches`, and
+`literal_diagnostics.mismatches` arrays describe exactly which literals were
+matched against the support text union and which were not. Use this when you
+want a literal-aware aggregate that is much more conservative than the
+embedding-only headline for facts that should be verifiable lexically.
+
+`scores.groundedness_v2` is the optional fused score that combines
+`reverse_context_calibrated`, `literal_guarded`, and `nli_aggregate` into a
+single convex combination (default weights `(0.5, 0.2, 0.3)`). Channels with
+missing values are dropped and the remaining weights are renormalized, so the
+fused score stays well defined even when the NLI verifier is disabled.
+
+Enable the **NLI / claim-level verifier** by starting the server with
+`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1` (default model
+`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`). When enabled the response
+includes `scores.nli_aggregate`, `scores.nli_claim_count`,
+`scores.nli_skipped_count`, per-token `nli_score` inside `response_tokens`,
+and a `nli_diagnostics.claims` array with per-claim text, character offsets,
+entailment / neutral / contradiction probabilities, signed score, premise
+count, and any `skip_reason` (`no_premises`, `latency_budget`,
+`nli_provider_error`). The verifier is bounded by
+`VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS` (default `2000` ms); on budget exhaustion
+remaining claims are skipped and an `nli_budget_exceeded` warning is added.
 
 Truth-in-advertising note:
 

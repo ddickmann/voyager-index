@@ -676,9 +676,30 @@ Preferred production path:
 - there is no explicit overlap field; overflow sentences move to the next packed
   support unit
 - keep the packed budget at or below the active encoder's usable document length
-- use the naive reverse-context score as the product headline
+- use the naive reverse-context score as the raw product headline
+- prefer `reverse_context_calibrated` for UI-facing aggregates: it standardizes
+  per-token scores against an internal null bank of unrelated short documents
+  and squashes the result into `(0, 1)` for a wider, readable dynamic range
 - read `consensus_hardened` as a conservative secondary robustness score, not a
   replacement headline
+- per-request `null_bank_size` reports calibration sample size; if it is `0`,
+  the calibrated score falls back to the raw headline and a
+  `calibration_disabled` warning is emitted
+- read `literal_guarded` together with `literal_diagnostics` when the answer
+  contains dates, numbers, currency, units, URLs, emails, or explicit
+  identifiers; each unsupported literal applies a multiplicative penalty to
+  the calibrated headline and a `literal_mismatch` warning is emitted with the
+  first few mismatched values
+- enable the optional **NLI / claim-level verifier** by starting the server with
+  `VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`. It splits the response into sentence
+  claims, picks top-`k` lexically overlapping support premises, runs batched
+  entailment under a strict latency budget, and returns
+  `scores.nli_aggregate`, per-token `nli_score`, and per-claim
+  `nli_diagnostics`. The fused `scores.groundedness_v2` is then a convex
+  combination of `reverse_context_calibrated`, `literal_guarded`, and
+  `nli_aggregate` (default weights `(0.5, 0.2, 0.3)`); when a channel is
+  missing the remaining weights are renormalized so the fused score stays
+  well defined
 
 Remote production setup:
 
@@ -694,6 +715,16 @@ Useful tuning knobs:
 - `VOYAGER_GROUNDEDNESS_VLLM_BATCH_SIZE`
 - `VOYAGER_GROUNDEDNESS_VLLM_MAX_CONCURRENCY`
 - `VOYAGER_GROUNDEDNESS_VLLM_TIMEOUT`
+- `VOYAGER_GROUNDEDNESS_NLI_ENABLED` (default `0`)
+- `VOYAGER_GROUNDEDNESS_NLI_MODEL`
+  (default `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`)
+- `VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS` (default `16`)
+- `VOYAGER_GROUNDEDNESS_NLI_TOP_K` (default `3`)
+- `VOYAGER_GROUNDEDNESS_NLI_BATCH` (default `16`)
+- `VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS` (default `2000`)
+- `VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED` (default `0.5`)
+- `VOYAGER_GROUNDEDNESS_FUSION_W_LITERAL` (default `0.2`)
+- `VOYAGER_GROUNDEDNESS_FUSION_W_NLI` (default `0.3`)
 
 Minimal example:
 

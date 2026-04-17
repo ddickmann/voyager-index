@@ -32,9 +32,107 @@ to a human reader.
 The production headline score is **naive reverse-context MaxSim** over the final
 answer and the supplied support context.
 
+Starting with the Real-Hardening rollout the response also carries a calibrated
+reverse-context score (`reverse_context_calibrated`) and per-token z-scores
+(`reverse_context_z`) standardized against an in-process **null bank** of
+unrelated short documents. The calibrated value lives in `(0, 1)` and is the
+recommended UI-facing aggregate when the encoder produces tightly clustered
+raw similarities. Use the raw `reverse_context` for backwards compatibility,
+audits, and exact-merge sanity checks.
+
 Optional query-conditioned signals can also be returned, but they are diagnostic
 only. They help explain prompt echo and coverage behavior; they are not the
 recommended product score.
+
+### Calibration null bank
+
+The service maintains a small, deterministic bank of unrelated short documents
+and encodes it once per provider (and document prompt name). For each request
+it computes, per response token, a max-similarity distribution against the bank
+and reports:
+
+- `null_mean`, `null_std`: per-token null statistics
+- `reverse_context_z`: per-token standardized score `(g_t - mu_t) / sigma_t`
+- `reverse_context_calibrated`: aggregate sigmoid-of-z, weighted by the same
+  content weights as the raw headline
+
+If the null bank cannot be encoded (provider failure or
+`VOYAGER_GROUNDEDNESS_DISABLE_CALIBRATION=1`), the calibrated score falls back
+to the raw `reverse_context`, the response includes a `calibration_disabled`
+warning, and `null_bank_size` is `0`.
+
+### NLI / claim-level verifier (Phase D, opt-in)
+
+Dense similarity also struggles with negation, role swaps, and other
+contradictions that share most surface vocabulary with the support. Phase D
+adds an optional **claim-level NLI verifier** that runs as a primary peer of
+`reverse_context_calibrated`:
+
+- enable with `VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`
+- model: defaults to `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`; override
+  with `VOYAGER_GROUNDEDNESS_NLI_MODEL`
+- claim splitter: sentence-level with optional split on `;`/``but``/``however``
+  for very long sentences; capped at `VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS`
+  (default `16`)
+- premise selection: top-`k` lexical overlap support units per claim, with
+  `k = VOYAGER_GROUNDEDNESS_NLI_TOP_K` (default `3`); falls back to a
+  concatenated premise only if no overlap is found
+- batched entailment: `VOYAGER_GROUNDEDNESS_NLI_BATCH` (default `16`)
+- latency budget: `VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS` (default `2000`); on
+  budget exhaustion the verifier emits an `nli_budget_exceeded` warning and
+  falls back to embedding-only scoring for the remaining claims
+
+Output fields:
+
+- `scores.nli_aggregate`: per-claim signed margin
+  `entailment - contradiction`, averaged across non-skipped claims and
+  squashed into `(0, 1)`.
+- `scores.nli_claim_count`, `scores.nli_skipped_count`: bookkeeping for the
+  number of claims actually verified vs skipped.
+- `scores.groundedness_v2`: convex combination of
+  `reverse_context_calibrated`, `literal_guarded`, and `nli_aggregate`.
+  Weights default to `(0.5, 0.2, 0.3)` and can be overridden with
+  `VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED`,
+  `VOYAGER_GROUNDEDNESS_FUSION_W_LITERAL`, and
+  `VOYAGER_GROUNDEDNESS_FUSION_W_NLI`. When some channels are unavailable the
+  weights are renormalized so the fused value stays in `[0, 1]`.
+- `nli_diagnostics.claims`: per-claim record with text, character offsets,
+  entailment/neutral/contradiction probabilities, signed score, premise count,
+  and any `skip_reason` (`no_premises`, `latency_budget`,
+  `nli_provider_error`).
+- `response_tokens[*].nli_score`: per-token projection of the claim score onto
+  the response tokens that fall inside that claim's span. Tokens outside any
+  claim span (or when NLI is disabled) report `null`.
+
+When the verifier is disabled (default) every NLI field is `null` and the
+fused `groundedness_v2` falls back to a renormalized convex combination of
+the remaining peers (`reverse_context_calibrated` and `literal_guarded`).
+
+### Literal guardrails
+
+Dense similarity is forgiving on dates, numbers, units, currency, and explicit
+identifiers. The service ships a narrow-scope rule-based literal extractor and
+a literal-guarded secondary score:
+
+- `literal_diagnostics.response_literals`: every literal found in the response,
+  with `kind` (one of `date`, `year`, `currency`, `percent`, `measurement`,
+  `number`, `url`, `email`, `identifier`), `value`, `normalized` form, and
+  character offsets.
+- `literal_diagnostics.matches` / `literal_diagnostics.mismatches`: the same
+  literals split by whether the kind+normalized value also appears anywhere in
+  the support text union (years can match against support dates that contain
+  the year; bare numbers can match against support measurements that begin
+  with the same numeric literal).
+- `scores.literal_mismatch_count`: the number of unsupported response literals.
+- `scores.literal_guarded`: `reverse_context_calibrated` (or the raw headline
+  if calibration is disabled) multiplied by `(1 - rate)^k` where `k` is the
+  mismatch count. Use this when you need a literal-aware aggregate that is
+  much more conservative than the embedding-only headline.
+
+The extractor is deliberately lexical and conservative. It only fires on
+narrow, easy-to-verify patterns; broader factual checks (negation, role swap,
+entailment, exact-vs-paraphrased claim contradiction) are reserved for the
+NLI/claim verifier in the Real-Hardening Phase D rollout.
 
 ## Two Input Modes
 
@@ -128,11 +226,19 @@ segmentation strategy such as explicit `sentence` or `paragraph`.
 
 The response is designed to be heatmap-ready without a second round-trip:
 
-- `scores`: scalar groundedness values, including headline `reverse_context`
-  and secondary `consensus_hardened`
+- `scores`: scalar groundedness values, including headline `reverse_context`,
+  the calibrated headline `reverse_context_calibrated`, the literal-guarded
+  secondary `literal_guarded`, the consensus-hardened secondary
+  `consensus_hardened`, the calibration sample size `null_bank_size`, and the
+  literal counters `literal_mismatch_count`, `literal_match_count`, and
+  `literal_total_count`
 - `response_tokens`: per-token support scores for the generated answer, plus
-  breadth diagnostics such as `support_unit_hits_above_threshold`,
-  `support_unit_soft_breadth`, and `effective_support_units`
+  calibration diagnostics (`reverse_context_calibrated`, `reverse_context_z`,
+  `null_mean`, `null_std`) and breadth diagnostics such as
+  `support_unit_hits_above_threshold`, `support_unit_soft_breadth`, and
+  `effective_support_units`
+- `literal_diagnostics`: per-request narrow-scope literal extraction with
+  `response_literals`, `matches`, and `mismatches`
 - `support_units`: the support chunks or segmented raw-context units, each with
   token scores
 - `top_evidence`: top response-token to support-token alignments
