@@ -4,265 +4,41 @@
 [![PyPI](https://img.shields.io/pypi/v/voyager-index)](https://pypi.org/project/voyager-index/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Late-interaction retrieval for on-prem AI systems.**
-**Runs on a single machine, supports CPU or GPU execution, and keeps MaxSim as the truth scorer.**
+**Late-interaction retrieval for on-prem AI. One node. CPU or GPU. MaxSim is the truth scorer.**
 
-voyager-index is built for teams that want a **multi-vector native**
-**ColBERT / ColPali-style retrieval
-quality** without adopting a distributed search stack. It combines proxy routing,
-exact or quantized MaxSim, multimodal preprocessing, and database-grade
-operations behind one API.
+## The pain
 
-The OSS engine stays fast on its own. An optional **Latence graph sidecar**
-adds graph-aware candidate rescue, provenance, and freshness-aware metadata as a
-premium plane without becoming a hard dependency of the base retrieval path.
+ColBERT-quality retrieval is table-stakes for serious RAG, and the production options
+force a choice you should not have to make.
 
-```bash
-pip install "voyager-index[server,shard,gpu]"
-voyager-index-server                          # OpenAPI at :8080/docs
-```
+- Managed SaaS — fast to start, hard to control, your data leaves the box.
+- Distributed clusters — strong recall, expensive to operate.
+- Offline benchmarks — great numbers, no API, no WAL, no recovery.
 
-**For developers:** one retrieval contract across CPU and GPU, with real APIs and
-real failure recovery.
-**For infrastructure leaders:** strong late-interaction search on modest
-hardware, without taking on distributed search complexity.
+Most "production" stacks treat MaxSim as an optional rerank stage and lose its
+signal under aggressive shortlisting. Most engines that ship operationally drop
+late interaction entirely.
 
-## Start Here
+## The solution
 
-Use the shard-first production lane first. The canonical CPU-safe production
-install is one command, then you can layer GPU support on top when needed:
+`voyager-index` is a multi-vector native retrieval engine built around MaxSim as
+the **final scorer** — and engineered so a single machine can serve it.
 
-```bash
-pip install "voyager-index[full]"      # full public CPU surface
-pip install "voyager-index[full,gpu]"  # add Triton GPU scoring on CUDA hosts
-```
+- **One-node deployment.** No control plane, no orchestration tax.
+- **One contract across CPU and GPU.** Rust SIMD on CPU, Triton on GPU.
+- **Quantized fast paths.** FP16, INT8, FP8, ROQ-4, all reranked back to float truth.
+- **Late-interaction native.** ColBERT, ColPali, ColQwen out of the box.
+- **Database semantics.** WAL, checkpoint, crash recovery, scroll, retrieve.
+- **Optional graph lane.** The Latence sidecar augments first-stage retrieval — never required.
+
+## How
 
 ```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
-# OpenAPI docs at http://127.0.0.1:8080/docs
+pip install "voyager-index[full,gpu]"   # drop ,gpu on CPU-only hosts
+voyager-index-server                    # OpenAPI at http://127.0.0.1:8080/docs
 ```
 
-Fine-grained profiles stay available:
-
-```bash
-pip install "voyager-index[shard]"                     # minimal shard path
-pip install "voyager-index[server,shard]"             # reference API
-pip install "voyager-index[server,shard,shard-native]"  # Rust shard CPU fast-path
-pip install "voyager-index[server,shard,solver]"      # Tabu Search solver only
-pip install "voyager-index[server,shard,native]"      # both public native wheels
-pip install "voyager-index[server,shard,latence-graph]"  # graph lane without native extras
-```
-
-If you are evaluating quickly:
-
-- run the [Quickstart](docs/getting-started/quickstart.md)
-- use the [Reference API Tutorial](docs/reference_api_tutorial.md) for the HTTP path
-- use the [Shard Engine Guide](docs/guides/shard-engine.md) for the high-performance lane
-- use the [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md) for the optional premium lane
-
-## Who This Fits
-
-`voyager-index` is a strong fit when:
-
-- late-interaction retrieval quality matters
-- on-prem deployment matters
-- single-node operability matters
-- CPU and GPU flexibility matters
-- you want an API-facing retrieval service, not just an offline benchmark artifact
-
-It is probably **not** the first choice if you need:
-
-- a large distributed control plane across many nodes
-- purely dense ANN retrieval at extreme scale
-- a hosted multi-tenant SaaS search platform
-
-## Why
-
-Most retrieval systems optimize the shortlist and treat late interaction as an
-add-on. voyager-index is built the other way around: **MaxSim is the final
-scorer, and the rest of the system exists to make that practical in production.**
-
-- **Proxy routing instead of mandatory graph dependency.** A learned proxy router
-  collapses multi-vector candidate generation to ANN over compact routing
-  representations, then hands off to exact or quantized MaxSim. The optional
-  Latence graph lane augments after first-stage retrieval instead of replacing
-  the router.
-- **Fast CPU and GPU execution.** Rust fused scoring for CPU, Triton kernels for
-  GPU, with the same retrieval contract across both modes.
-- **Operational features included.** CRUD, WAL, checkpoint, recovery, metadata,
-  and API serving are part of the system, not an afterthought.
-- **Built for single-node deployment.** No distributed control plane required for
-  the common on-prem use case.
-
-## Current Public Proof
-
-`voyager-index` has two public proof layers, and they should be read together:
-
-- **Core production lane:** the shard-first route is proven by the BEIR shard
-  benchmark in `benchmarks/beir_benchmark.py`. That harness measures
-  search-only GPU-corpus Triton MaxSim and CPU multiworker fused Rust scoring on
-  the same production lane the API serves, with current public results showing
-  `2.6-5.0 ms` GPU P95, `164.8-346.8` GPU QPS, and `41.6-271.7` CPU QPS across
-  the listed BEIR sets.
-- **Optional Latence graph lane:** the graph lane is proven separately by
-  `tools/benchmarks/benchmark_latence_graph_quality.py` plus the graph tests. In
-  the current representative harness it delivers `+0.75` recall, `+0.333`
-  NDCG, and `+0.75` support coverage on graph-shaped queries, `0.0` ordinary-
-  query deltas, `57%` graph activation, `3.5` average added candidates on
-  graph-shaped queries, and passing route-conformance checks.
-
-The graph proof is intentionally scoped: it shows the shipped graph contract,
-additive rescue semantics, provenance tagging, and retrieval uplift on
-graph-shaped fixtures. It is not presented as a graph-on BEIR table.
-
-The graph data itself comes from structured Latence graph data derived from the
-indexed corpus and synchronized into the sidecar as target-linked graph
-contracts. The public guide explains the architecture and provenance model
-without exposing proprietary internals.
-
-For full methodology and benchmark caveats, see [Benchmarks And Methodology](docs/benchmarks.md).
-
-## BEIR Benchmark
-
-Measured on **NVIDIA RTX A5000 (24 GB)** using `lightonai/GTE-ModernColBERT-v1`.
-Numbers below are **search-only** and exclude query encoding. CPU results use
-**8 native Rust workers**. These are full-query-set results, not a sampled
-subset.
-
-These results are meant to show three things:
-
-1. **Retrieval quality** on standard BEIR datasets
-2. **Search latency and throughput** under realistic conditions
-3. **What is achievable on modest on-prem hardware**
-
-| Dataset | Documents | MAP@100 | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
-|---------|----------:|--------:|--------:|---------:|----------:|-----------:|--------:|-------------:|--------:|-------------:|
-| arguana | 8,674 | 0.2598 | 0.3679 | 0.4171 | 0.7402 | 0.9586 | 270.0 | 4.1 | 41.6 | 202.7 |
-| fiqa | 57,638 | 0.3818 | 0.4436 | 0.5049 | 0.5059 | 0.7297 | 164.8 | 5.0 | 80.2 | 115.7 |
-| nfcorpus | 3,633 | 0.1963 | 0.3833 | 0.3485 | 0.3404 | 0.3348 | 282.6 | 3.8 | 123.3 | 84.4 |
-| quora | 15,675 | 0.9686 | 0.9766 | 0.9790 | 0.9930 | 0.9993 | 346.8 | 2.6 | 271.7 | 46.9 |
-| scidocs | 25,657 | 0.1383 | 0.1977 | 0.2763 | 0.2070 | 0.4369 | 246.8 | 4.3 | 83.9 | 111.8 |
-| scifact | 5,183 | 0.7141 | 0.7544 | 0.7730 | 0.8766 | 0.9567 | 263.4 | 4.0 | 69.1 | 138.4 |
-
-### How to read these results
-
-- **GPU P95 under 6 ms** across all listed datasets shows the fast path is
-  practical on A5000-class hardware.
-- **CPU mode remains viable** when GPU capacity is limited or reserved for model
-  serving.
-- Quality metrics are strong while using the same shard/Rust/Triton retrieval
-  stack that powers the production API.
-
-### Comparison note: next-plaid
-
-[next-plaid](https://github.com/lightonai/next-plaid) is an important
-open-source reference for ColBERT-style serving. Their published numbers are
-measured on **NVIDIA H100 80 GB** with the same embedding model. Our numbers
-above are measured on an **RTX A5000** and are **search-only**; their reported
-QPS includes encoding. Quora is omitted below because their README uses a much
-larger corpus for that dataset.
-
-| Dataset | System | NDCG@10 | MAP@100 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
-|---------|--------|--------:|--------:|-----------:|--------:|-------------:|--------:|-------------:|
-| arguana | voyager | **0.3679** | **0.2598** | **0.9586** | **270.0** | **4.1** | **41.6** | **202.7** |
-| | next-plaid | 0.3499 | 0.2457 | 0.9337 | 13.6 | 170.1 | 17.4 | 454.7 |
-| fiqa | voyager | 0.4436 | 0.3818 | 0.7297 | **164.8** | **5.0** | **80.2** | **115.7** |
-| | next-plaid | **0.4506** | **0.3871** | **0.7459** | 18.2 | 170.6 | 17.6 | 259.1 |
-| nfcorpus | voyager | **0.3833** | **0.1963** | **0.3348** | **282.6** | **3.8** | **123.3** | **84.4** |
-| | next-plaid | 0.3828 | 0.1870 | 0.3228 | 6.6 | 262.1 | 16.9 | 219.4 |
-| scidocs | voyager | **0.1977** | **0.1383** | 0.4369 | **246.8** | **4.3** | **83.9** | **111.8** |
-| | next-plaid | 0.1914 | 0.1352 | **0.4418** | 17.5 | 139.3 | 16.5 | 281.7 |
-| scifact | voyager | 0.7544 | 0.7141 | 0.9567 | **263.4** | **4.0** | **69.1** | **138.4** |
-| | next-plaid | **0.7593** | **0.7186** | **0.9633** | 7.9 | 169.5 | 16.9 | 305.4 |
-
-In our current benchmark setup, voyager-index is **competitive or better on
-retrieval quality** across most listed datasets and shows **materially higher
-search throughput with much lower P95 latency** on an RTX A5000. **This is not
-a fully apples-to-apples comparison:** next-plaid reports H100 numbers and
-includes encoding in QPS, while our numbers are search-only on a smaller GPU.
-The table above uses full-query evaluation specifically to avoid publishing a
-flattering slice.
-
-## Architecture
-
-voyager-index separates the problem into **routing, storage, exact scoring,
-optimization, durability, and serving**. This keeps the retrieval contract stable
-across CPU, GPU, and mixed deployment modes.
-
-```text
-query vectors (token / patch embeddings)
-  → LEMUR routing MLP
-  → FAISS ANN over routing representations
-  → candidate document IDs
-  → optional BM25 fusion when query_text is available
-  → optional centroid-approx or doc-mean proxy pruning
-  → optional ColBANDIT query-time pruning
-  → exact or quantized MaxSim
-       Rust fused exact (CPU, mmap, SIMD, GIL-free)
-       Triton FP16 / INT8 / FP8 / ROQ-4 (GPU)
-       GPU-corpus gather + rerank
-  → optional Latence graph augmentation
-  → optional solver/context packing
-  → top-K results or packed context
-```
-
-| Layer | What it does | Why it matters |
-|-------|-------------|----------------|
-| **Routing** | LEMUR MLP, FAISS MIPS, candidate budgets | Makes late interaction tractable without graph construction |
-| **Storage** | Safetensors shards, merged mmap, GPU-resident corpus | Honest CPU and GPU layouts for any corpus size |
-| **Exact scoring** | Triton MaxSim, Rust fused MaxSim, quantized kernels | MaxSim stays the truth scorer across all deployment shapes |
-| **Optimization** | ColBANDIT pruning, centroid approximation, ROQ-4 | Moves the latency/recall frontier without changing the retrieval contract |
-| **Optional graph plane** | Latence graph sidecar, target-linked graph contracts, additive rescue, provenance | Keeps graph awareness premium and post-retrieval |
-| **Durability** | WAL, memtable, checkpoint, crash recovery | A retrieval engine that behaves like a real database |
-| **Serving** | FastAPI, base64 transport, multi-worker, OpenAPI | One `pip install`, one server, one API contract |
-
-## What Makes It Different
-
-### No mandatory graph dependency
-
-voyager-index uses proxy routing plus exact MaxSim reranking without requiring a
-graph build step in the OSS serving path. When installed, the optional Latence
-graph sidecar is invoked after first-stage retrieval and merged additively. That
-keeps the system simpler to operate while preserving a premium graph lane.
-
-### Rust + Triton hot paths
-
-The CPU path is a native Rust extension (`latence_shard_engine`) with
-memory-mapped shards, fused MaxSim, SIMD acceleration, and GIL-free execution.
-The GPU path uses Triton kernels for exact and quantized scoring with
-variable-length document scheduling.
-
-### Research-backed features in the serving path
-
-LEMUR routing, ColBANDIT query-time pruning, ROQ rotational quantization, and
-budget-aware context optimization are integrated into the shipped system rather
-than isolated in research notebooks.
-
-### Operational features, not just benchmarking
-
-CRUD, WAL, checkpoint, crash recovery, payload metadata, scroll, and retrieve
-are included because retrieval systems in production need operational discipline,
-not just benchmark wins.
-
-### Multimodal native
-
-The same serving stack supports text token embeddings (ColBERT) and image patch
-embeddings (ColPali/ColQwen), with preprocessing for PDF, DOCX, XLSX, and image
-inputs.
-
-## Quickstart
-
-### Install
-
-```bash
-pip install "voyager-index[full]"                    # full public CPU surface
-pip install "voyager-index[full,gpu]"                # + Triton GPU kernels on CUDA hosts
-pip install "voyager-index[server,shard]"            # + FastAPI server only
-pip install "voyager-index[server,shard,shard-native]"  # + Rust shard CPU fast-path
-pip install "voyager-index[server,shard,solver]"     # + Tabu Search solver only
-```
-
-### Python SDK
+Python:
 
 ```python
 import numpy as np
@@ -272,358 +48,115 @@ rng = np.random.default_rng(7)
 docs = [rng.normal(size=(16, 128)).astype("float32") for _ in range(32)]
 query = rng.normal(size=(16, 128)).astype("float32")
 
-idx = Index(
-    "demo-index",
-    dim=128,
-    engine="shard",
-    n_shards=32,
-    k_candidates=256,
-    compression="fp16",
-)
+idx = Index("demo", dim=128, engine="shard", n_shards=32,
+            k_candidates=256, compression="fp16")
 idx.add(docs, ids=list(range(len(docs))))
-results = idx.search(query, k=5)
-print(results[0])
-idx.close()
+print(idx.search(query, k=5)[0])
 ```
 
-### HTTP API
-
-```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
-# OpenAPI docs at http://127.0.0.1:8080/docs
-```
+HTTP (base64 vector payloads, fp8 GPU scoring, ColBANDIT pruning):
 
 ```python
-import numpy as np
-import requests
+import numpy as np, requests
 from voyager_index import encode_vector_payload
 
-query = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
-
-response = requests.post(
-    "http://127.0.0.1:8080/collections/my-shard/search",
-    json={
-        "vectors": encode_vector_payload(query, dtype="float16"),
-        "top_k": 5,
-        "quantization_mode": "fp8",
-        "use_colbandit": True,
-    },
+q = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
+r = requests.post(
+    "http://127.0.0.1:8080/collections/demo/search",
+    json={"vectors": encode_vector_payload(q, dtype="float16"), "top_k": 5,
+          "quantization_mode": "fp8", "use_colbandit": True},
     timeout=30,
 )
-print(response.json()["results"][0])
+print(r.json()["results"][0])
 ```
 
-### Docker
+Docker:
 
 ```bash
 docker build -f deploy/reference-api/Dockerfile -t voyager-index .
 docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 ```
 
-## Execution Modes
+## Features
 
-| Mode | Corpus placement | Best for |
-|------|-----------------|----------|
-| **CPU exact** | Disk/mmap → Rust fused MaxSim | Simplest deployment, no GPU required |
-| **GPU streamed** | Disk/CPU → GPU transfer → Triton MaxSim | Large corpora that don't fit in VRAM |
-| **GPU corpus** | Fully resident in VRAM | Lowest latency when corpus fits |
+- **Routing** — LEMUR proxy router + FAISS MIPS shortlist, optional ColBANDIT query-time pruning.
+- **Scoring** — Triton MaxSim and fused Rust MaxSim, INT8 / FP8 / ROQ-4 with float rerank.
+- **Storage** — safetensors shards, memory-mapped CPU, GPU-resident corpus mode.
+- **Hybrid** — BM25 + dense fusion via RRF or Tabu Search refinement.
+- **Multimodal** — text (ColBERT), images (ColPali / ColQwen), preprocessing for PDF / DOCX / XLSX.
+- **Operations** — WAL, checkpoint, crash recovery, scroll, retrieve, multi-worker FastAPI.
+- **Optional graph lane** — Latence sidecar for graph-aware rescue and provenance, additive to the OSS path.
+- **Groundedness Tracker (Beta)** — post-generation hallucination signal scored against `chunk_ids` or raw context, with optional NLI peer fusion. See the [Beta Guide](docs/guides/groundedness-beta.md).
 
-All three modes share the same collection format, API contract, and retrieval
-semantics. Start with CPU, add GPU when latency matters.
+## Benchmarks
 
-## Engineering Knobs
+### BEIR retrieval — RTX A5000, search-only, full query set
 
-### Routing and candidate budgets
+Encoder: `lightonai/GTE-ModernColBERT-v1`. CPU lane uses 8 native Rust workers.
 
-- `k_candidates` — LEMUR candidate budget before exact scoring
-- `max_docs_exact` — hard ceiling for the exact-stage document set
-- `n_full_scores` — proxy shortlist size before full MaxSim
-- `use_colbandit` — enable query-time pruning
+| Dataset  | Docs   | NDCG@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
+|----------|-------:|--------:|-----------:|--------:|-------------:|--------:|-------------:|
+| arguana  | 8,674  | 0.3679  | 0.9586     | 270.0   | 4.1          | 41.6    | 202.7        |
+| fiqa     | 57,638 | 0.4436  | 0.7297     | 164.8   | 5.0          | 80.2    | 115.7        |
+| nfcorpus | 3,633  | 0.3833  | 0.3348     | 282.6   | 3.8          | 123.3   | 84.4         |
+| quora    | 15,675 | 0.9766  | 0.9993     | 346.8   | 2.6          | 271.7   | 46.9         |
+| scidocs  | 25,657 | 0.1977  | 0.4369     | 246.8   | 4.3          | 83.9    | 111.8        |
+| scifact  | 5,183  | 0.7544  | 0.9567     | 263.4   | 4.0          | 69.1    | 138.4        |
 
-### Storage and transfer
+GPU P95 stays under 6 ms across every dataset. Comparison against
+[next-plaid](https://github.com/lightonai/next-plaid) (same model, H100, encoding
+included), methodology, and caveats live in
+[docs/benchmarks.md](docs/benchmarks.md).
 
-- `n_shards` — number of storage shards
-- `compression` — `fp16`, `int8`, or `roq4`
-- `transfer_mode` — `pageable`, `pinned`, or `double_buffered`
+### Groundedness Tracker (Beta) — real-world
 
-### Scoring and hardware
+Run on **RAGTruth** + **HaluEval**, 200 samples per stratum, A5000 batch 1.
+Headline = `groundedness_v2` (calibrated MaxSim + literal guardrails + optional NLI peer).
 
-- `quantization_mode` — exact, `int8`, `fp8`, or `roq4`
-- `router_device` — where LEMUR executes (`cpu` or `cuda`)
-- `gpu_corpus_rerank_topn` — GPU rerank frontier for corpus-resident mode
+| Lane                            | Internal lex / sem / partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
+|---------------------------------|-----------------------------:|------------------:|---------------:|------------:|
+| Dense + literal only            |           0.79 / 0.73 / 1.00 |              0.58 |           0.37 |     111 ms  |
+| **+ NLI peer (DeBERTa-MNLI)**   |       **1.00 / 1.00 / 1.00** |          **0.60** |       **0.69** | **141 ms**  |
+| Pre-registered exit             |       ≥ 0.80 / ≥ 0.70 / ≥ 0.65 |            ≥ 0.55 |         ≥ 0.70 |  ≤ 250 ms   |
 
-## Hybrid and Multimodal
+NLI lane meets **5 of 6** pre-registered exit criteria; HaluEval QA misses by
+0.01 F1. Reproduction and per-stratum breakdown:
+[Groundedness Beta Guide](docs/guides/groundedness-beta.md) and
+[`research/triangular_maxsim/README.md`](research/triangular_maxsim/README.md).
 
-- **BM25 + dense fusion** via `rrf` or Tabu Search refinement
-- **Optional Latence graph augmentation** via `graph_mode`, independent graph budgets, and `graph_explain`
-- **Multimodal collections** share the same base64 vector contract as text
-- **Document preprocessing** handles PDF, DOCX, XLSX, and images via
-  `render_documents()` and the `/reference/preprocess/documents` API endpoint
+## Architecture
 
-Production note:
+```text
+query (token / patch embeddings)
+  → LEMUR routing MLP → FAISS ANN → candidate IDs
+  → optional BM25 fusion · centroid pruning · ColBANDIT
+  → exact MaxSim   (Rust SIMD CPU  |  Triton FP16/INT8/FP8/ROQ-4 GPU)
+  → optional Latence graph augmentation
+  → top-K (or packed context)
+```
 
-- `dense` HTTP collections are where BM25 + `query_text` hybrid search lives today
-- `shard` HTTP collections are the high-performance vector route and can still use the optional graph lane additively through `graph_mode` and `query_payload`
+| Layer        | What ships                                                       |
+|--------------|------------------------------------------------------------------|
+| Routing      | LEMUR MLP + FAISS MIPS, candidate budgets                        |
+| Storage      | safetensors shards, mmap, GPU-resident corpus mode               |
+| Scoring      | Triton + Rust fused MaxSim with INT8 / FP8 / ROQ-4 fast paths    |
+| Optional graph | Latence sidecar, additive after first-stage retrieval          |
+| Durability   | WAL, memtable, checkpoint, crash recovery                        |
+| Serving      | FastAPI, base64 vector transport, multi-worker, OpenAPI          |
 
-## API Surface
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /collections/{name}` | Create collection |
-| `GET /collections/{name}/info` | Inspect collection tuning, health, and graph sync state |
-| `POST /collections/{name}/points` | Add / upsert documents |
-| `POST /collections/{name}/search` | Search |
-| `POST /collections/{name}/search/batch` | Batch search |
-| `GET /collections/{name}/scroll` | Scroll through results |
-| `POST /collections/{name}/retrieve` | Retrieve by ID |
-| `DELETE /collections/{name}/points` | Delete documents |
-| `POST /collections/{name}/checkpoint` | Checkpoint WAL |
-| `GET /collections/{name}/wal/status` | WAL status |
-| `POST /collections/{name}/groundedness` | Post-generation Groundedness Tracker (Beta) |
-| `POST /encode` | Encode text/images to vectors |
-| `POST /rerank` | Rerank results |
-| `POST /reference/optimize` | Context packing (Tabu Search) |
-
-Graph-aware search uses the same search endpoint and adds:
-
-- `graph_mode`
-- `graph_local_budget`
-- `graph_community_budget`
-- `graph_evidence_budget`
-- `graph_explain`
-- `query_payload` for ontology hints, workflow hints, and vector-only graph policy steering
-
-## Public Python Surface
-
-- `Index` and `IndexBuilder` — local shard collections
-- `SearchPipeline` — dense + sparse fusion in-process
-- `ColbertIndex` — late-interaction text workflows
-- `ColPaliEngine` and `MultiModalEngine` — multimodal retrieval
-- `encode_vector_payload()`, `decode_payload()` — base64 transport helpers
-- `voyager-index-server` — reference HTTP server
+Three execution modes share the same collection format and API contract:
+**CPU exact** (mmap → Rust fused), **GPU streamed** (CPU → GPU → Triton), and
+**GPU corpus** (fully VRAM-resident). Start with CPU, add GPU when latency matters.
 
 ## Documentation
 
-- [Quickstart](docs/getting-started/quickstart.md)
-- [Installation](docs/getting-started/installation.md)
-- [Python API Reference](docs/api/python.md)
-- [Reference API Tutorial](docs/reference_api_tutorial.md)
+- [Quickstart](docs/getting-started/quickstart.md) · [Installation](docs/getting-started/installation.md)
+- [Reference API Tutorial](docs/reference_api_tutorial.md) · [Python API](docs/api/python.md)
+- [Shard Engine Guide](docs/guides/shard-engine.md) · [Max-Performance Guide](docs/guides/max-performance-reference-api.md)
 - [Groundedness Tracker Beta Guide](docs/guides/groundedness-beta.md)
-- [Shard Engine Guide](docs/guides/shard-engine.md)
 - [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md)
-- [Enterprise Control Plane Boundary](docs/guides/control-plane.md)
-- [Max-Performance Guide](docs/guides/max-performance-reference-api.md)
-- [Scaling Guide](docs/guides/scaling.md)
-- [Benchmarks And Methodology](docs/benchmarks.md)
-- [Production Notes](PRODUCTION.md)
-- [Contributing](CONTRIBUTING.md)
-- [Releasing](RELEASING.md)
-- [Security](SECURITY.md)
-
-## Install From Source
-
-```bash
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
-bash scripts/install_from_source.sh --cpu
-```
-
-## Project Health
-
-- PRs: [pull request template](.github/pull_request_template.md)
-- Issues: [bug report](.github/ISSUE_TEMPLATE/bug_report.yml) and [feature request](.github/ISSUE_TEMPLATE/feature_request.yml)
-- Community: [Code of Conduct](CODE_OF_CONDUCT.md)
-- Security: see [SECURITY.md](SECURITY.md)
-- Release process: see [RELEASING.md](RELEASING.md)
-
-## Groundedness Tracker (Beta)
-
-`voyager-index` now ships a **Beta** groundedness tracker for
-post-generation answers:
-
-- fast path: score a final answer against the exact `chunk_ids` that were passed
-  to the LLM, without re-encoding support context
-- fallback path: score against `raw_context` when chunk IDs are unavailable,
-  using sentence-aware packed support windows by default
-- output: headline `reverse_context`, calibrated headline
-  `reverse_context_calibrated` (standardized against an internal null bank of
-  unrelated short documents), secondary `consensus_hardened`, secondary
-  `literal_guarded` plus `literal_diagnostics` for unsupported dates, numbers,
-  units, currencies, URLs, emails, and explicit identifiers, optional fused
-  `groundedness_v2` with claim-level `nli_aggregate` and `nli_diagnostics`
-  when the NLI verifier is enabled, response-token heatmaps (with per-token
-  `nli_score`), top evidence links, and optional dense debug matrices
-
-This is already a **useful support signal and evidence trace**, not a final
-factuality oracle. It is useful for product debugging, QA, and user-facing
-evidence views, but dense similarity can still be overconfident on negation,
-entity swaps, dates, numbers, and other semantically close factual errors.
-Very long mixed-support contexts near the model limit are also materially harder
-than short anchored answers, so keep product wording conservative on ambiguous
-long-context responses.
-
-The default `raw_context` fallback packs adjacent sentences into roughly
-`256`-token windows via `segmentation_mode="sentence_packed"` with no explicit
-overlap. When a sentence would cross the target budget, it is carried into the
-next support unit. `raw_context_chunk_tokens` remains the user override. Keep
-that budget at or below your encoder's real document-length limit; shorter-
-window models will warn when the requested packed budget is too large and may
-truncate support windows.
-
-For a remote production encoder, point groundedness at `vllm-factory`
-ModernColBERT:
-
-```bash
-VOYAGER_GROUNDEDNESS_VLLM_ENDPOINT=http://127.0.0.1:8000 \
-VOYAGER_GROUNDEDNESS_VLLM_MODEL=VAGOsolutions/SauerkrautLM-Multi-Reason-ModernColBERT \
-voyager-index-server
-```
-
-The raw-context production path groups scored support units in batches. Tune it
-with `VOYAGER_GROUNDEDNESS_SCORE_BATCH_UNITS` (default `64`) plus the remote
-HTTP knobs `VOYAGER_GROUNDEDNESS_VLLM_BATCH_SIZE`,
-`VOYAGER_GROUNDEDNESS_VLLM_MAX_CONCURRENCY`, and
-`VOYAGER_GROUNDEDNESS_VLLM_TIMEOUT`.
-
-The production headline score uses **naive reverse-context MaxSim**, with a
-calibrated companion (`reverse_context_calibrated`) that standardizes per-token
-scores against an internal null bank of unrelated short documents and squashes
-the result into `(0, 1)` so the dynamic range is readable in UIs. Each response
-token also carries `reverse_context_z`, `null_mean`, and `null_std` for audit.
-The aggregate `null_bank_size` reports the calibration sample size; if it is
-`0`, the calibrated score falls back to the raw headline and the response
-includes a `calibration_disabled` warning. Disable calibration with
-`VOYAGER_GROUNDEDNESS_DISABLE_CALIBRATION=1` if you need the raw headline
-shape for a specific workflow.
-
-`consensus_hardened` is a conservative secondary score that lightly discounts
-narrow single-unit support and pairs with per-token breadth diagnostics such as
-`support_unit_hits_above_threshold` and `effective_support_units`. It is a
-calibrated robustness signal, not an IID significance test.
-
-`literal_guarded` discounts the calibrated headline by `(1 - rate)^k` where `k`
-is the number of unsupported response literals (dates, numbers, units,
-currency, percent, URLs, emails, identifiers). Use it together with
-`literal_diagnostics` whenever the answer should be verifiable lexically; the
-embedding-only headline can otherwise be too forgiving on date or number
-swaps.
-
-Optional **NLI / claim-level verifier** (Phase D, opt-in). Set
-`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1` to load a HuggingFace MNLI model
-(default `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`, override with
-`VOYAGER_GROUNDEDNESS_NLI_MODEL`). The verifier splits the response into
-sentence-level claims, picks top-`k` lexically overlapping support premises,
-runs batched entailment under a strict latency budget, and projects per-claim
-scores back to response tokens (`response_tokens[*].nli_score`). The aggregate
-`nli_aggregate` and the fused `groundedness_v2` (convex combination of
-`reverse_context_calibrated`, `literal_guarded`, and `nli_aggregate`) are then
-the recommended UI score. When the verifier is disabled or the budget is
-exhausted, `groundedness_v2` automatically renormalizes over the remaining
-peer channels so the response stays well defined. Tune the verifier with
-`VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS`,
-`VOYAGER_GROUNDEDNESS_NLI_TOP_K`,
-`VOYAGER_GROUNDEDNESS_NLI_BATCH`,
-`VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS`, and the fusion weights
-`VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED|_LITERAL|_NLI`.
-
-Optional query-conditioned channels remain diagnostic-only and are not the
-recommended product path.
-
-Current audit boundary: on the hardest long-context suite (about `7.8k` tokens,
-`lightonai/GTE-ModernColBERT-v1`, `256`-token packed windows), anchor AUROC
-stayed at `1.0`, but score-only latency still measured about `90.9 ms` p50 /
-`97.2 ms` p95. Treat this Beta as strong evidence tracing and QA support, not a
-hard real-time truth gate on long noisy contexts.
-
-### Phase E hardening verdict (Real-Hardening, real-world benchmarks)
-
-The internal harness at
-`research/triangular_maxsim/groundedness_external_eval.py` runs 210
-deterministic minimal pairs across 7 strata (entity_swap, date_swap,
-number_swap, unit_swap, negation, role_swap, partial) plus three external
-public benchmarks: **RAGTruth** (qa, summarization, data2text),
-**HaluEval** (qa, summarization, dialogue), and FActScore (biography).
-Encoder and scorer latency are measured separately with warm-up. The
-headline score is `groundedness_v2` whenever it is available
-(calibrated + literal-guarded + optional NLI fusion).
-
-Configuration: `lightonai/GTE-ModernColBERT-v1` retrieval encoder,
-`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` NLI peer, single A5000
-with batch size 1, 30 minimal pairs per stratum and 200 external samples
-per stratum.
-
-#### Headline real-world scoreboard
-
-| Lane                 | Internal lexical | Internal semantic | Internal partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 | Pre-reg targets met |
-|----------------------|-----------------:|------------------:|-----------------:|------------------:|---------------:|------------:|--------------------:|
-| Dense + literal only |             0.79 |              0.73 |             1.00 |              0.58 |           0.37 |     `111 ms`|             3 of 6 |
-| Dense + literal + NLI peer |       1.00 |              1.00 |             1.00 |          **0.60** |       **0.69** | `141 ms` |     **5 of 6** |
-| Pre-registered exit  |          ≥ 0.80  |          ≥ 0.70   |        ≥ 0.65    |          ≥ 0.55   |        ≥ 0.70  | ≤ 250 ms (NLI)|                  |
-
-#### NLI lane, per-stratum detail
-
-RAGTruth (600 samples, threshold = per-stratum median of `groundedness_v2`):
-
-| Stratum       | n   | Precision | Recall | F1     |
-|---------------|----:|----------:|-------:|-------:|
-| qa            | 200 | 0.91      | 0.54   | 0.68   |
-| summarization | 200 | 0.86      | 0.58   | 0.69   |
-| data2text     | 200 | 0.36      | 0.53   | 0.43   |
-| **macro F1**  |     |           |        | **0.60** |
-
-HaluEval (1200 samples, paired hallucinated/faithful at per-stratum median):
-
-| Stratum       | n   | F1   |
-|---------------|----:|-----:|
-| qa            | 400 | 0.69 |
-| summarization | 400 | 0.65 |
-| dialogue      | 400 | 0.51 |
-
-Internal minimal pairs (210 pairs, paired ranking accuracy):
-
-| Stratum       | n  | Paired acc | 95% CI lower |
-|---------------|---:|-----------:|-------------:|
-| entity_swap   | 30 | 1.00       | 1.00         |
-| date_swap     | 30 | 1.00       | 1.00         |
-| number_swap   | 30 | 1.00       | 1.00         |
-| unit_swap     | 30 | 1.00       | 1.00         |
-| negation      | 30 | 1.00       | 1.00         |
-| role_swap     | 30 | 1.00       | 1.00         |
-| partial       | 30 | 1.00       | 1.00         |
-
-Latency (NLI on, A5000, batch 1): encode `105 ms` p95, score `63 ms` p95,
-**total `141 ms` p95** (well under the 250 ms NLI budget).
-
-#### Verdict
-
-- **NLI lane meets 5 of 6 pre-registered exit criteria** (lexical 1.00,
-  semantic 1.00, partial 1.00, RAGTruth 0.60, latency 141 ms). The single
-  miss is HaluEval QA at `0.69` against a `0.70` target — one F1 point
-  short on a 400-sample binary task.
-- **Dense + literal lane** is honest about its weaknesses: lexical 0.79,
-  semantic 0.73 (role_swap collapses to 0.57 chance level), HaluEval QA
-  collapses to 0.37. Without the NLI peer, treat groundedness as a
-  lexical / partial-support tracer, not a hallucination detector.
-- The data2text stratum of RAGTruth (F1 0.43) and HaluEval dialogue
-  (F1 0.51) are the genuine remaining weak spots. Structured-data-to-text
-  and conversational dialogue both put surface tokens into the response
-  that are not present verbatim in the source, so textual late-interaction
-  has limited signal.
-
-Reproducing the run: see `research/triangular_maxsim/README.md` and the
-two report JSONs at
-`research/triangular_maxsim/groundedness_external_eval_report__no_nli__real.json`
-and `…__nli__real.json`.
-
-**Recommendation:** turn the NLI peer on
-(`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`) for any product surface that needs
-to be safe against negation, role-swap, or close-factual hallucinations.
-Without it, dense-only groundedness is best treated as a lexical / partial
-support tracer.
-
-Start with the [Groundedness Tracker Beta Guide](docs/guides/groundedness-beta.md), the
-[Reference API Tutorial](docs/reference_api_tutorial.md), or the interactive
-OpenAPI docs at `http://127.0.0.1:8080/docs`.
+- [Benchmarks And Methodology](docs/benchmarks.md) · [Production Notes](PRODUCTION.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Releasing](RELEASING.md)
 
 ## License
 
