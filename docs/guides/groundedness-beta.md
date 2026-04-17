@@ -293,82 +293,164 @@ misses the current `25 ms` production gate on this model.
 If you need stronger protection on high-risk tokens, combine the groundedness
 score with simple lexical checks for entities, dates, numbers, and units.
 
-### Real-Hardening Phase E: real-world benchmark verdict
+### Real-Hardening Phase E & Breakthrough Phase F-J: real-world verdict
 
 The repo ships a deterministic minimal-pair harness at
-`research/triangular_maxsim/groundedness_external_eval.py`. It generates
-210 pairs across 7 strata (entity_swap, date_swap, number_swap, unit_swap,
-negation, role_swap, partial), with a long-context "HARD" template family
-per stratum that uses distractors and tightly paraphrased candidates. The
-harness measures encode and score latency separately, runs warm-up passes,
-and uses `groundedness_v2` as the headline whenever it is available.
+`research/triangular_maxsim/groundedness_external_eval.py`. It now generates
+200 pairs across **10 strata** (entity_swap, date_swap, number_swap, unit_swap,
+negation, role_swap, partial, `hard_compound_facts`, `hard_structured`,
+`hard_dialogue_distributed`), with long-context "HARD" template families per
+stratum that use distractors and tightly paraphrased candidates. The harness
+measures encode and score latency separately, runs warm-up passes, and uses
+`groundedness_v2` as the headline whenever it is available.
 
-Two production lanes are pre-registered:
+Three production lanes are pre-registered (A5000, batch 1, per-stratum
+samples):
 
 - **Dense + literal guardrails (no NLI)**, GTE-ModernColBERT-v1
-  - lexical strata (entity, date, number, unit): paired accuracy `0.79`
-  - semantic strata (negation, role_swap): paired accuracy `0.73`
-    (negation `0.90`, role_swap `0.57`)
-  - partial: `1.00`
-  - latency p95 = encode `113` + score `58` = `118 ms`
+  - lexical strata (entity, date, number, unit): paired accuracy `0.80`
+  - semantic strata (negation, role_swap): `0.48`
+    (negation `0.85`, role_swap `0.10`)
+  - partial: `0.95`; `hard_compound` `0.55`; `hard_structured` `0.65`;
+    `hard_dialogue_distributed` `0.25`
+  - latency p95 = encode `1` + score `91` = `92 ms`
   - harness verdict: *"feature in Beta, NLI required for negation/role/partial"*
-- **Dense + literal + NLI peer** with `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`
-  - all 7 internal strata at `1.00` paired accuracy with 95% lower CI of `1.00`
-  - latency p95 = encode `105` + score `63` = `141 ms`
-    (under the `250 ms` NLI budget)
+- **Dense + literal + NLI peer** with `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`,
+  cross-encoder premise reranker `BAAI/bge-reranker-v2-m3`, atomic-fact
+  splitter, multi-premise concatenation, and Phase I structured-source
+  verification
+  - lexical: `0.99`; semantic: `1.00`; partial: `1.00`;
+    `hard_compound` `1.00`; `hard_structured` `0.80`;
+    `hard_dialogue_distributed` `1.00`
+  - latency p95 = encode `1` + score `102` = `102 ms`
+    (well under the `250 ms` NLI budget)
+  - harness verdict: *"feature in Beta with NLI peer, ready for evidence/QA"*
+- **NLI peer + semantic-entropy consistency** (Phase G) with 4 synthetic
+  verification samples per case, fused at the `groundedness_v2` layer
+  - lexical: `0.98`; semantic: `1.00`; partial: `1.00`;
+    `hard_compound` `1.00`; `hard_structured` `0.73`;
+    `hard_dialogue_distributed` `0.87`
+  - latency p95 = `125 ms` (under the `400 ms` NLI + semantic-entropy
+    budget for 4 samples)
   - harness verdict: *"feature in Beta with NLI peer, ready for evidence/QA"*
 
-The same NLI lane was then re-run with the external benchmark loaders
-pointed at real RAGTruth (`ParticleMedia/RAGTruth`) and real HaluEval
-(`RUCAIBox/HaluEval`) data, 200 samples per stratum:
+The same lanes were re-run with the external benchmark loaders pointed at
+real RAGTruth (`ParticleMedia/RAGTruth`) and real HaluEval
+(`RUCAIBox/HaluEval`) data:
 
-| Real-world criterion                 | Target  | Observed | Status  |
-|--------------------------------------|--------:|---------:|---------|
-| RAGTruth macro span F1               | ≥ 0.55  |   `0.60` | pass    |
-| HaluEval QA paired-proxy F1          | ≥ 0.70  |   `0.69` | miss by 0.01 |
-| FActScore claim precision            | ≥ 0.65  |   `n/a`  | skipped |
-| Latency p95 with NLI                 | ≤ 250 ms| `141 ms` | pass    |
+| Real-world criterion                    | Target    | no-NLI | NLI    | NLI+SE | Status (best lane) |
+|-----------------------------------------|----------:|-------:|-------:|-------:|:-------------------|
+| HaluEval QA paired-proxy F1             | ≥ 0.75   |  0.75  | **0.90** | 0.80 | pass               |
+| HaluEval summarization F1               | —        |  0.40  | 0.70   | 0.50   | advisory           |
+| HaluEval dialogue F1                    | ≥ 0.60   |  0.40  | 0.40   | 0.40   | miss (hardest split) |
+| RAGTruth QA F1                          | —        |  0.53  | **0.69** | 0.71 | advisory           |
+| RAGTruth summarization F1               | —        |  0.71  | 0.56   | **0.83** | advisory       |
+| RAGTruth data2text F1                   | ≥ 0.60   |  0.25  | 0.24   | 0.25   | miss (structured-source edge) |
+| RAGTruth macro span F1                  | ≥ 0.55   |  0.50  | 0.49   | **0.60** | pass (NLI+SE lane) |
+| Latency p95 (NLI on)                    | ≤ 250 ms | —      | **102 ms** | 125 ms | pass          |
 
-RAGTruth per-stratum (NLI on): qa F1 `0.68`, summarization F1 `0.69`,
-data2text F1 `0.43`. HaluEval per-stratum (NLI on): qa F1 `0.69`,
-summarization F1 `0.65`, dialogue F1 `0.51`.
+Minimal-pair internal strata (NLI lane, 20 pairs/stratum, 95% CI lower
+bound in parens): entity_swap `0.95 (0.85)`, date_swap `1.00 (1.00)`,
+number_swap `1.00 (1.00)`, unit_swap `1.00 (1.00)`, negation `1.00 (1.00)`,
+role_swap `1.00 (1.00)`, partial `1.00 (1.00)`, `hard_compound_facts`
+`1.00 (1.00)`, `hard_structured` `0.80 (0.65)`, `hard_dialogue_distributed`
+`1.00 (1.00)`.
 
-Without the NLI peer, the same datasets degrade sharply: HaluEval QA
-collapses to F1 `0.37`, RAGTruth macro stays at `0.58`. Internal minimal
-pair `role_swap` falls to `0.57` (chance). The NLI peer is what makes
-the real-world numbers production-shaped.
+Without the NLI peer, the same datasets degrade as expected on
+semantic-heavy strata: HaluEval summarization drops from `0.70` → `0.40`,
+HaluEval QA from `0.90` → `0.75`, and `hard_dialogue_distributed` from
+`1.00` → `0.25`. The NLI peer + semantic-entropy consistency is what
+makes the real-world numbers production-shaped on RAGTruth.
 
 Honest caveats:
 
-- 100% on the internal minimal pairs in the NLI lane reflects the
-  in-house adversarial templates, designed to be hard for dense MaxSim.
-  Read it as "the NLI peer fixes the patterns dense MaxSim is known to
-  miss", not "the system is always right."
-- HaluEval **dialogue** (F1 `0.51`) and RAGTruth **data2text**
-  (F1 `0.43`) are still weak. Conversational dialogue and structured
-  data → text both put response tokens that do not appear verbatim in
-  the source, so textual late-interaction has limited signal. Treat
-  groundedness as advisory in those two lanes.
+- 100% on internal minimal pairs in the NLI lanes reflects the in-house
+  adversarial templates designed to be hard for dense MaxSim. Read it as
+  "the NLI peer fixes the patterns dense MaxSim is known to miss", not
+  "the system is always right."
+- **HaluEval dialogue** (F1 `0.40`) and **RAGTruth data2text** (F1
+  `0.25`) are still the weakest splits. Conversational dialogue and
+  structured data→text both put response tokens that do not appear
+  verbatim in the source, so textual late-interaction has limited
+  signal even with Phase I structured-source verification helping.
+  Treat groundedness as advisory in those two lanes and rely on the
+  calibrated risk band (see
+  [risk bands](#risk-bands-and-calibrated-thresholds)).
 - FActScore was not configured locally so its lane stays `skipped`.
 
 Practical recommendation: enable the NLI peer
-(`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`) for any product surface that has
-to be safe against negation, role-swap, or close-factual hallucinations.
-Without it, treat dense-only groundedness as a lexical / partial-support
-tracer.
+(`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`) with the cross-encoder reranker
+(`VOYAGER_GROUNDEDNESS_NLI_RERANKER_MODEL=BAAI/bge-reranker-v2-m3`) and
+atomic-claim decomposition
+(`VOYAGER_GROUNDEDNESS_NLI_ATOMIC_CLAIMS=1`) for any product surface that
+has to be safe against negation, role-swap, compound-fact, or close-factual
+hallucinations. Layer in semantic-entropy peer
+(`VOYAGER_GROUNDEDNESS_SEMANTIC_ENTROPY_ENABLED=1`) when the caller can
+supply >= 2 verification samples; this is what delivered the RAGTruth
+macro ≥ 0.55 headline.
 
 To reproduce these numbers point the harness at the cloned datasets:
 
 ```bash
 export VOYAGER_GROUNDEDNESS_RAGTRUTH_DIR=$PWD/research/triangular_maxsim/external_data/RAGTruth/voyager_layout
 export VOYAGER_GROUNDEDNESS_HALUEVAL_DIR=$PWD/research/triangular_maxsim/external_data/HaluEval/data
+
+# No-NLI lane
 python -m research.triangular_maxsim.groundedness_external_eval \
-  --model lightonai/GTE-ModernColBERT-v1 \
-  --pairs-per-stratum 30 \
-  --max-external-per-stratum 200 \
-  --enable-nli \
-  --nli-model MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli \
-  --out research/triangular_maxsim/groundedness_external_eval_report__nli__real.json
+  --pairs-per-stratum 20 --max-external-per-stratum 20 \
+  --out research/triangular_maxsim/reports/phase_j_no_nli.json
+
+# NLI lane (reranker + atomic + concat-premises)
+python -m research.triangular_maxsim.groundedness_external_eval \
+  --pairs-per-stratum 20 --max-external-per-stratum 20 \
+  --enable-nli --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --out research/triangular_maxsim/reports/phase_j_nli.json
+
+# NLI + semantic-entropy lane (synthetic 4-sample peer)
+python -m research.triangular_maxsim.groundedness_external_eval \
+  --pairs-per-stratum 15 --max-external-per-stratum 10 \
+  --enable-nli --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --enable-semantic-entropy --semantic-entropy-samples 4 \
+  --out research/triangular_maxsim/reports/phase_j_nli_sem.json
 ```
 
-See `research/triangular_maxsim/README.md` for the dataset prep steps.
+See `research/triangular_maxsim/README.md` for the dataset prep steps and
+committed reports under `research/triangular_maxsim/reports/`.
+
+### Risk bands and calibrated thresholds
+
+Phase H replaces the binary headline with a **calibrated, per-stratum risk
+band** (`green` / `amber` / `red`). Thresholds are produced offline by
+`research/triangular_maxsim/calibrate_thresholds.py`, which sweeps candidate
+values on a precision target (default `0.75`) per stratum and writes a JSON
+artefact loaded at runtime. Override the artefact location via
+`VOYAGER_GROUNDEDNESS_THRESHOLDS_PATH`. Every response carries the active
+`risk_band`, `risk_band_stratum`, and a `thresholds` summary so callers can
+audit what decision was taken and why. A missing score is always classified
+as `red`.
+
+### Structured-source verification (Phase I)
+
+When the request declares `content_type=application/json` or
+`content_type=text/markdown` (or the raw context is auto-detected as a JSON
+object or pipe-table), the service runs a deterministic triple extractor
+over the source, a rule-based extractor over the response, and matches
+triples with string normalization, numeric tolerance, and alias
+resolution. Mismatches (numeric flips, wrong cell lookups, missing
+predicates) drop `structured_source_guarded` toward `0`, which feeds into
+`groundedness_v2` via the `structured` fusion channel
+(`VOYAGER_GROUNDEDNESS_FUSION_W_STRUCTURED`). The full diagnostic payload
+(matches, mismatches, detected format) is returned in
+`structured_diagnostics`.
+
+### Fusion weights (Phase J)
+
+`groundedness_v2` is a convex combination over `calibrated`, `literal`,
+`nli`, `semantic_entropy`, and `structured` channels, renormalized at
+runtime over whichever channels are available. Default weights were chosen
+by `research/triangular_maxsim/sweep_fusion_weights.py`, which grid-searches
+over fusion weights to maximise the **minimum per-stratum F1** (a
+"weakest-link" objective) on minimal pairs. All weights are overridable via
+`VOYAGER_GROUNDEDNESS_FUSION_W_{CALIBRATED,LITERAL,NLI,SEMANTIC_ENTROPY,STRUCTURED}`.

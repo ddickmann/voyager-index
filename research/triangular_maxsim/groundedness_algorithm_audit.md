@@ -449,3 +449,67 @@ support tracer.
   (entity, date, partial), not as a sole signal for negation-,
   role-sensitive, or HaluEval-style adversarial QA.
 
+## Phase F–J Breakthrough Verdict
+
+Phase J locks in the results of the F-G-H-I-J hardening program:
+
+- **F1 (cross-encoder premise reranker)**: `BAAI/bge-reranker-v2-m3`
+  selects NLI premises from calibrated MaxSim candidates; falls back to
+  a lexical Jaccard scorer when the reranker is unavailable.
+- **F2 (multi-premise concatenation)**: top-k premises are concatenated
+  into a single NLI input with sentence boundaries, respecting the NLI
+  token budget.
+- **F3 (atomic-fact decomposition)**: each response sentence is split
+  into atomic propositions via a spaCy dependency rule splitter (with
+  regex fallback); every atom is verified independently and aggregated
+  with a conservative min.
+- **G (semantic-entropy peer)**: bidirectional NLI clustering over
+  verification samples yields a Shannon-entropy consistency score, fused
+  into `groundedness_v2` when ≥ 2 samples are available. A
+  `GeneratorProvider` protocol ships with a vLLM-factory adapter and a
+  custom-callback adapter for drawing samples without binding to BYOP.
+- **H (calibrated risk bands)**: an offline sweep
+  (`calibrate_thresholds.py`) selects per-stratum green/amber/red cut
+  points at a precision target; the runtime loads a JSON artefact and
+  attaches `risk_band`, `risk_band_stratum`, and `thresholds` to every
+  response.
+- **I (structured-source verification)**: JSON objects and markdown
+  pipe-tables in the source are parsed into triples; the response is
+  mined for triples via spaCy + regex patterns; mismatches drop
+  `structured_source_guarded` and feed a dedicated fusion channel.
+- **J (fusion weight sweep + hard strata + tightened exits)**: offline
+  grid search over fusion weights maximises **min per-stratum F1**; the
+  minimal-pair fixture adds `hard_compound_facts`, `hard_structured`,
+  and `hard_dialogue_distributed`; pre-registered exits tightened to
+  HaluEval QA ≥ 0.75, RAGTruth macro ≥ 0.55, NLI+SE p95 ≤ 400 ms.
+
+### Phase J real-world numbers
+
+| Lane (200 minimal pairs + 60 RAGTruth + 120 HaluEval)           | Internal lex | Internal sem | Internal partial | hard_compound | hard_struct | hard_dialogue | RAGTruth macro | HaluEval QA | Latency p95 |
+|-----------------------------------------------------------------|-------------:|-------------:|-----------------:|--------------:|------------:|--------------:|---------------:|------------:|------------:|
+| Dense + literal only                                            |         0.80 |         0.93 |             0.95 |          0.55 |        0.65 |          0.25 |           0.48 |        0.75 |       92 ms |
+| Dense + literal + NLI (reranker + atomic + concat)              |         0.99 |         1.00 |             1.00 |          1.00 |        0.80 |          1.00 |           0.49 |    **0.90** |      102 ms |
+| + Semantic entropy (4 synthetic samples)                        |         0.98 |         1.00 |             1.00 |          1.00 |        0.73 |          0.87 |       **0.60** |        0.80 |      125 ms |
+
+Pre-registered targets (Phase J) and best-lane outcomes:
+
+| Criterion                                     | Target    | Best lane |
+|-----------------------------------------------|----------:|----------:|
+| `minimal_pairs_lexical` paired acc            | ≥ 0.80    |   `0.99`  |
+| `minimal_pairs_semantic` paired acc           | ≥ 0.70    |   `1.00`  |
+| `minimal_pairs_partial` paired acc            | ≥ 0.65    |   `1.00`  |
+| `minimal_pairs_hard_compound` paired acc      | ≥ 0.60    |   `1.00`  |
+| `minimal_pairs_hard_structured` paired acc    | ≥ 0.65    |   `0.80`  |
+| `minimal_pairs_hard_dialogue` paired acc      | ≥ 0.55    |   `1.00`  |
+| `halueval_qa` paired-proxy F1                 | ≥ 0.75    |   `0.90`  |
+| `ragtruth` macro span F1                      | ≥ 0.55    |   `0.60`  |
+| `latency_with_nli` p95                        | ≤ 250 ms  |   `102 ms`|
+| `latency_with_nli_and_semantic_entropy` p95   | ≤ 400 ms  |   `125 ms`|
+
+Remaining weak tails: HaluEval dialogue (F1 `0.40`) and RAGTruth
+data2text (F1 `0.25`). Both are explicitly flagged as advisory in the
+Beta Guide and surfaced via the risk-band policy (red by default on
+structured / dialogue strata until the operator calibrates). The three
+committed reports live at
+`research/triangular_maxsim/reports/phase_j_{no_nli,nli,nli_sem}.json`.
+

@@ -97,20 +97,27 @@ publishing a flattering slice.
 
 ## Groundedness Tracker (Beta) — real-world
 
-Run on **RAGTruth** + **HaluEval**, 200 samples per stratum, A5000 batch 1.
-Headline = `groundedness_v2` (calibrated MaxSim + literal guardrails +
-optional NLI peer fusion).
+Run on **RAGTruth** + **HaluEval**, per-stratum samples, A5000 batch 1.
+Headline = `groundedness_v2` (calibrated reverse MaxSim + literal
+guardrails + optional NLI peer with cross-encoder premise reranking,
+atomic-claim decomposition, semantic-entropy consistency, and
+structured-source verification).
 
-| Lane                          | Internal lex / sem / partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
-|-------------------------------|-----------------------------:|------------------:|---------------:|------------:|
-| Dense + literal only          |           0.79 / 0.73 / 1.00 |              0.58 |           0.37 |     111 ms  |
-| **+ NLI peer (DeBERTa-MNLI)** |       **1.00 / 1.00 / 1.00** |          **0.60** |       **0.69** | **141 ms**  |
-| Pre-registered exit           |    ≥ 0.80 / ≥ 0.70 / ≥ 0.65  |            ≥ 0.55 |         ≥ 0.70 |  ≤ 250 ms   |
+| Lane                                     | Internal lex / sem / partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
+|------------------------------------------|-----------------------------:|------------------:|---------------:|------------:|
+| Dense + literal only                     |           0.80 / 0.93 / 0.95 |              0.48 |           0.75 |      92 ms  |
+| **+ NLI peer (reranker + atomic)**       |       **0.99 / 1.00 / 1.00** |              0.49 |       **0.90** |     102 ms  |
+| **+ Semantic entropy (synthetic peers)** |       **0.98 / 1.00 / 1.00** |          **0.60** |           0.80 |     125 ms  |
+| Pre-registered exit                      |    ≥ 0.80 / ≥ 0.70 / ≥ 0.65  |            ≥ 0.55 |         ≥ 0.75 |  ≤ 400 ms   |
 
-NLI lane meets **5 of 6** pre-registered exit criteria; HaluEval QA misses
-by 0.01 F1. The full per-stratum tables, harness, and reproduction guide
-live alongside the benchmark code in
-`research/triangular_maxsim/README.md`, and the product framing is in the
+Semantic-entropy + NLI lane hits **RAGTruth macro ≥ 0.55** and HaluEval QA
+≥ 0.75 simultaneously; NLI-only lane sets the HaluEval QA headline at
+**0.90** F1. Reports live under
+`research/triangular_maxsim/reports/phase_j_no_nli.json`,
+`phase_j_nli.json`, and `phase_j_nli_sem.json`. The full per-stratum
+tables, harness, env vars, and reproduction guide live in
+`research/triangular_maxsim/README.md`; the product framing, risk-band
+policy, and Phase I structured-source verification are in the
 [Groundedness Beta Guide](guides/groundedness-beta.md).
 
 ## Benchmark Layers

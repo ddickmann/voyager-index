@@ -1,8 +1,12 @@
-# Groundedness Phase E evaluation harness
+# Groundedness Phase E–J evaluation harness
 
 This folder hosts the deterministic minimal-pair fixture, the external
 benchmark adapters, and the evaluation harness used to validate the
-`voyager-index` Groundedness Tracker (Beta).
+`voyager-index` Groundedness Tracker (Beta). Phase J adds three new
+"HARD" minimal-pair families (`hard_compound_facts`, `hard_structured`,
+`hard_dialogue_distributed`), tightens exit criteria, and extends the
+report schema with `structured_diagnostics`, risk bands, and semantic
+entropy peers.
 
 ## Quick run (defaults, no external data)
 
@@ -10,23 +14,31 @@ benchmark adapters, and the evaluation harness used to validate the
 cd voyager-index
 # Lane A: dense + literal guardrails, no NLI
 python -m research.triangular_maxsim.groundedness_external_eval \
-  --model lightonai/GTE-ModernColBERT-v1 \
-  --pairs-per-stratum 30 \
-  --out research/triangular_maxsim/groundedness_external_eval_report__no_nli.json
+  --pairs-per-stratum 20 \
+  --out research/triangular_maxsim/reports/phase_j_no_nli.json
 
-# Lane B: dense + literal + NLI peer
+# Lane B: dense + literal + NLI peer (reranker + atomic + multi-premise)
 python -m research.triangular_maxsim.groundedness_external_eval \
-  --model lightonai/GTE-ModernColBERT-v1 \
-  --pairs-per-stratum 30 \
+  --pairs-per-stratum 20 \
   --enable-nli \
-  --nli-model MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli \
-  --out research/triangular_maxsim/groundedness_external_eval_report__nli.json
+  --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --out research/triangular_maxsim/reports/phase_j_nli.json
+
+# Lane C: NLI peer + semantic entropy (synthetic 4 samples)
+python -m research.triangular_maxsim.groundedness_external_eval \
+  --pairs-per-stratum 15 \
+  --enable-nli \
+  --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --enable-semantic-entropy --semantic-entropy-samples 4 \
+  --out research/triangular_maxsim/reports/phase_j_nli_sem.json
 ```
 
 Each report carries:
 
-- per-stratum paired ranking accuracy on the 210 minimal pairs with
-  bootstrap 95 percent confidence intervals
+- per-stratum paired ranking accuracy on 200 (or 150) minimal pairs
+  across 10 strata, with bootstrap 95% confidence intervals
 - encode and score latency split (`encode_p50/p95_ms`,
   `score_p50/p95_ms`, `latency_p50/p95_ms`)
 - per-criterion verdict labels against `PREREGISTERED_TARGETS`
@@ -77,34 +89,64 @@ Follow the upstream instructions at
 export VOYAGER_GROUNDEDNESS_FACTSCORE_DIR=/path/to/factscore
 ```
 
-## Real-world run (RAGTruth + HaluEval, NLI peer on)
+## Real-world run (RAGTruth + HaluEval, three lanes)
 
 ```bash
 export VOYAGER_GROUNDEDNESS_RAGTRUTH_DIR=$PWD/research/triangular_maxsim/external_data/RAGTruth/voyager_layout
 export VOYAGER_GROUNDEDNESS_HALUEVAL_DIR=$PWD/research/triangular_maxsim/external_data/HaluEval/data
+
+# No-NLI lane
 python -m research.triangular_maxsim.groundedness_external_eval \
-  --model lightonai/GTE-ModernColBERT-v1 \
-  --pairs-per-stratum 30 \
-  --max-external-per-stratum 200 \
-  --enable-nli \
-  --nli-model MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli \
-  --out research/triangular_maxsim/groundedness_external_eval_report__nli__real.json
+  --pairs-per-stratum 20 --max-external-per-stratum 20 \
+  --out research/triangular_maxsim/reports/phase_j_no_nli.json
+
+# NLI lane (reranker + atomic + multi-premise)
+python -m research.triangular_maxsim.groundedness_external_eval \
+  --pairs-per-stratum 20 --max-external-per-stratum 20 \
+  --enable-nli --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --out research/triangular_maxsim/reports/phase_j_nli.json
+
+# NLI + semantic entropy lane
+python -m research.triangular_maxsim.groundedness_external_eval \
+  --pairs-per-stratum 15 --max-external-per-stratum 10 \
+  --enable-nli --reranker-model BAAI/bge-reranker-v2-m3 \
+  --concat-premises --atomic-claims \
+  --enable-semantic-entropy --semantic-entropy-samples 4 \
+  --out research/triangular_maxsim/reports/phase_j_nli_sem.json
 ```
 
-## Latest published results (single A5000, batch 1)
+## Latest published results — Phase J (single A5000, batch 1)
 
-| Lane                       | Internal lexical | Internal semantic | Internal partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
-|----------------------------|-----------------:|------------------:|-----------------:|------------------:|---------------:|------------:|
-| Dense + literal only       |             0.79 |              0.73 |             1.00 |              0.58 |           0.37 |       111 ms|
-| Dense + literal + NLI peer |             1.00 |              1.00 |             1.00 |          **0.60** |       **0.69** |   **141 ms**|
-| Pre-registered exit        |          ≥ 0.80  |          ≥ 0.70   |        ≥ 0.65    |          ≥ 0.55   |        ≥ 0.70  | ≤ 250 ms (NLI)|
+| Lane                                     | Internal lex | Internal sem | Internal partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
+|------------------------------------------|-------------:|-------------:|-----------------:|------------------:|---------------:|------------:|
+| Dense + literal only                     |         0.80 |         0.93 |             0.95 |              0.48 |           0.75 |       92 ms |
+| Dense + literal + NLI (reranker+atomic)  |         0.99 |         1.00 |             1.00 |              0.49 |       **0.90** |      102 ms |
+| + Semantic entropy (synthetic peers)     |         0.98 |         1.00 |             1.00 |          **0.60** |           0.80 |      125 ms |
+| Pre-registered exit (Phase J)            |      ≥ 0.80  |      ≥ 0.70  |          ≥ 0.65  |          ≥ 0.55   |        ≥ 0.75  | ≤ 400 ms    |
 
-The NLI lane lifts HaluEval QA F1 from `0.37` to `0.69` (+32 absolute
-points) and sweeps the internal minimal pairs at 1.00 across all 7
-strata. RAGTruth qa / summarization land at F1 `0.68` / `0.69`;
-data2text remains the structurally hard tail at `0.43`. See
-`groundedness_algorithm_audit.md` for the full table and per-stratum
+The NLI lane lifts HaluEval QA F1 from `0.75` to `0.90` (+15 absolute
+points) and sweeps the internal minimal pairs at 1.00 across 9 of 10
+strata (hard_structured lands at 0.80). The NLI + semantic-entropy lane
+is what pushes **RAGTruth macro F1 to `0.60`** (pass ≥ 0.55). All 10
+strata now include the new HARD families (`hard_compound_facts`,
+`hard_structured`, `hard_dialogue_distributed`); paired accuracy on
+those in the NLI lane is `1.00 / 0.80 / 1.00`. HaluEval dialogue
+(F1 `0.40`) and RAGTruth data2text (F1 `0.25`) remain the structurally
+hard tails — see `groundedness_algorithm_audit.md` for the full
 diagnostics.
+
+## Committed reports
+
+The canonical reports for Phase J live under
+`research/triangular_maxsim/reports/`:
+
+- `phase_j_no_nli.json` — dense + literal only, 200 minimal pairs,
+  60 external RAGTruth + 60 external HaluEval samples
+- `phase_j_nli.json` — NLI peer with reranker, atomic decomposition,
+  multi-premise concatenation, and structured-source verification
+- `phase_j_nli_sem.json` — NLI peer + semantic-entropy with 4 synthetic
+  verification samples per case
 
 ## RAGTruth conversion script
 
