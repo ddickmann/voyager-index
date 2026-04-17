@@ -45,6 +45,9 @@ from .models import (
     CreateCollectionRequest,
     DistanceMetric,
     GraphMode,
+    GroundednessEligibility,
+    GroundednessRequest,
+    GroundednessResponse,
     MultimodalOptimizeMode,
     MutationTaskStatus,
     PointVector,
@@ -56,6 +59,7 @@ from .models import (
     SearchStrategy,
     TransportVectorPayload,
 )
+from .groundedness import SupportUnitInput, encode_texts, score_groundedness, segment_text, tokenize_text
 
 logger = logging.getLogger(__name__)
 _TASK_MAX_AGE_S = 3600
@@ -2834,6 +2838,328 @@ class SearchService:
             if key not in records:
                 raise NotFoundError(f"Point '{point_id}' not found in collection '{name}'")
             return dict(records[key].get("payload") or {})
+
+    # ------------------------------------------------------------------
+    # Groundedness
+    # ------------------------------------------------------------------
+
+    def _resolve_groundedness_chunk_ids(
+        self,
+        runtime: CollectionRuntime,
+        chunk_ids: List[Any],
+    ) -> List[tuple[Any, int, Dict[str, Any]]]:
+        records = runtime.meta.get("records") or {}
+        resolved: List[tuple[Any, int, Dict[str, Any]]] = []
+        missing: List[Any] = []
+        seen: set[str] = set()
+        for chunk_id in chunk_ids:
+            key = str(chunk_id)
+            if key in seen:
+                continue
+            record = records.get(key)
+            if record is None:
+                missing.append(chunk_id)
+                continue
+            resolved.append((chunk_id, int(record["internal_id"]), dict(record)))
+            seen.add(key)
+        if missing:
+            raise NotFoundError(f"Unknown chunk ids for groundedness: {missing}")
+        return resolved
+
+    @staticmethod
+    def _groundedness_support_text(record: Dict[str, Any]) -> str:
+        payload = dict(record.get("payload") or {})
+        for key in ("text", "content", "page_content", "body", "snippet"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    def _fetch_groundedness_vectors(
+        self,
+        runtime: CollectionRuntime,
+        resolved_ids: List[tuple[Any, int, Dict[str, Any]]],
+    ) -> Dict[int, np.ndarray]:
+        internal_ids = [internal_id for _chunk_id, internal_id, _record in resolved_ids]
+        if not internal_ids:
+            return {}
+
+        if runtime.kind == CollectionKind.LATE_INTERACTION:
+            docs = (
+                runtime.engine.get_document_embeddings(internal_ids, device="cpu")
+                if hasattr(runtime.engine, "get_document_embeddings")
+                else runtime.engine.storage.load_documents(doc_ids=internal_ids, device="cpu")
+            )
+            return self._trim_late_interaction_vectors(runtime, internal_ids, docs)
+
+        if runtime.kind == CollectionKind.MULTIMODAL:
+            docs = runtime.engine.get_document_embeddings(internal_ids)
+            return {
+                int(internal_id): np.asarray(docs[int(internal_id)], dtype=np.float32)
+                for _chunk_id, internal_id, _record in resolved_ids
+                if int(internal_id) in docs
+            }
+
+        if runtime.kind == CollectionKind.SHARD:
+            points = runtime.engine.retrieve(
+                ids=internal_ids,
+                with_vector=True,
+                with_payload=False,
+            )
+            vectors: Dict[int, np.ndarray] = {}
+            for point in points:
+                vector = point.get("vector")
+                if vector is None:
+                    continue
+                vectors[int(point["id"])] = np.asarray(vector, dtype=np.float32)
+            return vectors
+
+        raise ValidationError("chunk_ids groundedness is only supported for late_interaction, multimodal, or shard collections")
+
+    def _roq4_sidecar_available(self, runtime: CollectionRuntime) -> bool:
+        store = getattr(runtime.engine, "_store", None)
+        manifest = getattr(store, "manifest", None)
+        if store is None or manifest is None:
+            return False
+        try:
+            from safetensors.torch import load_file as st_load
+        except ImportError:
+            return False
+        for shard in getattr(manifest, "shards", []):
+            if str(getattr(shard, "compression", "")) != "roq4":
+                continue
+            try:
+                data = st_load(str(store.shard_dir / shard.file_name), device="cpu")
+            except Exception:
+                return False
+            if "roq_codes" in data:
+                return "embeddings" in data
+        return False
+
+    def _groundedness_eligibility(
+        self,
+        runtime: CollectionRuntime,
+        *,
+        use_stored_vectors: bool,
+    ) -> GroundednessEligibility:
+        warnings: List[str] = []
+        compression = None
+        quantization_mode = None
+        dequantized = True
+        user_facing_supported = True
+        vector_source = "encoded_raw_context"
+
+        if use_stored_vectors:
+            vector_source = "stored_vectors"
+            if runtime.kind == CollectionKind.DENSE:
+                user_facing_supported = False
+                dequantized = False
+                warnings.append("dense collections do not store token-level multi-vectors for groundedness heatmaps")
+            elif runtime.kind == CollectionKind.MULTIMODAL:
+                quantized = bool(getattr(getattr(runtime.engine, "config", None), "use_quantization", False))
+                if quantized:
+                    compression = "int8"
+                    warnings.append("multimodal support vectors were materialized from quantized storage before scoring")
+            elif runtime.kind == CollectionKind.SHARD:
+                compression = str(runtime.meta.get("compression") or "fp16")
+                quantization_mode = self._normalize_quantization_mode(runtime.meta.get("quantization_mode"))
+                if compression == "int8":
+                    warnings.append("shard support vectors were dequantized from int8 storage before scoring")
+                elif compression == "roq4":
+                    sidecar = self._roq4_sidecar_available(runtime)
+                    user_facing_supported = sidecar
+                    dequantized = sidecar
+                    if sidecar:
+                        warnings.append("ROQ4 shards rely on the FP16 sidecar embeddings for groundedness scoring")
+                    else:
+                        warnings.append("ROQ4 shards without FP16 sidecar embeddings are unsupported for user-facing groundedness")
+                if quantization_mode == "fp8":
+                    warnings.append("fp8 is a scoring mode only; groundedness fetches stored vectors and scores them in float precision")
+
+        return GroundednessEligibility(
+            collection_kind=runtime.kind,
+            vector_source=vector_source,
+            storage_compression=compression,
+            quantization_mode=quantization_mode,
+            dequantized=dequantized,
+            user_facing_supported=user_facing_supported,
+            warnings=warnings,
+        )
+
+    _cached_groundedness_providers: Dict[str, Any] = {}
+
+    def _get_groundedness_provider(
+        self,
+        runtime: CollectionRuntime,
+        *,
+        model_name: Optional[str] = None,
+    ) -> Any:
+        if model_name:
+            cached = self._cached_groundedness_providers.get(model_name)
+            if cached is not None:
+                return cached
+            try:
+                from pylate import models
+            except ImportError as exc:
+                raise ValidationError(
+                    "Groundedness model overrides require pylate to be installed."
+                ) from exc
+            try:
+                provider = models.ColBERT(
+                    model_name_or_path=model_name,
+                    device=self.device,
+                    do_query_expansion=False,
+                )
+            except Exception as exc:
+                raise ValidationError(f"Failed to load groundedness model '{model_name}': {exc}") from exc
+            self._cached_groundedness_providers[model_name] = provider
+            return provider
+
+        if runtime.kind == CollectionKind.MULTIMODAL and hasattr(runtime.engine, "model"):
+            return runtime.engine.model
+
+        env_model = os.environ.get("VOYAGER_GROUNDEDNESS_MODEL")
+        if env_model:
+            return self._get_groundedness_provider(runtime, model_name=env_model)
+
+        return self._get_encode_provider()
+
+    def groundedness(self, name: str, request: GroundednessRequest) -> GroundednessResponse:
+        runtime, collection_lock = self._collection_context(name)
+        with collection_lock:
+            start = time.perf_counter()
+            mode = "chunk_ids" if request.chunk_ids else "raw_context"
+            use_stored_vectors = mode == "chunk_ids"
+            eligibility = self._groundedness_eligibility(runtime, use_stored_vectors=use_stored_vectors)
+            if use_stored_vectors and not eligibility.user_facing_supported:
+                raise ValidationError("; ".join(eligibility.warnings) or "collection is not eligible for groundedness scoring")
+
+            provider = self._get_groundedness_provider(runtime, model_name=request.model)
+            if provider is None:
+                raise ValidationError(
+                    "No groundedness model configured. Set VOYAGER_GROUNDEDNESS_MODEL, "
+                    "VOYAGER_ENCODE_MODEL, or provide a multimodal collection with an attached model."
+                )
+
+            warnings = list(eligibility.warnings)
+            support_units: List[SupportUnitInput] = []
+            if request.chunk_ids:
+                resolved = self._resolve_groundedness_chunk_ids(runtime, request.chunk_ids)
+                vectors_by_id = self._fetch_groundedness_vectors(runtime, resolved)
+                for chunk_id, internal_id, record in resolved:
+                    vector = vectors_by_id.get(int(internal_id))
+                    if vector is None:
+                        raise NotFoundError(
+                            f"Stored vectors for chunk_id '{chunk_id}' are unavailable in collection '{name}'"
+                        )
+                    text = self._groundedness_support_text(record)
+                    if not text:
+                        warnings.append(f"chunk_id '{chunk_id}' has no text/content payload; placeholder tokens will be used")
+                    tensor = torch.as_tensor(vector, dtype=torch.float32)
+                    tokens = tokenize_text(provider, text or "", expected_len=int(tensor.shape[0]))
+                    support_units.append(
+                        SupportUnitInput(
+                            support_id=str(chunk_id),
+                            chunk_id=chunk_id,
+                            source_mode="chunk_ids",
+                            text=text or "",
+                            embeddings=tensor,
+                            tokens=tokens,
+                            metadata=dict(record.get("payload") or {}),
+                        )
+                    )
+            else:
+                segments = segment_text(request.raw_context or "", request.segmentation_mode.value)
+                if not segments:
+                    raise ValidationError("raw_context did not produce any support units")
+                segment_texts = [segment["text"] for segment in segments]
+                segment_embeddings = encode_texts(
+                    provider,
+                    segment_texts,
+                    is_query=False,
+                    prompt_name=request.document_prompt_name,
+                )
+                for idx, (segment, tensor) in enumerate(zip(segments, segment_embeddings)):
+                    tokens = tokenize_text(provider, segment["text"], expected_len=int(tensor.shape[0]))
+                    support_units.append(
+                        SupportUnitInput(
+                            support_id=f"raw-{idx}",
+                            chunk_id=None,
+                            source_mode="raw_context",
+                            text=segment["text"],
+                            embeddings=tensor,
+                            tokens=tokens,
+                            offset_start=int(segment["offset_start"]),
+                            offset_end=int(segment["offset_end"]),
+                        )
+                    )
+
+            response_embeddings = encode_texts(
+                provider,
+                [request.response_text],
+                is_query=False,
+                prompt_name=request.document_prompt_name,
+            )[0]
+            response_tokens = tokenize_text(
+                provider,
+                request.response_text,
+                expected_len=int(response_embeddings.shape[0]),
+            )
+
+            include_triangular = bool(request.include_triangular_diagnostics and (request.query_text or "").strip())
+            if request.primary_metric.value == "triangular":
+                include_triangular = True
+
+            query_embeddings: Optional[torch.Tensor] = None
+            query_tokens: Optional[List[str]] = None
+            if include_triangular and request.query_text:
+                query_embeddings = encode_texts(
+                    provider,
+                    [request.query_text],
+                    is_query=True,
+                    prompt_name=request.query_prompt_name,
+                )[0]
+                query_tokens = tokenize_text(
+                    provider,
+                    request.query_text,
+                    expected_len=int(query_embeddings.shape[0]),
+                )
+
+            scored = score_groundedness(
+                support_units=support_units,
+                response_embeddings=response_embeddings,
+                response_tokens=response_tokens,
+                query_embeddings=query_embeddings,
+                query_tokens=query_tokens,
+                evidence_limit=request.evidence_limit,
+                primary_metric=request.primary_metric.value,
+                debug_dense_matrices=request.debug_dense_matrices,
+            )
+            warnings.extend(scored.pop("warnings", []))
+            warnings = list(dict.fromkeys(warnings))
+
+            model_name = (
+                getattr(provider, "model_name", None)
+                or getattr(provider, "model_name_or_path", None)
+                or request.model
+                or os.environ.get("VOYAGER_GROUNDEDNESS_MODEL")
+                or os.environ.get("VOYAGER_ENCODE_MODEL")
+            )
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return GroundednessResponse(
+                collection=runtime.name,
+                mode=mode,
+                model=model_name,
+                scores=scored["scores"],
+                response_tokens=scored["response_tokens"],
+                support_units=scored["support_units"],
+                top_evidence=scored["top_evidence"],
+                eligibility=eligibility,
+                query_tokens=scored.get("query_tokens"),
+                debug=scored.get("debug"),
+                warnings=warnings,
+                time_ms=elapsed_ms,
+            )
 
     # ------------------------------------------------------------------
     # Encode / Rerank

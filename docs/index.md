@@ -11,6 +11,7 @@ The public story is:
 - CRUD, WAL, checkpoint, and recovery as standard features
 - base64 vector transport as the preferred HTTP contract
 - BM25 hybrid search with `rrf` or `tabu`
+- groundedness / hallucination detection as a post-generation Beta feature
 - optional Latence graph augmentation as an additive premium lane
 
 ## Start Here
@@ -19,6 +20,7 @@ The public story is:
 - [Installation](getting-started/installation.md): package extras and source install
 - [Python API Reference](api/python.md): `Index`, `IndexBuilder`, transport helpers, and public classes
 - [Reference API Tutorial](reference_api_tutorial.md): first HTTP collections and queries
+- [Groundedness Beta Guide](guides/groundedness-beta.md): post-generation groundedness, evidence heatmaps, and Beta limits
 - [Max-Performance Reference API Guide](guides/max-performance-reference-api.md): worker scaling, base64, GPU modes
 - [Shard Engine Guide](guides/shard-engine.md): routing, scoring, durability, and admin endpoints
 - [Latence Graph Sidecar](guides/latence-graph-sidecar.md): optional premium graph lane, policy, provenance, and health surfaces
@@ -43,6 +45,7 @@ This repo is a good fit if you are shipping:
 | `encode_vector_payload()` | Preferred base64 serializer for dense and multivector requests |
 | `SearchPipeline` | In-process dense + BM25 fusion |
 | `latence_solver` | Optional Tabu Search solver for `tabu` refinement and `/reference/optimize` |
+| `POST /collections/{name}/groundedness` | Beta groundedness / hallucination detection over final `chunk_ids` or `raw_context` |
 | `LatenceGraphSidecar` | Optional premium graph plane for additive rescue, provenance, and freshness-aware graph metadata |
 
 ## Design Principles

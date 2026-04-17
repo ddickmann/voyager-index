@@ -379,6 +379,7 @@ Production note:
 | `DELETE /collections/{name}/points` | Delete documents |
 | `POST /collections/{name}/checkpoint` | Checkpoint WAL |
 | `GET /collections/{name}/wal/status` | WAL status |
+| `POST /collections/{name}/groundedness` | Post-generation groundedness / hallucination detection (Beta) |
 | `POST /encode` | Encode text/images to vectors |
 | `POST /rerank` | Rerank results |
 | `POST /reference/optimize` | Context packing (Tabu Search) |
@@ -407,6 +408,7 @@ Graph-aware search uses the same search endpoint and adds:
 - [Installation](docs/getting-started/installation.md)
 - [Python API Reference](docs/api/python.md)
 - [Reference API Tutorial](docs/reference_api_tutorial.md)
+- [Groundedness Beta Guide](docs/guides/groundedness-beta.md)
 - [Shard Engine Guide](docs/guides/shard-engine.md)
 - [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md)
 - [Enterprise Control Plane Boundary](docs/guides/control-plane.md)
@@ -433,6 +435,33 @@ bash scripts/install_from_source.sh --cpu
 - Community: [Code of Conduct](CODE_OF_CONDUCT.md)
 - Security: see [SECURITY.md](SECURITY.md)
 - Release process: see [RELEASING.md](RELEASING.md)
+
+## Hallucination Detection (Beta)
+
+`voyager-index` now ships a **Beta** groundedness / hallucination detection
+endpoint for post-generation answers:
+
+- fast path: score a final answer against the exact `chunk_ids` that were passed
+  to the LLM, without re-encoding support context
+- fallback path: score against `raw_context` when chunk IDs are unavailable
+- output: scalar groundedness, response-token heatmaps, top evidence links, and
+  optional dense debug matrices
+
+This is designed as a **support signal and evidence trace**, not a final
+factuality oracle. It is useful for product debugging, QA, and user-facing
+evidence views, but dense similarity can still be overconfident on negation,
+entity swaps, dates, numbers, and other semantically close factual errors.
+Very long mixed-support contexts near the model limit are also materially harder
+than short anchored answers, so keep product wording conservative on ambiguous
+long-context responses.
+
+The production headline score uses **naive reverse-context MaxSim**. Optional
+query-conditioned channels remain diagnostic-only and are not the recommended
+product path.
+
+Start with the [Groundedness Beta Guide](docs/guides/groundedness-beta.md), the
+[Reference API Tutorial](docs/reference_api_tutorial.md), or the interactive
+OpenAPI docs at `http://127.0.0.1:8080/docs`.
 
 ## License
 

@@ -362,7 +362,62 @@ Important truth-in-advertising note:
 - shard collections can still use the optional graph lane after first-stage retrieval
 - on shard HTTP search, use `query_payload` rather than `query_text` to steer graph policy
 
-## 7. Persistence And Inspection
+## 7. Groundedness (Beta)
+
+Use groundedness after generation, not as a replacement for retrieval:
+
+- fast path: score a final answer against the exact `chunk_ids` passed to the LLM
+- fallback path: score against `raw_context` when chunk IDs are unavailable
+- output: scalar groundedness, response-token heatmaps, and top evidence links
+
+For text collections, start the server with a groundedness-capable encoder:
+
+```bash
+VOYAGER_GROUNDEDNESS_MODEL=lightonai/GTE-ModernColBERT-v1 voyager-index-server
+```
+
+Chunk-ID mode:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chunk_ids": ["doc-1"],
+    "query_text": "invoice total due",
+    "response_text": "The invoice total is due.",
+    "evidence_limit": 3
+  }'
+```
+
+Raw-context fallback:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
+  -H "Content-Type: application/json" \
+  -d '{
+    "raw_context": "Invoice total due. Payment due on receipt.",
+    "query_text": "invoice total due",
+    "response_text": "The invoice total is due.",
+    "segmentation_mode": "sentence"
+  }'
+```
+
+Look for these response fields:
+
+- `scores`
+- `response_tokens`
+- `support_units`
+- `top_evidence`
+- `eligibility`
+
+Truth-in-advertising note:
+
+- this is a **Beta** groundedness / hallucination detection signal
+- it is useful for evidence views and QA
+- it is **not** a final truth oracle, especially on negation, entity swaps,
+  dates, or exact numeric claims
+
+## 8. Persistence And Inspection
 
 Collections persist under the configured storage root. Useful endpoints:
 
@@ -386,7 +441,7 @@ Shard-only admin endpoints:
 - `POST /collections/{name}/scroll`
 - `POST /collections/{name}/retrieve`
 
-## 8. Optional Solver Surface
+## 9. Optional Solver Surface
 
 Check availability:
 
@@ -405,7 +460,7 @@ curl http://127.0.0.1:8080/reference/optimize/health
 Use it when you already have a candidate pool and want optimization, not when
 you simply need standard exact multimodal retrieval.
 
-## 9. Honest Boundaries
+## 10. Honest Boundaries
 
 Outside the OSS HTTP contract:
 
@@ -414,7 +469,7 @@ Outside the OSS HTTP contract:
 - distributed control-plane features
 - internal research backends that are not part of the shard-first public story
 
-## 10. Next Stops
+## 11. Next Stops
 
 - `docs/full_feature_cookbook.md`
 - `docs/guides/max-performance-reference-api.md`

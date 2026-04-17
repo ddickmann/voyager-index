@@ -15,6 +15,8 @@ from .models import (
     CollectionInfo,
     CollectionListResponse,
     CreateCollectionRequest,
+    GroundednessRequest,
+    GroundednessResponse,
     DeletePayloadKeysRequest,
     DeletePointsRequest,
     EncodeRequest,
@@ -273,6 +275,28 @@ async def search(
 ):
     try:
         return service.search(name, request)
+    except ServiceError as exc:
+        _raise_service_error(exc)
+
+
+@router.post(
+    "/collections/{name}/groundedness",
+    response_model=GroundednessResponse,
+    tags=["Groundedness"],
+    summary="Groundedness / hallucination detection (Beta)",
+    description=(
+        "Post-generation groundedness scoring over final chunk_ids or raw_context. "
+        "Returns heatmap-ready support signals and evidence links. "
+        "Beta feature: useful for groundedness and evidence tracing, but not a final factuality oracle."
+    ),
+)
+async def groundedness(
+    name: str,
+    request: GroundednessRequest,
+    service: SearchService = Depends(get_service),
+):
+    try:
+        return service.groundedness(name, request)
     except ServiceError as exc:
         _raise_service_error(exc)
 

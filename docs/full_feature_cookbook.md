@@ -41,6 +41,7 @@ with the results, skips, and boundary checks.
 | Late-interaction retrieval | reference HTTP API | runnable |
 | Multimodal retrieval | reference HTTP API | runnable |
 | Shard collection routing + ColBANDIT + quantized scoring | reference HTTP API | runnable |
+| Groundedness / hallucination detection (Beta) | reference HTTP API | runnable, with boundaries |
 | Multimodal `strategy="optimized"` screening | reference HTTP API | runnable, with backend selection limits explained |
 | Health, readiness, metrics, persistence | reference HTTP API | runnable |
 | Multimodal precision profiles (`INT8`, `FP8`, `RoQ`) | OSS guidance + library / validation surface | documented with boundaries |
@@ -642,6 +643,53 @@ Where to explore them:
 - multimodal guidance: `internal/contracts/MULTIMODAL_FOUNDATION.md`
 - benchmark posture: `docs/benchmarks.md`
 - validation evidence: `internal/validation/README.md`
+
+## Step 9A. Groundedness / Hallucination Detection (Beta)
+
+The reference HTTP API now exposes a **Beta** post-generation groundedness
+endpoint:
+
+```text
+POST /collections/{name}/groundedness
+```
+
+What it is for:
+
+- score a final answer against the exact `chunk_ids` passed to the LLM
+- fall back to `raw_context` when chunk IDs are unavailable
+- return heatmap-ready token scores and top evidence links
+
+What it is not:
+
+- not a replacement for retrieval
+- not a final factuality oracle
+- not immune to negation flips, entity swaps, or exact numeric near-misses
+
+Preferred production path:
+
+- use `chunk_ids[]` when your generation layer tracks the final support set
+- treat `raw_context` as a compatibility fallback
+- use the naive reverse-context score as the product headline
+
+Minimal example:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/li-guide/groundedness \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chunk_ids": ["doc-1", "doc-7"],
+    "query_text": "When was Teardrops released in the United States?",
+    "response_text": "Teardrops was released in the United States on 20 July 1981.",
+    "evidence_limit": 5
+  }'
+```
+
+Truth-in-advertising note:
+
+- `late_interaction` is the cleanest text-groundedness path
+- `multimodal` and `shard` are supported only when vectors can be scored in
+  faithful float precision after materialization or dequantization
+- `roq4` without an FP16 sidecar is outside the user-facing trust boundary
 
 ## Step 10. Persistence, Restart Safety, And Readiness
 
