@@ -362,159 +362,15 @@ Important truth-in-advertising note:
 - shard collections can still use the optional graph lane after first-stage retrieval
 - on shard HTTP search, use `query_payload` rather than `query_text` to steer graph policy
 
-## 7. Groundedness Tracker (Beta)
+## 7. Groundedness Tracker (sidecar)
 
-Use groundedness after generation, not as a replacement for retrieval:
-
-- fast path: score a final answer against the exact `chunk_ids` passed to the LLM
-- fallback path: score against `raw_context` when chunk IDs are unavailable,
-  using sentence-aware packed windows by default
-- output: headline `reverse_context`, calibrated headline
-  `reverse_context_calibrated` (with per-token z-scores against an internal
-  null bank), secondary `consensus_hardened`, secondary `literal_guarded` plus
-  `literal_diagnostics` for unsupported dates/numbers/units/identifiers,
-  response-token heatmaps, and top evidence links
-
-For text collections, start the server with a groundedness-capable encoder:
-
-```bash
-VOYAGER_GROUNDEDNESS_MODEL=lightonai/GTE-ModernColBERT-v1 voyager-index-server
-```
-
-Or point groundedness at a remote `vllm-factory` ModernColBERT deployment:
-
-```bash
-VOYAGER_GROUNDEDNESS_VLLM_ENDPOINT=http://127.0.0.1:8000 \
-VOYAGER_GROUNDEDNESS_VLLM_MODEL=VAGOsolutions/SauerkrautLM-Multi-Reason-ModernColBERT \
-voyager-index-server
-```
-
-Chunk-ID mode:
-
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chunk_ids": ["doc-1"],
-    "query_text": "invoice total due",
-    "response_text": "The invoice total is due.",
-    "evidence_limit": 3
-  }'
-```
-
-Raw-context fallback:
-
-```bash
-curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
-  -H "Content-Type: application/json" \
-  -d '{
-    "raw_context": "Invoice total due. Payment due on receipt.",
-    "query_text": "invoice total due",
-    "response_text": "The invoice total is due."
-  }'
-```
-
-The `raw_context` path now defaults to `segmentation_mode="sentence_packed"`
-with a `raw_context_chunk_tokens` budget of `256`, so you only need to pass
-those fields when you want a different budget or another segmentation mode.
-There is no explicit overlap field: if the next sentence would cross the budget,
-it is carried into the next support unit intact. Keep the packed budget at or
-below the active encoder's real document-length limit; the API returns a
-warning when the requested packed window is larger than the encoder can
-reliably process.
-
-Look for these response fields:
-
-- `scores`
-- `response_tokens`
-- `support_units`
-- `top_evidence`
-- `eligibility`
-
-`scores.reverse_context` remains the raw product headline.
-`scores.reverse_context_calibrated` is the same signal standardized against an
-internal null bank of unrelated short documents and squashed into `(0, 1)`; it
-is the recommended UI-facing aggregate when you need a wide, readable dynamic
-range. `scores.null_bank_size` reports the calibration sample size (`0` when
-calibration is disabled, in which case the calibrated value falls back to the
-raw headline and a `calibration_disabled` warning is emitted).
-`scores.consensus_hardened` is a conservative secondary score that should be
-read alongside per-token `support_unit_hits_above_threshold`,
-`support_unit_soft_breadth`, and `effective_support_units`. Per-token
-calibration diagnostics (`reverse_context_calibrated`, `reverse_context_z`,
-`null_mean`, `null_std`) appear inside each `response_tokens` row.
-
-`scores.literal_guarded` discounts the calibrated headline by `(1 - rate)^k`
-where `k` is the number of unsupported response literals (dates, numbers,
-units, currency, percent, URLs, emails, identifiers). The corresponding
-`literal_diagnostics.response_literals`, `literal_diagnostics.matches`, and
-`literal_diagnostics.mismatches` arrays describe exactly which literals were
-matched against the support text union and which were not. Use this when you
-want a literal-aware aggregate that is much more conservative than the
-embedding-only headline for facts that should be verifiable lexically.
-
-`scores.groundedness_v2` is the optional fused score that combines
-`reverse_context_calibrated`, `literal_guarded`, and `nli_aggregate` into a
-single convex combination (default weights `(0.5, 0.2, 0.3)`). Channels with
-missing values are dropped and the remaining weights are renormalized, so the
-fused score stays well defined even when the NLI verifier is disabled.
-
-Enable the **NLI / claim-level verifier** by starting the server with
-`VOYAGER_GROUNDEDNESS_NLI_ENABLED=1` (default model
-`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`). When enabled the response
-includes `scores.nli_aggregate`, `scores.nli_claim_count`,
-`scores.nli_skipped_count`, per-token `nli_score` inside `response_tokens`,
-and a `nli_diagnostics.claims` array with per-claim text, character offsets,
-entailment / neutral / contradiction probabilities, signed score, premise
-count, and any `skip_reason` (`no_premises`, `latency_budget`,
-`nli_provider_error`). The verifier is bounded by
-`VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS` (default `2000` ms); on budget exhaustion
-remaining claims are skipped and an `nli_budget_exceeded` warning is added.
-
-Truth-in-advertising note:
-
-- this is a **Beta** groundedness tracker signal
-- it is useful for evidence views and QA
-- it is **not** a final truth oracle, especially on negation, entity swaps,
-  dates, or exact numeric claims
-- very long raw-context packing is only as good as the encoder's effective
-  document length
-- on the current long-context audit (`lightonai/GTE-ModernColBERT-v1`,
-  `256`-token windows), quality separation stayed strong but score-only latency
-  was still about `90.9 ms` p50 / `97.2 ms` p95
-
-### Recommended production configuration
-
-The Phase E harness was run against real RAGTruth and HaluEval data with
-the NLI peer enabled. The configuration that hit the pre-registered exit
-criteria was:
-
-```bash
-VOYAGER_GROUNDEDNESS_MODEL=lightonai/GTE-ModernColBERT-v1 \
-VOYAGER_GROUNDEDNESS_NLI_ENABLED=1 \
-VOYAGER_GROUNDEDNESS_NLI_MODEL=MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli \
-VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS=2000 \
-voyager-index-server
-```
-
-Observed on a single A5000, batch size 1, 200 samples per stratum
-(NLI lane):
-
-| Lane                       | Internal lexical | Internal semantic | Internal partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
-|----------------------------|-----------------:|------------------:|-----------------:|------------------:|---------------:|------------:|
-| Dense + literal only       |             0.79 |              0.73 |             1.00 |              0.58 |           0.37 |       111 ms|
-| Dense + literal + NLI peer |             1.00 |              1.00 |             1.00 |          **0.60** |       **0.69** |   **141 ms**|
-| Pre-registered exit        |          ≥ 0.80  |          ≥ 0.70   |        ≥ 0.65    |          ≥ 0.55   |        ≥ 0.70  | ≤ 250 ms (NLI)|
-
-The NLI lane meets 5 of 6 actionable pre-registered targets; HaluEval QA
-misses the 0.70 cut by 0.01. Without NLI, dense-only groundedness should
-be presented as a lexical / partial-support tracer, not a hallucination
-detector. RAGTruth `data2text` (F1 `0.43`) and HaluEval `dialogue`
-(F1 `0.51`) remain genuine weak strata even with NLI.
-
-Reproduce with the harness in
-`research/triangular_maxsim/groundedness_external_eval.py`; see
-`research/triangular_maxsim/README.md` for dataset prep.
+Post-generation hallucination scoring is shipped separately as the
+[`latence-trace`](https://github.com/ddickmann/latence-trace) sidecar
+(commercial, not part of the OSS distribution). The sidecar exposes
+`POST /groundedness` with the same `chunk_ids` / `raw_context` contract,
+calibrated risk bands, and NLI / semantic-entropy / structured-source
+peers. See the [Groundedness sidecar guide](guides/groundedness-sidecar.md)
+for the deployment story.
 
 ## 8. Persistence And Inspection
 
@@ -610,7 +466,6 @@ optional `graph_mode`, `graph_local_budget`, `graph_community_budget`,
 
 | Endpoint                                          | Purpose                                                            |
 |---------------------------------------------------|--------------------------------------------------------------------|
-| `POST /collections/{name}/groundedness`           | Beta Groundedness Tracker over `chunk_ids` or `raw_context`        |
 | `POST /reference/preprocess/documents`            | PDF / DOCX / XLSX / image preprocessing                            |
 | `POST /reference/optimize`                        | Tabu Search context packing on a supplied candidate pool           |
 | `GET /reference/optimize/health`                  | Solver lane availability                                           |

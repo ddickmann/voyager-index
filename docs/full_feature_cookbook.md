@@ -41,7 +41,6 @@ with the results, skips, and boundary checks.
 | Late-interaction retrieval | reference HTTP API | runnable |
 | Multimodal retrieval | reference HTTP API | runnable |
 | Shard collection routing + ColBANDIT + quantized scoring | reference HTTP API | runnable |
-| Groundedness Tracker (Beta) | reference HTTP API | runnable, with boundaries |
 | Multimodal `strategy="optimized"` screening | reference HTTP API | runnable, with backend selection limits explained |
 | Health, readiness, metrics, persistence | reference HTTP API | runnable |
 | Multimodal precision profiles (`INT8`, `FP8`, `RoQ`) | OSS guidance + library / validation surface | documented with boundaries |
@@ -644,132 +643,18 @@ Where to explore them:
 - benchmark posture: `docs/benchmarks.md`
 - validation evidence: `internal/validation/README.md`
 
-## Step 9A. Groundedness Tracker (Beta)
+## Step 9A. Groundedness Tracker (sidecar)
 
-The reference HTTP API now exposes a **Beta** post-generation groundedness
-endpoint:
-
-```text
-POST /collections/{name}/groundedness
-```
-
-What it is for:
-
-- score a final answer against the exact `chunk_ids` passed to the LLM
-- fall back to `raw_context` when chunk IDs are unavailable, using packed
-  sentence-aware support windows by default
-- return heatmap-ready token scores, top evidence links, and a secondary
-  support-breadth signal
-
-What it is not:
-
-- not a replacement for retrieval
-- not a final factuality oracle
-- not immune to negation flips, entity swaps, or exact numeric near-misses
-
-Preferred production path:
-
-- use `chunk_ids[]` when your generation layer tracks the final support set
-- treat `raw_context` as a compatibility fallback
-- on `raw_context`, the default fallback is `segmentation_mode="sentence_packed"`
-  with `raw_context_chunk_tokens=256`
-- there is no explicit overlap field; overflow sentences move to the next packed
-  support unit
-- keep the packed budget at or below the active encoder's usable document length
-- use the naive reverse-context score as the raw product headline
-- prefer `reverse_context_calibrated` for UI-facing aggregates: it standardizes
-  per-token scores against an internal null bank of unrelated short documents
-  and squashes the result into `(0, 1)` for a wider, readable dynamic range
-- read `consensus_hardened` as a conservative secondary robustness score, not a
-  replacement headline
-- per-request `null_bank_size` reports calibration sample size; if it is `0`,
-  the calibrated score falls back to the raw headline and a
-  `calibration_disabled` warning is emitted
-- read `literal_guarded` together with `literal_diagnostics` when the answer
-  contains dates, numbers, currency, units, URLs, emails, or explicit
-  identifiers; each unsupported literal applies a multiplicative penalty to
-  the calibrated headline and a `literal_mismatch` warning is emitted with the
-  first few mismatched values
-- enable the optional **NLI / claim-level verifier** by starting the server with
-  `VOYAGER_GROUNDEDNESS_NLI_ENABLED=1`. It splits the response into sentence
-  claims, picks top-`k` lexically overlapping support premises, runs batched
-  entailment under a strict latency budget, and returns
-  `scores.nli_aggregate`, per-token `nli_score`, and per-claim
-  `nli_diagnostics`. The fused `scores.groundedness_v2` is then a convex
-  combination of `reverse_context_calibrated`, `literal_guarded`, and
-  `nli_aggregate` (default weights `(0.5, 0.2, 0.3)`); when a channel is
-  missing the remaining weights are renormalized so the fused score stays
-  well defined
-
-Remote production setup:
-
-```bash
-VOYAGER_GROUNDEDNESS_VLLM_ENDPOINT=http://127.0.0.1:8000 \
-VOYAGER_GROUNDEDNESS_VLLM_MODEL=VAGOsolutions/SauerkrautLM-Multi-Reason-ModernColBERT \
-voyager-index-server
-```
-
-Useful tuning knobs:
-
-- `VOYAGER_GROUNDEDNESS_SCORE_BATCH_UNITS` (default `64`)
-- `VOYAGER_GROUNDEDNESS_VLLM_BATCH_SIZE`
-- `VOYAGER_GROUNDEDNESS_VLLM_MAX_CONCURRENCY`
-- `VOYAGER_GROUNDEDNESS_VLLM_TIMEOUT`
-- `VOYAGER_GROUNDEDNESS_NLI_ENABLED` (default `0`)
-- `VOYAGER_GROUNDEDNESS_NLI_MODEL`
-  (default `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`)
-- `VOYAGER_GROUNDEDNESS_NLI_MAX_CLAIMS` (default `16`)
-- `VOYAGER_GROUNDEDNESS_NLI_TOP_K` (default `3`)
-- `VOYAGER_GROUNDEDNESS_NLI_BATCH` (default `16`)
-- `VOYAGER_GROUNDEDNESS_NLI_LATENCY_MS` (default `2000`)
-- `VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED` (default `0.5`)
-- `VOYAGER_GROUNDEDNESS_FUSION_W_LITERAL` (default `0.2`)
-- `VOYAGER_GROUNDEDNESS_FUSION_W_NLI` (default `0.3`)
-
-Minimal example:
-
-```bash
-curl -X POST http://127.0.0.1:8080/collections/li-guide/groundedness \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chunk_ids": ["doc-1", "doc-7"],
-    "query_text": "When was Teardrops released in the United States?",
-    "response_text": "Teardrops was released in the United States on 20 July 1981.",
-    "evidence_limit": 5
-  }'
-```
-
-Truth-in-advertising note:
-
-- `late_interaction` is the cleanest text-groundedness path
-- `multimodal` and `shard` are supported only when vectors can be scored in
-  faithful float precision after materialization or dequantization
-- `roq4` without an FP16 sidecar is outside the user-facing trust boundary
-- in the current long-context audit (`lightonai/GTE-ModernColBERT-v1`,
-  `256`-token windows), anchor separation stayed strong but score-only latency
-  was still about `90.9 ms` p50 / `97.2 ms` p95
-
-Validated production configuration (Phase E real-world benchmark run on
-RAGTruth + HaluEval, single A5000, batch size 1, 200 samples per
-stratum):
-
-```bash
-VOYAGER_GROUNDEDNESS_MODEL=lightonai/GTE-ModernColBERT-v1 \
-VOYAGER_GROUNDEDNESS_NLI_ENABLED=1 \
-VOYAGER_GROUNDEDNESS_NLI_MODEL=MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli \
-voyager-index-server
-```
-
-Headline numbers (NLI peer on): all 7 internal minimal pair strata at
-paired accuracy `1.00`, RAGTruth macro span F1 `0.60`, HaluEval QA F1
-`0.69`, total latency p95 `141 ms` (under the `250 ms` NLI budget).
-Without the NLI peer the same RAGTruth lane stays at macro F1 `0.58`
-but HaluEval QA collapses to F1 `0.37` — turn the NLI peer on for any
-product surface that needs hallucination safety. RAGTruth `data2text`
-(F1 `0.43`) and HaluEval `dialogue` (F1 `0.51`) remain weaker strata
-even with NLI; treat groundedness as advisory in those two lanes.
-
-Full reproduction: `research/triangular_maxsim/README.md`.
+Post-generation groundedness scoring is shipped as the standalone
+[`latence-trace`](https://github.com/ddickmann/latence-trace) sidecar
+(commercial, not part of this OSS distribution). The sidecar exposes
+`POST /groundedness` and accepts the same `chunk_ids` / `raw_context`
+contract you would otherwise have called on `voyager-index`. The OSS
+retrieval surface and the commercial groundedness surface are kept on
+separate processes by design so they can scale and be licensed
+independently. See the
+[Groundedness sidecar guide](guides/groundedness-sidecar.md) for the
+deployment story and the integration shape.
 
 ## Step 10. Persistence, Restart Safety, And Readiness
 

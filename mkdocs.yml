@@ -40,7 +40,7 @@ nav:
     - Enterprise Control Plane Boundary: guides/control-plane.md
     - Scaling: guides/scaling.md
     - Max-Performance Reference API: guides/max-performance-reference-api.md
-    - Groundedness Tracker Beta: guides/groundedness-beta.md
+    - Groundedness Sidecar: guides/groundedness-sidecar.md
   - API Reference:
     - Python API: api/python.md
     - Rust Crates: api/rust.md

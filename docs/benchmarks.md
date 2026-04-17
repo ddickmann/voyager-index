@@ -95,30 +95,13 @@ and includes encoding in QPS, while our numbers are search-only on a smaller
 GPU. The table above uses full-query evaluation specifically to avoid
 publishing a flattering slice.
 
-## Groundedness Tracker (Beta) — real-world
+## Groundedness Tracker
 
-Run on **RAGTruth** + **HaluEval**, per-stratum samples, A5000 batch 1.
-Headline = `groundedness_v2` (calibrated reverse MaxSim + literal
-guardrails + optional NLI peer with cross-encoder premise reranking,
-atomic-claim decomposition, semantic-entropy consistency, and
-structured-source verification).
-
-| Lane                                     | Internal lex / sem / partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
-|------------------------------------------|-----------------------------:|------------------:|---------------:|------------:|
-| Dense + literal only                     |           0.80 / 0.93 / 0.95 |              0.48 |           0.75 |      92 ms  |
-| **+ NLI peer (reranker + atomic)**       |       **0.99 / 1.00 / 1.00** |              0.49 |       **0.90** |     102 ms  |
-| **+ Semantic entropy (synthetic peers)** |       **0.98 / 1.00 / 1.00** |          **0.60** |           0.80 |     125 ms  |
-| Pre-registered exit                      |    ≥ 0.80 / ≥ 0.70 / ≥ 0.65  |            ≥ 0.55 |         ≥ 0.75 |  ≤ 400 ms   |
-
-Semantic-entropy + NLI lane hits **RAGTruth macro ≥ 0.55** and HaluEval QA
-≥ 0.75 simultaneously; NLI-only lane sets the HaluEval QA headline at
-**0.90** F1. Reports live under
-`research/triangular_maxsim/reports/phase_j_no_nli.json`,
-`phase_j_nli.json`, and `phase_j_nli_sem.json`. The full per-stratum
-tables, harness, env vars, and reproduction guide live in
-`research/triangular_maxsim/README.md`; the product framing, risk-band
-policy, and Phase I structured-source verification are in the
-[Groundedness Beta Guide](guides/groundedness-beta.md).
+Post-generation hallucination scoring is shipped as a separate
+commercial sidecar and is no longer benchmarked in this OSS document.
+For the latest minimal-pair, RAGTruth, HaluEval and FActScore numbers
+see the [Groundedness sidecar guide](guides/groundedness-sidecar.md)
+and the `latence-trace` sidecar repository.
 
 ## Benchmark Layers
 

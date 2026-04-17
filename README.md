@@ -86,7 +86,7 @@ docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 - **Multimodal** — text (ColBERT), images (ColPali / ColQwen), preprocessing for PDF / DOCX / XLSX.
 - **Operations** — WAL, checkpoint, crash recovery, scroll, retrieve, multi-worker FastAPI.
 - **Optional graph lane** — Latence sidecar for graph-aware rescue and provenance, additive to the OSS path.
-- **Groundedness Tracker (Beta)** — post-generation hallucination signal scored against `chunk_ids` or raw context, with optional NLI peer fusion. See the [Beta Guide](docs/guides/groundedness-beta.md).
+- **Optional groundedness lane** — `latence-trace` sidecar for post-generation hallucination scoring against retrieved `chunk_ids` or raw context. Commercial sidecar; not part of the OSS distribution. See the [Groundedness sidecar guide](docs/guides/groundedness-sidecar.md).
 
 ## Benchmarks
 
@@ -107,28 +107,6 @@ GPU P95 stays under 6 ms across every dataset. The full per-dataset
 [head-to-head against `next-plaid`](docs/benchmarks.md#comparison-vs-next-plaid)
 (same model, H100, encoding included), methodology, and caveats live in
 [docs/benchmarks.md](docs/benchmarks.md).
-
-### Groundedness Tracker (Beta) — real-world
-
-Run on **RAGTruth** + **HaluEval**, per-stratum samples, A5000 batch 1. Headline
-= `groundedness_v2` (calibrated reverse MaxSim + literal guardrails + optional
-NLI peer with cross-encoder premise reranking, atomic-claim decomposition,
-semantic-entropy consistency, and structured-source verification).
-
-| Lane                                     | Internal lex / sem / partial | RAGTruth macro F1 | HaluEval QA F1 | Latency p95 |
-|------------------------------------------|-----------------------------:|------------------:|---------------:|------------:|
-| Dense + literal only                     |           0.80 / 0.93 / 0.95 |              0.48 |           0.75 |      92 ms  |
-| **+ NLI peer (reranker + atomic)**       |       **0.99 / 1.00 / 1.00** |              0.49 |       **0.90** |     102 ms  |
-| **+ Semantic entropy (synthetic peers)** |       **0.98 / 1.00 / 1.00** |          **0.60** |           0.80 |     125 ms  |
-| Pre-registered exit                      |       ≥ 0.80 / ≥ 0.70 / ≥ 0.65 |            ≥ 0.55 |         ≥ 0.75 |  ≤ 400 ms   |
-
-Semantic-entropy + NLI lane hits **RAGTruth macro ≥ 0.55** and HaluEval QA
-≥ 0.75 simultaneously; NLI-only lane sets the HaluEval QA headline at
-**0.90** F1. Reports are committed under
-[`research/triangular_maxsim/reports/`](research/triangular_maxsim/reports/).
-Reproduction, per-stratum breakdown, risk bands and env vars:
-[Groundedness Beta Guide](docs/guides/groundedness-beta.md) and
-[`research/triangular_maxsim/README.md`](research/triangular_maxsim/README.md).
 
 ## Architecture
 
@@ -159,8 +137,7 @@ Three execution modes share the same collection format and API contract:
 - [Quickstart](docs/getting-started/quickstart.md) · [Installation](docs/getting-started/installation.md) · [Install from source](docs/getting-started/installation.md#from-source)
 - [Reference API Tutorial](docs/reference_api_tutorial.md) · [HTTP endpoint reference](docs/reference_api_tutorial.md#10-api-endpoint-reference) · [Python API](docs/api/python.md)
 - [Shard Engine Guide](docs/guides/shard-engine.md) · [Max-Performance Guide](docs/guides/max-performance-reference-api.md) · [Scaling Guide](docs/guides/scaling.md)
-- [Groundedness Tracker Beta Guide](docs/guides/groundedness-beta.md)
-- [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md) · [Enterprise Control Plane](docs/guides/control-plane.md)
+- [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md) · [Groundedness Sidecar Guide](docs/guides/groundedness-sidecar.md) · [Enterprise Control Plane](docs/guides/control-plane.md)
 - [Benchmarks And Methodology](docs/benchmarks.md) · [Production Notes](PRODUCTION.md)
 - [Full Feature Cookbook](docs/full_feature_cookbook.md)
 

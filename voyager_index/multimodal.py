@@ -152,8 +152,8 @@ class VllmPoolingProvider:
 class VllmFactoryModernColBERTProvider:
     """ModernColBERT-specific HTTP client for vllm-factory `/pooling`.
 
-    This provider implements the minimal encode/tokenize surface required by the
-    groundedness service while keeping request construction compatible with the
+    This provider implements the minimal encode/tokenize surface required by
+    downstream services while keeping request construction compatible with the
     `moderncolbert_io` plugin contract.
     """
 
@@ -283,8 +283,8 @@ class VllmFactoryModernColBERTProvider:
         """Strict, server-parity token count for packing budgets.
 
         Returns the exact length of the token id sequence the provider will send
-        to the backend, including special tokens and the ``[D]/[Q]`` prefix. The
-        groundedness packer prefers this over a naive tokenizer call so packed
+        to the backend, including special tokens and the ``[D]/[Q]`` prefix.
+        Downstream callers prefer this over a naive tokenizer call so packed
         windows match what the encoder will actually consume.
         """
 
