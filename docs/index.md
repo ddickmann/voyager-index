@@ -36,6 +36,48 @@ This repo is a good fit if you are shipping:
 - a single-host service that needs multi-worker QPS scaling
 - a retrieval stack where exact MaxSim quality matters more than generic vector DB breadth
 
+It is probably **not** the first choice if you need:
+
+- a large distributed control plane across many nodes
+- purely dense ANN retrieval at extreme scale
+- a hosted multi-tenant SaaS search platform
+
+## What Makes It Different
+
+### No mandatory graph dependency
+
+`voyager-index` uses proxy routing plus exact MaxSim reranking without
+requiring a graph build step in the OSS serving path. When installed, the
+optional Latence graph sidecar is invoked after first-stage retrieval and
+merged additively. That keeps the system simpler to operate while preserving
+a premium graph lane for teams that want it.
+
+### Rust + Triton hot paths
+
+The CPU path is a native Rust extension (`latence_shard_engine`) with
+memory-mapped shards, fused MaxSim, SIMD acceleration, and GIL-free
+execution. The GPU path uses Triton kernels for exact and quantized scoring
+with variable-length document scheduling. Both paths share the same
+collection format and retrieval contract.
+
+### Research-backed features in the serving path
+
+LEMUR routing, ColBANDIT query-time pruning, ROQ rotational quantization,
+and budget-aware context optimization are integrated into the shipped system
+rather than isolated in research notebooks.
+
+### Operational features, not just benchmarking
+
+CRUD, WAL, checkpoint, crash recovery, payload metadata, scroll, and
+retrieve are included because retrieval systems in production need
+operational discipline — not just benchmark wins.
+
+### Multimodal native
+
+The same serving stack supports text token embeddings (ColBERT) and image
+patch embeddings (ColPali / ColQwen), with preprocessing for PDF, DOCX,
+XLSX, and image inputs.
+
 ## Product Shape
 
 | Surface | What it does |

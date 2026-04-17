@@ -559,7 +559,63 @@ curl http://127.0.0.1:8080/reference/optimize/health
 Use it when you already have a candidate pool and want optimization, not when
 you simply need standard exact multimodal retrieval.
 
-## 10. Honest Boundaries
+## 10. API Endpoint Reference
+
+The reference HTTP server exposes one consistent collection contract plus a
+small set of cross-collection helpers. Full request and response schemas are
+in the live OpenAPI docs at `http://127.0.0.1:8080/docs`; this table is the
+quick map.
+
+### Collections
+
+| Endpoint                                          | Purpose                                                            |
+|---------------------------------------------------|--------------------------------------------------------------------|
+| `POST /collections/{name}`                        | Create collection (dense, late-interaction, multimodal, or shard)  |
+| `GET /collections`                                | List collections                                                   |
+| `GET /collections/{name}/info`                    | Inspect collection tuning, health, and graph sync state            |
+| `DELETE /collections/{name}`                      | Drop a collection                                                  |
+
+### Points
+
+| Endpoint                                          | Purpose                                                            |
+|---------------------------------------------------|--------------------------------------------------------------------|
+| `POST /collections/{name}/points`                 | Add or upsert documents                                            |
+| `DELETE /collections/{name}/points`               | Delete documents by ID                                             |
+| `POST /collections/{name}/retrieve`               | Retrieve documents by ID                                           |
+| `GET /collections/{name}/scroll`                  | Scroll through all stored documents                                |
+
+### Search
+
+| Endpoint                                          | Purpose                                                            |
+|---------------------------------------------------|--------------------------------------------------------------------|
+| `POST /collections/{name}/search`                 | Single-query search (dense, late-interaction, multimodal, shard)   |
+| `POST /collections/{name}/search/batch`           | Batched multi-query search                                         |
+| `POST /rerank`                                    | Rerank a candidate pool                                            |
+| `POST /encode`                                    | Encode text or images to vectors via the active provider           |
+
+Graph-aware search uses the same `POST /search` endpoint and adds the
+optional `graph_mode`, `graph_local_budget`, `graph_community_budget`,
+`graph_evidence_budget`, `graph_explain`, and `query_payload` fields.
+
+### Durability and admin
+
+| Endpoint                                          | Purpose                                                            |
+|---------------------------------------------------|--------------------------------------------------------------------|
+| `POST /collections/{name}/checkpoint`             | Force WAL checkpoint                                               |
+| `GET /collections/{name}/wal/status`              | WAL health and replay status                                       |
+| `GET /health`                                     | Liveness                                                           |
+| `GET /ready`                                      | Readiness                                                          |
+
+### Post-generation and document tooling
+
+| Endpoint                                          | Purpose                                                            |
+|---------------------------------------------------|--------------------------------------------------------------------|
+| `POST /collections/{name}/groundedness`           | Beta Groundedness Tracker over `chunk_ids` or `raw_context`        |
+| `POST /reference/preprocess/documents`            | PDF / DOCX / XLSX / image preprocessing                            |
+| `POST /reference/optimize`                        | Tabu Search context packing on a supplied candidate pool           |
+| `GET /reference/optimize/health`                  | Solver lane availability                                           |
+
+## 11. Honest Boundaries
 
 Outside the OSS HTTP contract:
 
@@ -568,7 +624,7 @@ Outside the OSS HTTP contract:
 - distributed control-plane features
 - internal research backends that are not part of the shard-first public story
 
-## 11. Next Stops
+## 12. Next Stops
 
 - `docs/full_feature_cookbook.md`
 - `docs/guides/max-performance-reference-api.md`

@@ -103,9 +103,9 @@ Encoder: `lightonai/GTE-ModernColBERT-v1`. CPU lane uses 8 native Rust workers.
 | scidocs  | 25,657 | 0.1977  | 0.4369     | 246.8   | 4.3          | 83.9    | 111.8        |
 | scifact  | 5,183  | 0.7544  | 0.9567     | 263.4   | 4.0          | 69.1    | 138.4        |
 
-GPU P95 stays under 6 ms across every dataset. Comparison against
-[next-plaid](https://github.com/lightonai/next-plaid) (same model, H100, encoding
-included), methodology, and caveats live in
+GPU P95 stays under 6 ms across every dataset. The full per-dataset
+[head-to-head against `next-plaid`](docs/benchmarks.md#comparison-vs-next-plaid)
+(same model, H100, encoding included), methodology, and caveats live in
 [docs/benchmarks.md](docs/benchmarks.md).
 
 ### Groundedness Tracker (Beta) — real-world
@@ -150,13 +150,23 @@ Three execution modes share the same collection format and API contract:
 
 ## Documentation
 
-- [Quickstart](docs/getting-started/quickstart.md) · [Installation](docs/getting-started/installation.md)
-- [Reference API Tutorial](docs/reference_api_tutorial.md) · [Python API](docs/api/python.md)
-- [Shard Engine Guide](docs/guides/shard-engine.md) · [Max-Performance Guide](docs/guides/max-performance-reference-api.md)
+- [Quickstart](docs/getting-started/quickstart.md) · [Installation](docs/getting-started/installation.md) · [Install from source](docs/getting-started/installation.md#from-source)
+- [Reference API Tutorial](docs/reference_api_tutorial.md) · [HTTP endpoint reference](docs/reference_api_tutorial.md#10-api-endpoint-reference) · [Python API](docs/api/python.md)
+- [Shard Engine Guide](docs/guides/shard-engine.md) · [Max-Performance Guide](docs/guides/max-performance-reference-api.md) · [Scaling Guide](docs/guides/scaling.md)
 - [Groundedness Tracker Beta Guide](docs/guides/groundedness-beta.md)
-- [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md)
+- [Latence Graph Sidecar Guide](docs/guides/latence-graph-sidecar.md) · [Enterprise Control Plane](docs/guides/control-plane.md)
 - [Benchmarks And Methodology](docs/benchmarks.md) · [Production Notes](PRODUCTION.md)
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Releasing](RELEASING.md)
+- [Full Feature Cookbook](docs/full_feature_cookbook.md)
+
+## Community And Project Health
+
+- File a bug: [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml)
+- Request a feature: [feature request template](.github/ISSUE_TEMPLATE/feature_request.yml)
+- Open a PR: [pull request template](.github/pull_request_template.md)
+- Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Release process: [RELEASING.md](RELEASING.md)
+- Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## License
 
