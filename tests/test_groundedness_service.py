@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -2072,3 +2073,795 @@ def test_compute_headline_verdict_lexical_failure_blocks_pass() -> None:
     )
     verdict = compute_headline_verdict(report)
     assert "not a feature yet" in verdict
+
+
+# ----------------------------------------------------------------------
+# Phase F: cross-encoder reranker, multi-premise concat, atomic claims
+# ----------------------------------------------------------------------
+
+
+from voyager_index._internal.server.api.groundedness_claims import (  # noqa: E402
+    decompose_sentence_into_atoms,
+    is_atomic_enabled,
+)
+from voyager_index._internal.server.api.groundedness_nli import (  # noqa: E402
+    _concat_premises_for_nli,
+    _select_premises_for_claim,
+    is_premise_concat_enabled,
+)
+
+
+class _StubReranker:
+    """Reverses lexical ordering to prove the reranker actually ranks."""
+
+    def __init__(self, scores_by_text: dict | None = None) -> None:
+        self.scores_by_text = scores_by_text or {}
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def score(self, claim, candidates):
+        self.calls.append((claim, list(candidates)))
+        return [self.scores_by_text.get(text, 0.0) for text in candidates]
+
+
+def test_premise_reranker_selects_highest_scored_candidate() -> None:
+    claim = Claim(index=0, text="Alpha beats beta in 1981.", char_start=0, char_end=24)
+    units = [
+        SupportUnitInput(support_id="a", chunk_id="c", source_mode="raw_context",
+                         text="Alpha beats beta in 1981 according to records.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"]),
+        SupportUnitInput(support_id="b", chunk_id="c", source_mode="raw_context",
+                         text="Unrelated commentary about the weather.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"]),
+    ]
+    reranker = _StubReranker(
+        scores_by_text={
+            "Alpha beats beta in 1981 according to records.": 0.9,
+            "Unrelated commentary about the weather.": 0.1,
+        }
+    )
+    selected = _select_premises_for_claim(
+        claim, units, top_k=1, fallback_join=True, reranker=reranker
+    )
+    assert selected == ["Alpha beats beta in 1981 according to records."]
+    # Reranker must have been consulted with both candidates exactly once.
+    assert reranker.calls and len(reranker.calls[0][1]) == 2
+
+
+def test_premise_reranker_falls_back_to_lexical_when_score_returns_empty() -> None:
+    claim = Claim(index=0, text="Apples are sweet.", char_start=0, char_end=17)
+    units = [
+        SupportUnitInput(support_id="a", chunk_id="c", source_mode="raw_context",
+                         text="Apples are sweet and red.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"]),
+        SupportUnitInput(support_id="b", chunk_id="c", source_mode="raw_context",
+                         text="Bananas grow in clusters.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"]),
+    ]
+
+    class _BrokenReranker:
+        def score(self, claim, candidates):
+            raise RuntimeError("model unavailable")
+
+    selected = _select_premises_for_claim(
+        claim, units, top_k=1, fallback_join=False, reranker=_BrokenReranker()
+    )
+    assert selected and "Apples are sweet" in selected[0]
+
+
+def test_concat_premises_respects_word_budget_and_keeps_first_premise_intact() -> None:
+    premises = [
+        " ".join(["alpha"] * 20),
+        " ".join(["beta"] * 20),
+        " ".join(["gamma"] * 20),
+    ]
+    composite = _concat_premises_for_nli(premises, token_budget=25)
+    words = composite.split()
+    assert len(words) <= 25
+    assert words[:5] == ["alpha"] * 5  # first premise survives in full at the head
+    assert "alpha" in composite
+
+
+def test_concat_premises_returns_empty_for_empty_input() -> None:
+    assert _concat_premises_for_nli([], token_budget=100) == ""
+
+
+def test_atomic_splitter_decomposes_compound_sentence() -> None:
+    parent_text = (
+        "Apples are sweet, and bananas are yellow, but melons are heavy."
+    )
+    atoms = decompose_sentence_into_atoms(
+        parent_text, parent_index=0, parent_start=0, use_spacy=False
+    )
+    assert len(atoms) >= 2
+    joined = " | ".join(a.text for a in atoms)
+    assert "apples" in joined.lower()
+    assert "bananas" in joined.lower() or "melons" in joined.lower()
+    # Determinism: calling twice produces the same output.
+    atoms_again = decompose_sentence_into_atoms(
+        parent_text, parent_index=0, parent_start=0, use_spacy=False
+    )
+    assert [a.text for a in atoms] == [a.text for a in atoms_again]
+
+
+def test_atomic_splitter_falls_back_to_single_atom_for_short_input() -> None:
+    atoms = decompose_sentence_into_atoms(
+        "Short.", parent_index=0, parent_start=0, use_spacy=False
+    )
+    assert len(atoms) == 1
+    assert atoms[0].text == "Short."
+
+
+def test_atomic_splitter_preserves_offsets_inside_response() -> None:
+    sentence = "Apples are sweet, and bananas are yellow."
+    atoms = decompose_sentence_into_atoms(
+        sentence, parent_index=0, parent_start=10, use_spacy=False
+    )
+    for atom in atoms:
+        assert atom.char_end - atom.char_start == len(atom.text)
+        assert atom.char_start >= 10
+
+
+def test_verify_claims_concatenates_premises_when_enabled() -> None:
+    response = "Apples are sweet."
+    units = [
+        SupportUnitInput(support_id=f"s-{i}", chunk_id=f"c-{i}", source_mode="raw_context",
+                         text=f"Apples are sweet fruit fact {i}.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"])
+        for i in range(3)
+    ]
+    nli = FakeNLIProvider()
+    verifications, _warnings = verify_claims(
+        response, units, nli, concat_premises=True, top_k_premises=3,
+    )
+    # With concat enabled the provider should see exactly one pair per claim.
+    assert sum(len(call) for call in nli.call_log) == len(verifications)
+    assert all(not v.skipped for v in verifications)
+
+
+def test_verify_claims_with_atomic_decomposition_marks_compound_sentence_as_unsupported() -> None:
+    response = "Apples are sweet, but lemons are not bitter."
+    units = [
+        SupportUnitInput(support_id="s-0", chunk_id="c-0", source_mode="raw_context",
+                         text="Apples are sweet red fruits found in orchards.",
+                         embeddings=torch.zeros((1, 4)), tokens=["x"]),
+    ]
+    nli = FakeNLIProvider()
+    verifications, _warnings = verify_claims(
+        response, units, nli, use_atomic_claims=True, concat_premises=False,
+    )
+    assert verifications
+    parent = verifications[0]
+    # Atom decomposition surfaces multiple atoms.
+    assert len(parent.atoms) >= 2
+    # The negation atom should drag the parent down via min-aggregation.
+    assert parent.score <= max(a.score for a in parent.atoms)
+
+
+def test_is_premise_concat_enabled_default_is_true() -> None:
+    prior = os.environ.pop("VOYAGER_GROUNDEDNESS_NLI_PREMISE_CONCAT", None)
+    try:
+        assert is_premise_concat_enabled() is True
+    finally:
+        if prior is not None:
+            os.environ["VOYAGER_GROUNDEDNESS_NLI_PREMISE_CONCAT"] = prior
+
+
+def test_is_atomic_enabled_default_is_false() -> None:
+    prior = os.environ.pop("VOYAGER_GROUNDEDNESS_NLI_ATOMIC_CLAIMS", None)
+    try:
+        assert is_atomic_enabled() is False
+    finally:
+        if prior is not None:
+            os.environ["VOYAGER_GROUNDEDNESS_NLI_ATOMIC_CLAIMS"] = prior
+
+
+def test_fuse_groundedness_v2_supports_semantic_entropy_channel() -> None:
+    fused = fuse_groundedness_v2(
+        reverse_context_calibrated=0.8,
+        literal_guarded=None,
+        nli_aggregate=0.6,
+        semantic_entropy=0.4,
+        weights={"calibrated": 0.5, "literal": 0.0, "nli": 0.3, "semantic_entropy": 0.2},
+    )
+    assert fused == pytest.approx(
+        (0.8 * 0.5 + 0.6 * 0.3 + 0.4 * 0.2) / (0.5 + 0.3 + 0.2)
+    )
+
+
+def test_fuse_groundedness_v2_supports_structured_channel() -> None:
+    fused = fuse_groundedness_v2(
+        reverse_context_calibrated=0.8,
+        literal_guarded=None,
+        nli_aggregate=None,
+        structured_source_guarded=0.95,
+        weights={"calibrated": 0.5, "literal": 0.0, "nli": 0.0, "structured": 0.2},
+    )
+    assert fused == pytest.approx((0.8 * 0.5 + 0.95 * 0.2) / (0.5 + 0.2))
+
+
+# ----------------------------------------------------------------------
+# Phase G: semantic entropy peer
+# ----------------------------------------------------------------------
+
+from voyager_index._internal.server.api.groundedness_semantic_entropy import (  # noqa: E402
+    SemanticEntropyCluster,
+    cluster_samples_by_entailment,
+    compute_semantic_entropy,
+    is_semantic_entropy_enabled,
+)
+from voyager_index._internal.server.api.groundedness_generator import (  # noqa: E402
+    CustomCallbackGeneratorProvider,
+    GeneratorEndpointConfig,
+    VllmFactoryGeneratorProvider,
+)
+
+
+class _ScriptedNLIProvider:
+    """NLI provider that answers ``entail`` from a pre-built pair->label table.
+
+    ``label_table`` maps ``(premise, hypothesis)`` to ``(entail, neutral,
+    contradict)`` triples. Missing pairs fall back to pure neutral so
+    clustering degrades gracefully rather than mis-merging samples.
+    """
+
+    def __init__(self, label_table):
+        self.label_table = dict(label_table)
+        self.calls = []
+
+    def entail(self, premises, hypotheses):
+        out = []
+        for premise, hypothesis in zip(premises, hypotheses):
+            self.calls.append((premise, hypothesis))
+            triple = self.label_table.get((premise, hypothesis))
+            if triple is None:
+                out.append((0.0, 1.0, 0.0))
+            else:
+                out.append(tuple(float(x) for x in triple))
+        return out
+
+
+def _build_identity_table(samples):
+    """Every pair mutually entails itself; rest are neutral."""
+
+    table = {}
+    for i, s in enumerate(samples):
+        for j, t in enumerate(samples):
+            if i == j:
+                table[(s, t)] = (1.0, 0.0, 0.0)
+            else:
+                table[(s, t)] = (0.95, 0.04, 0.01)
+    return table
+
+
+def test_semantic_entropy_single_cluster_for_identical_samples() -> None:
+    samples = ["Paris is the capital of France."] * 4
+    provider = _ScriptedNLIProvider(_build_identity_table(samples))
+    result = compute_semantic_entropy(samples, provider)
+    assert result.aggregate == pytest.approx(1.0)
+    assert result.entropy_raw == pytest.approx(0.0)
+    assert result.cluster_count == 1
+    assert result.sample_count == 4
+    assert result.skipped_reason is None
+    assert result.clusters[0].members == [0, 1, 2, 3]
+
+
+def test_semantic_entropy_maximal_entropy_for_disjoint_samples() -> None:
+    import math as _math
+
+    samples = ["A", "B", "C", "D"]
+    table = {(s, t): (1.0, 0.0, 0.0) if s == t else (0.0, 1.0, 0.0) for s in samples for t in samples}
+    provider = _ScriptedNLIProvider(table)
+    result = compute_semantic_entropy(samples, provider)
+    assert result.cluster_count == 4
+    assert result.aggregate == pytest.approx(0.0)
+    assert result.entropy_raw == pytest.approx(_math.log(4))
+
+
+def test_semantic_entropy_mixed_two_clusters_symmetric() -> None:
+    samples = ["x1", "x2", "y1"]
+    table = {
+        ("x1", "x1"): (1.0, 0.0, 0.0),
+        ("x2", "x2"): (1.0, 0.0, 0.0),
+        ("y1", "y1"): (1.0, 0.0, 0.0),
+        ("x1", "x2"): (0.9, 0.1, 0.0),
+        ("x2", "x1"): (0.9, 0.1, 0.0),
+        ("x1", "y1"): (0.0, 1.0, 0.0),
+        ("y1", "x1"): (0.0, 1.0, 0.0),
+        ("x2", "y1"): (0.0, 1.0, 0.0),
+        ("y1", "x2"): (0.0, 1.0, 0.0),
+    }
+    provider = _ScriptedNLIProvider(table)
+    result = compute_semantic_entropy(samples, provider)
+    assert result.cluster_count == 2
+    assert sum(len(c.members) for c in result.clusters) == 3
+    xy_cluster = next(c for c in result.clusters if 0 in c.members)
+    assert xy_cluster.members == [0, 1]
+
+
+def test_semantic_entropy_asymmetric_entailment_does_not_merge() -> None:
+    """Bidirectional entailment should require BOTH directions above threshold."""
+
+    samples = ["alpha", "beta"]
+    table = {
+        ("alpha", "alpha"): (1.0, 0.0, 0.0),
+        ("beta", "beta"): (1.0, 0.0, 0.0),
+        ("alpha", "beta"): (0.9, 0.1, 0.0),
+        ("beta", "alpha"): (0.2, 0.7, 0.1),
+    }
+    provider = _ScriptedNLIProvider(table)
+    result = compute_semantic_entropy(samples, provider)
+    assert result.cluster_count == 2
+
+
+def test_semantic_entropy_contradiction_blocks_merge() -> None:
+    samples = ["truthy", "contradictory"]
+    table = {
+        ("truthy", "truthy"): (1.0, 0.0, 0.0),
+        ("contradictory", "contradictory"): (1.0, 0.0, 0.0),
+        ("truthy", "contradictory"): (0.9, 0.0, 0.6),
+        ("contradictory", "truthy"): (0.9, 0.0, 0.6),
+    }
+    provider = _ScriptedNLIProvider(table)
+    result = compute_semantic_entropy(samples, provider)
+    assert result.cluster_count == 2
+
+
+def test_semantic_entropy_returns_skipped_reason_when_not_enough_samples() -> None:
+    provider = _ScriptedNLIProvider({})
+    result = compute_semantic_entropy(["only one"], provider)
+    assert result.aggregate is None
+    assert result.skipped_reason == "not_enough_samples"
+
+
+def test_semantic_entropy_returns_skipped_reason_when_no_provider() -> None:
+    result = compute_semantic_entropy(["a", "b"], None)
+    assert result.aggregate is None
+    assert result.skipped_reason == "no_nli_provider"
+
+
+def test_semantic_entropy_respects_max_samples_cap() -> None:
+    samples = ["s" + str(i) for i in range(10)]
+    table = _build_identity_table(samples)
+    provider = _ScriptedNLIProvider(table)
+    result = compute_semantic_entropy(samples, provider, max_samples=4)
+    assert result.sample_count == 4
+    assert result.cluster_count == 1
+
+
+def test_semantic_entropy_handles_provider_failure_gracefully() -> None:
+    class _FailingProvider:
+        def entail(self, premises, hypotheses):
+            raise RuntimeError("boom")
+
+    result = compute_semantic_entropy(["a", "b"], _FailingProvider())
+    assert result.aggregate is None
+    assert result.skipped_reason == "nli_cluster_failed"
+
+
+def test_is_semantic_entropy_enabled_reads_env(monkeypatch) -> None:
+    monkeypatch.delenv("VOYAGER_GROUNDEDNESS_FUSION_W_SEMANTIC_ENTROPY", raising=False)
+    assert is_semantic_entropy_enabled() is False
+    monkeypatch.setenv("VOYAGER_GROUNDEDNESS_FUSION_W_SEMANTIC_ENTROPY", "0.2")
+    assert is_semantic_entropy_enabled() is True
+    monkeypatch.setenv("VOYAGER_GROUNDEDNESS_FUSION_W_SEMANTIC_ENTROPY", "0")
+    assert is_semantic_entropy_enabled() is False
+
+
+def test_fuse_groundedness_v2_disabled_when_weight_zero() -> None:
+    """Turning the semantic-entropy weight off must leave the existing fusion untouched."""
+
+    weights_with = {"calibrated": 0.5, "literal": 0.0, "nli": 0.5, "semantic_entropy": 0.0}
+    with_disabled = fuse_groundedness_v2(
+        reverse_context_calibrated=0.8,
+        literal_guarded=None,
+        nli_aggregate=0.6,
+        semantic_entropy=0.3,
+        weights=weights_with,
+    )
+    expected_disabled = (0.8 * 0.5 + 0.6 * 0.5) / (0.5 + 0.5)
+    assert with_disabled == pytest.approx(expected_disabled)
+
+
+def test_fuse_groundedness_v2_renormalizes_when_entropy_enabled() -> None:
+    weights = {"calibrated": 0.4, "literal": 0.0, "nli": 0.4, "semantic_entropy": 0.2}
+    fused = fuse_groundedness_v2(
+        reverse_context_calibrated=0.8,
+        literal_guarded=None,
+        nli_aggregate=0.6,
+        semantic_entropy=0.3,
+        weights=weights,
+    )
+    expected = (0.8 * 0.4 + 0.6 * 0.4 + 0.3 * 0.2) / (0.4 + 0.4 + 0.2)
+    assert fused == pytest.approx(expected)
+
+
+def test_custom_callback_generator_provider_passes_kwargs() -> None:
+    captured = {}
+
+    def _cb(*, context, query, seed_response, num_samples):
+        captured.update(
+            context=context, query=query, seed_response=seed_response, num_samples=num_samples
+        )
+        return ["sample-" + str(idx) for idx in range(num_samples)]
+
+    provider = CustomCallbackGeneratorProvider(_cb)
+    out = provider.generate_samples(
+        context="ctx",
+        query="q",
+        seed_response="r",
+        num_samples=3,
+    )
+    assert out == ["sample-0", "sample-1", "sample-2"]
+    assert captured == {"context": "ctx", "query": "q", "seed_response": "r", "num_samples": 3}
+
+
+def test_custom_callback_generator_provider_swallows_exceptions() -> None:
+    def _cb(**_kwargs):
+        raise RuntimeError("nope")
+
+    provider = CustomCallbackGeneratorProvider(_cb)
+    assert provider.generate_samples(context="x", query=None, seed_response=None, num_samples=2) == []
+
+
+def test_vllm_factory_generator_provider_posts_expected_payload() -> None:
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, payloads):
+            self.posts = []
+            self._payloads = list(payloads)
+
+        def post(self, url, json=None, headers=None):
+            self.posts.append({"url": url, "json": json, "headers": headers})
+            return _FakeResponse(self._payloads.pop(0))
+
+    payloads = [
+        {"choices": [{"message": {"content": "alpha"}}]},
+        {"choices": [{"message": {"content": "beta"}}]},
+    ]
+    fake_client = _FakeClient(payloads)
+    config = GeneratorEndpointConfig(
+        endpoint="https://example.invalid/",
+        model="qwen-0.5b",
+        num_samples=2,
+        temperature=0.9,
+    )
+    provider = VllmFactoryGeneratorProvider(config, http_client=fake_client)
+    out = provider.generate_samples(
+        context="C",
+        query="Q?",
+        seed_response=None,
+        num_samples=2,
+    )
+    assert out == ["alpha", "beta"]
+    assert len(fake_client.posts) == 2
+    first = fake_client.posts[0]
+    assert first["url"].endswith("/v1/chat/completions")
+    assert first["json"]["model"] == "qwen-0.5b"
+    assert first["json"]["temperature"] == pytest.approx(0.9)
+    assert first["json"]["messages"][-1]["role"] == "user"
+
+
+# ----------------------------------------------------------------------
+# Phase H: calibrated risk-band classifier
+# ----------------------------------------------------------------------
+
+from voyager_index._internal.server.api.groundedness_thresholds import (  # noqa: E402
+    RiskBandPolicy,
+    classify_risk_band,
+    load_risk_band_policy,
+    thresholds_summary_for,
+)
+
+
+def _policy_with(strata):
+    return RiskBandPolicy(
+        headline="groundedness_v2",
+        precision_target=0.75,
+        nli_enabled=True,
+        strata=dict(strata),
+    )
+
+
+def test_classify_risk_band_returns_red_for_missing_score() -> None:
+    policy = _policy_with({"default": {"green_min": 0.7, "amber_min": 0.5}})
+    assert classify_risk_band(None, policy=policy) == "red"
+
+
+def test_classify_risk_band_maps_thresholds_correctly() -> None:
+    policy = _policy_with({"default": {"green_min": 0.7, "amber_min": 0.5}})
+    assert classify_risk_band(0.80, policy=policy) == "green"
+    assert classify_risk_band(0.70, policy=policy) == "green"
+    assert classify_risk_band(0.60, policy=policy) == "amber"
+    assert classify_risk_band(0.50, policy=policy) == "amber"
+    assert classify_risk_band(0.40, policy=policy) == "red"
+
+
+def test_classify_risk_band_uses_stratum_specific_threshold_when_given() -> None:
+    policy = _policy_with(
+        {
+            "default": {"green_min": 0.70, "amber_min": 0.55},
+            "negation": {"green_min": 0.80, "amber_min": 0.65},
+        }
+    )
+    assert classify_risk_band(0.72, stratum="negation", policy=policy) == "amber"
+    assert classify_risk_band(0.72, stratum="default", policy=policy) == "green"
+
+
+def test_classify_risk_band_defaults_to_hardest_stratum_when_no_default_provided() -> None:
+    policy = load_risk_band_policy(Path("/nonexistent/does_not_exist.json"))
+    assert "default" in policy.strata
+
+
+def test_load_risk_band_policy_falls_back_when_file_missing(tmp_path) -> None:
+    policy = load_risk_band_policy(tmp_path / "missing.json")
+    assert policy.source == "fallback_default"
+    assert policy.headline == "groundedness_v2"
+    assert policy.strata["default"]["green_min"] > 0
+
+
+def test_load_risk_band_policy_accepts_custom_artefact(tmp_path) -> None:
+    artefact = tmp_path / "thresholds.json"
+    artefact.write_text(
+        __import__("json").dumps(
+            {
+                "schema_version": 1,
+                "headline": "reverse_context_calibrated",
+                "precision_target": 0.8,
+                "nli_enabled": False,
+                "strata": {"default": {"green_min": 0.65, "amber_min": 0.45}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy = load_risk_band_policy(artefact)
+    assert policy.source == str(artefact)
+    assert policy.headline == "reverse_context_calibrated"
+    assert policy.strata["default"]["green_min"] == pytest.approx(0.65)
+
+
+def test_thresholds_summary_for_returns_json_safe_payload() -> None:
+    policy = _policy_with({"default": {"green_min": 0.6, "amber_min": 0.4}})
+    summary = thresholds_summary_for(policy)
+    assert summary["headline"] == "groundedness_v2"
+    assert summary["strata"]["default"]["green_min"] == pytest.approx(0.6)
+
+
+# ----------------------------------------------------------------------
+# Phase I: structured-source verification
+# ----------------------------------------------------------------------
+
+from voyager_index._internal.server.api.groundedness_structured import (  # noqa: E402
+    StructuredVerification,
+    detect_source_format,
+    extract_response_triples,
+    extract_triples_from_json,
+    extract_triples_from_markdown_table,
+    match_triples,
+    verify_structured_source,
+)
+
+
+def test_detect_source_format_prefers_hint_when_matching() -> None:
+    assert detect_source_format('{"x": 1}', content_type="application/json") == "json"
+    markdown = "| Name | Age |\n| :--- | :--- |\n| Ada | 30 |"
+    assert detect_source_format(markdown, content_type="text/markdown") == "markdown_table"
+
+
+def test_detect_source_format_auto_detects_json() -> None:
+    assert detect_source_format('{"name": "Ada", "age": 30}') == "json"
+    assert detect_source_format("  not structured at all ") is None
+
+
+def test_detect_source_format_auto_detects_markdown_table() -> None:
+    md = "| Name | Age |\n|------|-----|\n| Ada  | 30  |"
+    assert detect_source_format(md) == "markdown_table"
+
+
+def test_detect_source_format_does_not_misclassify_plain_text() -> None:
+    assert detect_source_format("Paris is the capital of France.") is None
+    assert detect_source_format("{incomplete json ...") is None
+
+
+def test_extract_triples_from_json_walks_nested() -> None:
+    payload = '{"item": {"name": "Widget", "price": 42.0}, "tags": ["red", "sale"]}'
+    triples = extract_triples_from_json(payload)
+    predicates = {t.predicate for t in triples}
+    # The identity-bearing ``name`` key is consumed as the subject rather
+    # than emitted as a standalone predicate triple to avoid tautologies.
+    subjects = {t.subject for t in triples}
+    assert "widget" in subjects
+    assert "price" in predicates
+    assert "tags" in predicates
+    numeric_prices = [t.numeric_value for t in triples if t.predicate == "price"]
+    assert numeric_prices == [pytest.approx(42.0)]
+
+
+def test_extract_triples_from_markdown_table_uses_row_and_column_headers() -> None:
+    md = "| Name | Age | City |\n|------|-----|------|\n| Ada | 30 | Paris |\n| Ben | 25 | Rome |"
+    triples = extract_triples_from_markdown_table(md)
+    assert len(triples) == 4
+    subjects = {t.subject for t in triples}
+    predicates = {t.predicate for t in triples}
+    assert subjects == {"ada", "ben"}
+    assert predicates == {"age", "city"}
+
+
+def test_extract_response_triples_detects_is_pattern() -> None:
+    triples = extract_response_triples("The price of Widget is 42.")
+    assert any(t.subject == "widget" and t.numeric_value == pytest.approx(42.0) for t in triples)
+
+
+def test_extract_response_triples_detects_key_value_pattern() -> None:
+    triples = extract_response_triples('Name: Ada, Age: 30, City: "Paris"')
+    subject_values = {t.subject: t.object for t in triples}
+    assert subject_values.get("name") == "ada"
+    assert subject_values.get("age") == "30"
+    assert subject_values.get("city") == "paris"
+
+
+def test_match_triples_detects_numeric_mismatch_with_tolerance() -> None:
+    from voyager_index._internal.server.api.groundedness_structured import Triple
+
+    source = [
+        Triple(
+            subject="widget",
+            predicate="price",
+            object="42",
+            raw_object="42",
+            numeric_value=42.0,
+        )
+    ]
+    response_close = [
+        Triple(
+            subject="widget",
+            predicate="price",
+            object="42.0001",
+            raw_object="42.0001",
+            numeric_value=42.0001,
+        )
+    ]
+    matches, mismatches = match_triples(source, response_close)
+    assert matches and not mismatches
+
+    response_bad = [
+        Triple(
+            subject="widget",
+            predicate="price",
+            object="420",
+            raw_object="420",
+            numeric_value=420.0,
+        )
+    ]
+    matches, mismatches = match_triples(source, response_bad)
+    assert not matches
+    assert mismatches and mismatches[0].mismatch_kind == "numeric_mismatch"
+
+
+def test_verify_structured_source_penalizes_numeric_flip() -> None:
+    support = '{"item": "Widget", "price": 42}'
+    grounded = "The price of Widget is 42."
+    hallucinated = "The price of Widget is 420."
+    good = verify_structured_source(support_text=support, response_text=grounded)
+    bad = verify_structured_source(support_text=support, response_text=hallucinated)
+    assert good.detected and good.guarded_score == pytest.approx(1.0)
+    assert bad.detected and bad.guarded_score is not None
+    assert bad.guarded_score < good.guarded_score
+
+
+def test_verify_structured_source_returns_none_when_source_not_structured() -> None:
+    result = verify_structured_source(
+        support_text="Paris is the capital of France.",
+        response_text="The capital of France is Paris.",
+    )
+    assert not result.detected
+    assert result.guarded_score is None
+
+
+def test_verify_structured_source_skips_when_no_overlap() -> None:
+    support = '{"name": "Ada", "role": "engineer"}'
+    response = "Nothing related."
+    result = verify_structured_source(support_text=support, response_text=response)
+    # Detected but no response triples extracted -> skipped with None score.
+    assert result.detected
+    assert result.guarded_score is None
+
+
+def test_verify_structured_source_markdown_table_cell_swap_is_caught() -> None:
+    support = (
+        "| Metric | Value | Unit |\n"
+        "|--------|-------|------|\n"
+        "| Latency | 150 | ms |\n"
+        "| Throughput | 1200 | rps |\n"
+    )
+    hallucinated = "The latency is 1200."
+    result = verify_structured_source(support_text=support, response_text=hallucinated)
+    assert result.detected
+    assert result.source_format == "markdown_table"
+    assert result.mismatches
+    assert result.guarded_score is not None and result.guarded_score < 1.0
+
+
+def test_fuse_groundedness_v2_structured_channel_renormalizes() -> None:
+    from voyager_index._internal.server.api.groundedness_nli import fuse_groundedness_v2
+
+    weights = {
+        "calibrated": 0.0,
+        "literal": 0.0,
+        "nli": 0.0,
+        "semantic_entropy": 0.0,
+        "structured": 1.0,
+    }
+    fused = fuse_groundedness_v2(
+        reverse_context_calibrated=0.9,
+        literal_guarded=0.9,
+        nli_aggregate=0.8,
+        semantic_entropy=0.7,
+        structured_source_guarded=0.3,
+        weights=weights,
+    )
+    assert fused == pytest.approx(0.3)
+
+
+def test_score_groundedness_populates_risk_band() -> None:
+    unit_tokens = ["paris", "is", "capital", "france"]
+    emb_support = torch.nn.functional.one_hot(
+        torch.tensor([0, 1, 2, 3]), num_classes=8
+    ).float()
+    emb_response = torch.nn.functional.one_hot(
+        torch.tensor([0, 2]), num_classes=8
+    ).float()
+    unit = SupportUnitInput(
+        support_id="u1",
+        text="Paris is the capital of France.",
+        embeddings=emb_support,
+        tokens=unit_tokens,
+        chunk_id="c1",
+    )
+    scored = score_groundedness(
+        support_units=[unit],
+        response_embeddings=emb_response,
+        response_tokens=["paris", "capital"],
+        response_text="Paris is capital.",
+    )
+    assert scored["scores"]["risk_band"] in {"green", "amber", "red"}
+
+
+def test_score_groundedness_wires_verification_samples_into_semantic_entropy() -> None:
+    """End-to-end: samples + NLI provider produce a semantic_entropy_diagnostics payload."""
+
+    samples = ["Paris is the capital of France.", "The capital of France is Paris."]
+    table = _build_identity_table(samples)
+    provider = _ScriptedNLIProvider(table)
+    support_tensor = torch.eye(4, dtype=torch.float32)
+    response_tensor = torch.eye(4, dtype=torch.float32)[:2]
+    unit = SupportUnitInput(
+        support_id="u1",
+        text="Paris is the capital of France.",
+        embeddings=support_tensor,
+        tokens=["paris", "is", "capital", "france"],
+        chunk_id="c1",
+    )
+    result = score_groundedness(
+        support_units=[unit],
+        response_embeddings=response_tensor,
+        response_tokens=["paris", "capital"],
+        response_text="Paris is capital.",
+        verification_samples=samples,
+        semantic_entropy_enabled=True,
+        nli_provider=None,
+        fusion_weights={"calibrated": 0.5, "literal": 0.0, "nli": 0.0, "semantic_entropy": 0.5},
+    )
+    # NLI provider is None so clustering cannot run; diagnostics should still
+    # exist but mark the channel skipped. Scores must remain valid.
+    assert "scores" in result
+    assert result["scores"]["semantic_entropy_sample_count"] == 0
+    assert result["semantic_entropy_diagnostics"] is None or result["semantic_entropy_diagnostics"]["skipped_reason"]

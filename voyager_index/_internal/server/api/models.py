@@ -1230,6 +1230,35 @@ class GroundednessRequest(BaseModel):
         default=None,
         description="Optional asymmetric prompt name for response/raw_context encoding, e.g. document.",
     )
+    verification_samples: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional caller-supplied alternate responses drawn from the same generator "
+            "at sampling temperature > 0. When present and semantic-entropy fusion is "
+            "configured (VOYAGER_GROUNDEDNESS_FUSION_W_SEMANTIC_ENTROPY > 0 plus an NLI "
+            "model), the service clusters the samples by bidirectional entailment and "
+            "surfaces a semantic-entropy channel."
+        ),
+    )
+    content_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional structured-source hint used by the structured-source adapter "
+            "(Phase I). Known values: application/json, text/markdown, application/json+schema. "
+            "When omitted the adapter auto-detects JSON and markdown table sources."
+        ),
+    )
+    risk_band_stratum: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional failure-mode hint consumed by the calibrated risk-band "
+            "classifier (Phase H). Allowed values match the calibrated strata, "
+            "typically one of: 'entity_swap', 'date_swap', 'number_swap', "
+            "'unit_swap', 'negation', 'role_swap', 'partial', or 'default' "
+            "(the conservative maximum). When omitted the classifier uses the "
+            "hardest calibrated threshold so the green band stays honest."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_input_modes(self) -> "GroundednessRequest":
@@ -1263,6 +1292,12 @@ class GroundednessScores(BaseModel):
     echo_mean: Optional[float] = None
     grounded_coverage: Optional[float] = None
     null_bank_size: Optional[int] = None
+    semantic_entropy_aggregate: Optional[float] = None
+    semantic_entropy_raw: Optional[float] = None
+    semantic_entropy_sample_count: Optional[int] = None
+    structured_source_guarded: Optional[float] = None
+    structured_source_detected: Optional[bool] = None
+    risk_band: Optional[str] = None
 
 
 class GroundednessLiteral(BaseModel):
@@ -1283,6 +1318,22 @@ class GroundednessLiteralDiagnostics(BaseModel):
     mismatches: List[GroundednessLiteral] = Field(default_factory=list)
 
 
+class GroundednessNLIAtom(BaseModel):
+    """Per-atom entailment record produced by atomic-fact decomposition (Phase F3)."""
+
+    atom_index: int
+    text: str
+    char_start: int
+    char_end: int
+    entailment: float
+    neutral: float
+    contradiction: float
+    score: float
+    skipped: bool
+    skip_reason: Optional[str] = None
+    premise_count: int
+
+
 class GroundednessNLIClaim(BaseModel):
     """Per-claim entailment record returned by the NLI verifier."""
 
@@ -1297,6 +1348,7 @@ class GroundednessNLIClaim(BaseModel):
     skipped: bool
     skip_reason: Optional[str] = None
     premise_count: int
+    atoms: List[GroundednessNLIAtom] = Field(default_factory=list)
 
 
 class GroundednessNLIDiagnostics(BaseModel):
@@ -1304,6 +1356,44 @@ class GroundednessNLIDiagnostics(BaseModel):
 
     aggregate_score: Optional[float] = None
     claims: List[GroundednessNLIClaim] = Field(default_factory=list)
+
+
+class GroundednessSemanticEntropyCluster(BaseModel):
+    """One equivalence cluster emitted by the semantic-entropy peer."""
+
+    cluster_id: int
+    size: int
+    representative: str
+
+
+class GroundednessSemanticEntropyDiagnostics(BaseModel):
+    """Per-request semantic-entropy (Phase G) diagnostics."""
+
+    aggregate_score: Optional[float] = None
+    entropy_raw: Optional[float] = None
+    sample_count: int = 0
+    cluster_count: int = 0
+    clusters: List[GroundednessSemanticEntropyCluster] = Field(default_factory=list)
+
+
+class GroundednessStructuredTripleMatch(BaseModel):
+    """A source/response triple match emitted by the structured-source adapter."""
+
+    subject: str
+    predicate: str
+    object: str
+    matched: bool
+    mismatch_kind: Optional[str] = None
+
+
+class GroundednessStructuredDiagnostics(BaseModel):
+    """Per-request structured-source (Phase I) diagnostics."""
+
+    source_format: Optional[str] = None
+    source_triple_count: int = 0
+    response_triple_count: int = 0
+    matches: List[GroundednessStructuredTripleMatch] = Field(default_factory=list)
+    mismatches: List[GroundednessStructuredTripleMatch] = Field(default_factory=list)
 
 
 class GroundednessQueryToken(BaseModel):
@@ -1475,6 +1565,8 @@ class GroundednessResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     literal_diagnostics: Optional[GroundednessLiteralDiagnostics] = None
     nli_diagnostics: Optional[GroundednessNLIDiagnostics] = None
+    semantic_entropy_diagnostics: Optional[GroundednessSemanticEntropyDiagnostics] = None
+    structured_diagnostics: Optional[GroundednessStructuredDiagnostics] = None
     time_ms: float
 
 

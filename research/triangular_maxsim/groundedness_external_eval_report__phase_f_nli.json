@@ -1,0 +1,226 @@
+{
+  "all_targets_met": true,
+  "criteria": {
+    "factscore": {
+      "notes": "Per-claim atomic precision on FActScore biographies.",
+      "status": "skipped"
+    },
+    "halueval_qa": {
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "notes": "Paired ranking accuracy on HaluEval QA pairs.",
+      "value": 0.8333333333333334
+    },
+    "latency_score_only": {
+      "applicable": false,
+      "applies_when": "nli_disabled",
+      "label": "pass",
+      "max": 100.0,
+      "met": true,
+      "metric": "p95_ms",
+      "notes": "Score-only request budget without NLI.",
+      "value": 96.51616048067808
+    },
+    "latency_with_nli": {
+      "applicable": true,
+      "applies_when": "nli_enabled",
+      "label": "pass",
+      "max": 250.0,
+      "met": true,
+      "metric": "p95_ms",
+      "notes": "Full-request budget with NLI verifier enabled.",
+      "value": 96.51616048067808
+    },
+    "minimal_pairs_lexical": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.75,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.8,
+      "n": 120,
+      "notes": "Pairs in entity_swap, date_swap, number_swap, unit_swap.",
+      "value": 1.0
+    },
+    "minimal_pairs_partial": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.6,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.65,
+      "n": 30,
+      "notes": "Partial-support pairs (one clause grounded, one not).",
+      "value": 1.0
+    },
+    "minimal_pairs_semantic": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.65,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "n": 60,
+      "notes": "Pairs in negation and role_swap (need NLI).",
+      "value": 1.0
+    },
+    "ragtruth": {
+      "label": "pass",
+      "met": true,
+      "metric": "span_f1_macro",
+      "min": 0.55,
+      "notes": "Macro span-F1 across qa/summarization/data2text strata.",
+      "value": 0.6032045522611561
+    }
+  },
+  "external": {
+    "factscore": null,
+    "halueval": {
+      "per_stratum": {
+        "dialogue": {
+          "f1": 0.48333333333333334,
+          "fn": 31,
+          "fp": 31,
+          "n": 120,
+          "precision": 0.48333333333333334,
+          "recall": 0.48333333333333334,
+          "threshold": 0.6323133151571462,
+          "tn": 29,
+          "tp": 29
+        },
+        "qa": {
+          "f1": 0.8333333333333334,
+          "fn": 10,
+          "fp": 10,
+          "n": 120,
+          "precision": 0.8333333333333334,
+          "recall": 0.8333333333333334,
+          "threshold": 0.7860961941984284,
+          "tn": 50,
+          "tp": 50
+        },
+        "summarization": {
+          "f1": 0.7166666666666667,
+          "fn": 17,
+          "fp": 17,
+          "n": 120,
+          "precision": 0.7166666666666667,
+          "recall": 0.7166666666666667,
+          "threshold": 0.7972165983943034,
+          "tn": 43,
+          "tp": 43
+        }
+      },
+      "sample_count": 360
+    },
+    "ragtruth": {
+      "per_stratum": {
+        "data2text": {
+          "f1": 0.49056603773584906,
+          "fn": 10,
+          "fp": 17,
+          "n": 60,
+          "precision": 0.43333333333333335,
+          "recall": 0.5652173913043478,
+          "threshold": 0.6673637027861785,
+          "tn": 20,
+          "tp": 13
+        },
+        "qa": {
+          "f1": 0.6904761904761905,
+          "fn": 25,
+          "fp": 1,
+          "n": 60,
+          "precision": 0.9666666666666667,
+          "recall": 0.5370370370370371,
+          "threshold": 0.7330362995330655,
+          "tn": 5,
+          "tp": 29
+        },
+        "summarization": {
+          "f1": 0.6285714285714286,
+          "fn": 18,
+          "fp": 8,
+          "n": 60,
+          "precision": 0.7333333333333333,
+          "recall": 0.55,
+          "threshold": 0.8039763994999745,
+          "tn": 12,
+          "tp": 22
+        }
+      },
+      "sample_count": 180
+    }
+  },
+  "headline_verdict": "feature in Beta with NLI peer, ready for evidence/QA",
+  "minimal_pairs": {
+    "encode_p50_ms": 0.36736205220222473,
+    "encode_p95_ms": 0.6073907017707822,
+    "headline_distribution": {
+      "groundedness_v2": 420
+    },
+    "headline_used": "groundedness_v2",
+    "latency_p50_ms": 85.7611047104001,
+    "latency_p95_ms": 96.51616048067808,
+    "nli_enabled": true,
+    "overall_accuracy": 1.0,
+    "pair_count": 210,
+    "per_stratum": {
+      "date_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "entity_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "negation": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "number_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "partial": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "role_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      },
+      "unit_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 1.0
+      }
+    },
+    "score_p50_ms": 85.32045781612396,
+    "score_p95_ms": 95.903779566288,
+    "stratum_counts": {
+      "date_swap": 30,
+      "entity_swap": 30,
+      "negation": 30,
+      "number_swap": 30,
+      "partial": 30,
+      "role_swap": 30,
+      "unit_swap": 30
+    }
+  }
+}

@@ -18,12 +18,32 @@ from voyager_index._internal.kernels.triton_triangular_maxsim import (
     weighted_groundedness,
 )
 from voyager_index._internal.server.api.groundedness_nli import (
+    AtomicVerification,
     ClaimVerification,
     NLIProvider,
+    PremiseReranker,
     aggregate_nli_score,
     fuse_groundedness_v2,
+    is_atomic_enabled,
+    is_premise_concat_enabled,
     project_claim_scores_to_tokens,
     verify_claims,
+)
+from voyager_index._internal.server.api.groundedness_semantic_entropy import (
+    SemanticEntropyResult,
+    compute_semantic_entropy,
+    is_semantic_entropy_enabled,
+)
+from voyager_index._internal.server.api.groundedness_thresholds import (
+    classify_risk_band,
+    thresholds_summary_for,
+)
+from voyager_index._internal.server.api.groundedness_structured import (
+    StructuredVerification,
+    default_penalty_per_mismatch,
+    is_structured_enabled,
+    verification_to_dict,
+    verify_structured_source,
 )
 
 _TOKEN_FALLBACK_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -972,7 +992,17 @@ def score_groundedness(
     nli_top_k_premises: Optional[int] = None,
     nli_max_batch: Optional[int] = None,
     nli_max_latency_ms: Optional[float] = None,
+    nli_reranker: Optional[PremiseReranker] = None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_premise_concat_word_budget: Optional[int] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
+    verification_samples: Optional[Sequence[str]] = None,
+    semantic_entropy_enabled: Optional[bool] = None,
     fusion_weights: Optional[Dict[str, float]] = None,
+    risk_band_stratum: Optional[str] = None,
+    content_type: Optional[str] = None,
+    structured_enabled: Optional[bool] = None,
+    structured_support_text: Optional[str] = None,
     _emit_dedup_warning: bool = True,
 ) -> Dict[str, Any]:
     """Score response groundedness against support units.
@@ -1257,21 +1287,59 @@ def score_groundedness(
         nli_top_k_premises=nli_top_k_premises,
         nli_max_batch=nli_max_batch,
         nli_max_latency_ms=nli_max_latency_ms,
+        nli_reranker=nli_reranker,
+        nli_concat_premises=nli_concat_premises,
+        nli_premise_concat_word_budget=nli_premise_concat_word_budget,
+        nli_use_atomic_claims=nli_use_atomic_claims,
     )
     if nli_payload is not None:
         warnings.extend(nli_payload.pop("warnings", []))
     nli_aggregate = nli_payload["aggregate_score"] if nli_payload else None
     nli_per_token = nli_payload["per_token"] if nli_payload else [None] * response_token_total
+
+    semantic_entropy_payload = _maybe_run_semantic_entropy(
+        verification_samples=verification_samples,
+        nli_provider=nli_provider,
+        enabled=semantic_entropy_enabled,
+        warnings=warnings,
+    )
+    semantic_entropy_aggregate = (
+        semantic_entropy_payload["aggregate"] if semantic_entropy_payload else None
+    )
+
+    structured_payload = _maybe_run_structured(
+        response_text=response_text,
+        support_units=support_units_payload,
+        structured_support_text=structured_support_text,
+        content_type=content_type,
+        enabled=structured_enabled,
+        warnings=warnings,
+    )
+    structured_aggregate = (
+        structured_payload["guarded_score"] if structured_payload else None
+    )
+
     groundedness_v2 = fuse_groundedness_v2(
         reverse_context_calibrated=(
             float(reverse_context_calibrated_score) if null_bank_size > 0 else float(reverse_context_score)
         ),
         literal_guarded=float(literal_guarded_value),
         nli_aggregate=nli_aggregate,
+        semantic_entropy=semantic_entropy_aggregate,
+        structured_source_guarded=structured_aggregate,
         weights=fusion_weights,
     )
     for token_idx, row in enumerate(response_token_rows):
         row["nli_score"] = nli_per_token[token_idx] if token_idx < len(nli_per_token) else None
+
+    headline_for_band = _resolve_headline_for_risk_band(
+        groundedness_v2=groundedness_v2,
+        reverse_context_calibrated=(
+            float(reverse_context_calibrated_score) if null_bank_size > 0 else None
+        ),
+        reverse_context=float(reverse_context_score),
+    )
+    risk_band = classify_risk_band(headline_for_band, stratum=risk_band_stratum)
 
     scores = {
         "primary_name": metric_name,
@@ -1298,6 +1366,28 @@ def score_groundedness(
         "echo_mean": float(echo_mean) if echo_mean is not None else None,
         "grounded_coverage": float(grounded_coverage_score) if grounded_coverage_score is not None else None,
         "null_bank_size": null_bank_size,
+        "semantic_entropy_aggregate": (
+            float(semantic_entropy_aggregate)
+            if semantic_entropy_aggregate is not None
+            else None
+        ),
+        "semantic_entropy_raw": (
+            float(semantic_entropy_payload["entropy_raw"])
+            if semantic_entropy_payload and semantic_entropy_payload.get("entropy_raw") is not None
+            else None
+        ),
+        "semantic_entropy_sample_count": (
+            int(semantic_entropy_payload["sample_count"])
+            if semantic_entropy_payload
+            else 0
+        ),
+        "structured_source_guarded": (
+            float(structured_aggregate) if structured_aggregate is not None else None
+        ),
+        "structured_source_detected": (
+            bool(structured_payload["detected"]) if structured_payload else None
+        ),
+        "risk_band": risk_band,
     }
 
     return {
@@ -1319,12 +1409,159 @@ def score_groundedness(
                 "aggregate_score": nli_payload["aggregate_score"],
             }
         ),
+        "semantic_entropy_diagnostics": semantic_entropy_payload,
+        "structured_diagnostics": structured_payload,
         "_internals": {
             "reverse_context_unit_values": reverse_context_unit_values,
             "null_mean": null_mean,
             "null_std": null_std,
             "null_bank_size": null_bank_size,
         },
+    }
+
+
+def _resolve_headline_for_risk_band(
+    *,
+    groundedness_v2: Optional[float],
+    reverse_context_calibrated: Optional[float],
+    reverse_context: Optional[float],
+) -> Optional[float]:
+    """Pick the most-fused available score for the risk-band classifier.
+
+    Preference mirrors the evaluation harness (``_resolve_headline``):
+    the fused ``groundedness_v2`` trumps the calibrated score, which in
+    turn trumps the raw reverse-context MaxSim. We never fall back to
+    non-calibrated values silently when the calibrated channel is
+    available, because the thresholds are calibrated against the
+    calibrated score.
+    """
+
+    if groundedness_v2 is not None:
+        return float(groundedness_v2)
+    if reverse_context_calibrated is not None:
+        return float(reverse_context_calibrated)
+    if reverse_context is not None:
+        return float(reverse_context)
+    return None
+
+
+def _maybe_run_semantic_entropy(
+    *,
+    verification_samples: Optional[Sequence[str]],
+    nli_provider: Optional[NLIProvider],
+    enabled: Optional[bool],
+    warnings: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Compute semantic-entropy if enabled; return a serializable payload or None.
+
+    Returns ``None`` when the peer is fully disabled or inapplicable. Emits a
+    warning into ``warnings`` when the caller asked for semantic entropy but
+    the prerequisites (NLI provider, samples) are missing so the response
+    still reflects the fallback behaviour.
+    """
+
+    if verification_samples is None or not list(verification_samples):
+        return None
+    if enabled is False:
+        return None
+    resolved_enabled = enabled if enabled is not None else is_semantic_entropy_enabled()
+    if not resolved_enabled:
+        return None
+
+    result = compute_semantic_entropy(verification_samples, nli_provider)
+    if result.skipped_reason:
+        warnings.append(
+            "semantic_entropy_skipped: reason={reason}, samples={n}".format(
+                reason=result.skipped_reason, n=result.sample_count
+            )
+        )
+    return _semantic_entropy_to_dict(result)
+
+
+def _maybe_run_structured(
+    *,
+    response_text: Optional[str],
+    support_units: Sequence[Dict[str, Any]],
+    structured_support_text: Optional[str],
+    content_type: Optional[str],
+    enabled: Optional[bool],
+    warnings: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Run structured-source verification when a structured source is detected.
+
+    Returns a serializable diagnostic payload. When ``guarded_score`` is
+    ``None`` the fusion layer treats the channel as inactive.
+
+    We try (in order): the caller-supplied ``structured_support_text``
+    (typically the original ``raw_context``), then the concatenation of
+    the support-unit texts we received. The caller-supplied text is
+    preferred because raw_context chunk splitting breaks JSON and
+    markdown tables into pieces that can no longer be parsed.
+    """
+
+    if enabled is False:
+        return None
+    resolved_enabled = enabled if enabled is not None else is_structured_enabled()
+    if not resolved_enabled:
+        return None
+    if not (response_text or "").strip():
+        return None
+
+    candidate_text = (structured_support_text or "").strip()
+    if not candidate_text:
+        combined = "\n".join(
+            str(unit.get("text") or "") for unit in support_units if unit.get("text")
+        )
+        candidate_text = combined.strip()
+    if not candidate_text:
+        return None
+
+    try:
+        result = verify_structured_source(
+            support_text=candidate_text,
+            response_text=response_text or "",
+            content_type=content_type,
+            penalty_per_mismatch=default_penalty_per_mismatch(),
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("structured_verification_failed", extra={"error": str(exc)})
+        warnings.append("structured_verification_failed")
+        return None
+
+    payload = verification_to_dict(result)
+    payload["detected"] = bool(result.detected)
+    payload["guarded_score"] = (
+        float(result.guarded_score) if result.guarded_score is not None else None
+    )
+    if result.detected and result.mismatches:
+        warnings.append(
+            "structured_source_mismatch: {n} mismatch(es) across {fmt} source".format(
+                n=len(result.mismatches), fmt=result.source_format or "structured"
+            )
+        )
+    return payload
+
+
+def _semantic_entropy_to_dict(result: SemanticEntropyResult) -> Dict[str, Any]:
+    return {
+        "aggregate": (
+            float(result.aggregate) if result.aggregate is not None else None
+        ),
+        "entropy_raw": (
+            float(result.entropy_raw) if result.entropy_raw is not None else None
+        ),
+        "cluster_count": int(result.cluster_count),
+        "sample_count": int(result.sample_count),
+        "latency_ms": float(result.latency_ms),
+        "skipped_reason": result.skipped_reason,
+        "clusters": [
+            {
+                "cluster_id": int(cluster.cluster_id),
+                "members": list(cluster.members),
+                "representative": cluster.representative,
+            }
+            for cluster in result.clusters
+        ],
     }
 
 
@@ -1338,6 +1575,10 @@ def _maybe_run_nli(
     nli_top_k_premises: Optional[int],
     nli_max_batch: Optional[int],
     nli_max_latency_ms: Optional[float],
+    nli_reranker: Optional[PremiseReranker] = None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_premise_concat_word_budget: Optional[int] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run claim-level NLI and project to tokens; return ``None`` when disabled."""
 
@@ -1353,6 +1594,8 @@ def _maybe_run_nli(
             "per_token": [None] * len(response_tokens),
             "warnings": [],
         }
+    concat_premises = nli_concat_premises if nli_concat_premises is not None else is_premise_concat_enabled()
+    use_atomic_claims = nli_use_atomic_claims if nli_use_atomic_claims is not None else is_atomic_enabled()
     verifications, warnings = verify_claims(
         response_text=text,
         support_units=support_units,
@@ -1361,6 +1604,10 @@ def _maybe_run_nli(
         top_k_premises=nli_top_k_premises if nli_top_k_premises is not None else 3,
         max_batch=nli_max_batch if nli_max_batch is not None else 16,
         max_latency_ms=nli_max_latency_ms if nli_max_latency_ms is not None else 2000.0,
+        reranker=nli_reranker,
+        concat_premises=concat_premises,
+        premise_concat_word_budget=nli_premise_concat_word_budget if nli_premise_concat_word_budget is not None else 384,
+        use_atomic_claims=use_atomic_claims,
     )
     aggregate = aggregate_nli_score(verifications)
     per_token = project_claim_scores_to_tokens(response_tokens, text, verifications)
@@ -1373,6 +1620,22 @@ def _maybe_run_nli(
         "aggregate_score": aggregate,
         "per_token": per_token,
         "warnings": warnings,
+    }
+
+
+def _atom_to_dict(av: AtomicVerification) -> Dict[str, Any]:
+    return {
+        "atom_index": int(av.atom.atom_index),
+        "text": av.atom.text,
+        "char_start": int(av.atom.char_start),
+        "char_end": int(av.atom.char_end),
+        "entailment": float(av.entailment),
+        "neutral": float(av.neutral),
+        "contradiction": float(av.contradiction),
+        "score": float(av.score),
+        "skipped": bool(av.skipped),
+        "skip_reason": av.skip_reason,
+        "premise_count": int(len(av.premises)),
     }
 
 
@@ -1389,6 +1652,7 @@ def _claim_to_dict(verification: ClaimVerification) -> Dict[str, Any]:
         "skipped": bool(verification.skipped),
         "skip_reason": verification.skip_reason,
         "premise_count": int(len(verification.premises)),
+        "atoms": [_atom_to_dict(a) for a in verification.atoms] if verification.atoms else [],
     }
 
 
@@ -1409,7 +1673,17 @@ def score_groundedness_chunked(
     nli_top_k_premises: Optional[int] = None,
     nli_max_batch: Optional[int] = None,
     nli_max_latency_ms: Optional[float] = None,
+    nli_reranker: Optional[PremiseReranker] = None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_premise_concat_word_budget: Optional[int] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
+    verification_samples: Optional[Sequence[str]] = None,
+    semantic_entropy_enabled: Optional[bool] = None,
     fusion_weights: Optional[Dict[str, float]] = None,
+    risk_band_stratum: Optional[str] = None,
+    content_type: Optional[str] = None,
+    structured_enabled: Optional[bool] = None,
+    structured_support_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Score chunked support windows and merge them by per-token maxima.
 
@@ -1438,7 +1712,17 @@ def score_groundedness_chunked(
             nli_top_k_premises=nli_top_k_premises,
             nli_max_batch=nli_max_batch,
             nli_max_latency_ms=nli_max_latency_ms,
+            nli_reranker=nli_reranker,
+            nli_concat_premises=nli_concat_premises,
+            nli_premise_concat_word_budget=nli_premise_concat_word_budget,
+            nli_use_atomic_claims=nli_use_atomic_claims,
+            verification_samples=verification_samples,
+            semantic_entropy_enabled=semantic_entropy_enabled,
             fusion_weights=fusion_weights,
+            risk_band_stratum=risk_band_stratum,
+            content_type=content_type,
+            structured_enabled=structured_enabled,
+            structured_support_text=structured_support_text,
         )
 
     flat_support_units = [unit for batch in batches for unit in batch]
@@ -1807,17 +2091,46 @@ def score_groundedness_chunked(
         nli_top_k_premises=nli_top_k_premises,
         nli_max_batch=nli_max_batch,
         nli_max_latency_ms=nli_max_latency_ms,
+        nli_reranker=nli_reranker,
+        nli_concat_premises=nli_concat_premises,
+        nli_premise_concat_word_budget=nli_premise_concat_word_budget,
+        nli_use_atomic_claims=nli_use_atomic_claims,
     )
     if nli_payload is not None:
         warnings.extend(nli_payload.pop("warnings", []))
     nli_aggregate = nli_payload["aggregate_score"] if nli_payload else None
     nli_per_token_chunked = nli_payload["per_token"] if nli_payload else [None] * token_count
+
+    semantic_entropy_payload = _maybe_run_semantic_entropy(
+        verification_samples=verification_samples,
+        nli_provider=nli_provider,
+        enabled=semantic_entropy_enabled,
+        warnings=warnings,
+    )
+    semantic_entropy_aggregate = (
+        semantic_entropy_payload["aggregate"] if semantic_entropy_payload else None
+    )
+
+    structured_payload = _maybe_run_structured(
+        response_text=response_text,
+        support_units=support_units_payload,
+        structured_support_text=structured_support_text,
+        content_type=content_type,
+        enabled=structured_enabled,
+        warnings=warnings,
+    )
+    structured_aggregate = (
+        structured_payload["guarded_score"] if structured_payload else None
+    )
+
     groundedness_v2 = fuse_groundedness_v2(
         reverse_context_calibrated=(
             float(reverse_context_calibrated_score) if null_bank_size > 0 else float(reverse_context_score)
         ),
         literal_guarded=float(literal_guarded_value),
         nli_aggregate=nli_aggregate,
+        semantic_entropy=semantic_entropy_aggregate,
+        structured_source_guarded=structured_aggregate,
         weights=fusion_weights,
     )
     for token_idx, row in enumerate(response_token_rows):
@@ -1826,6 +2139,15 @@ def score_groundedness_chunked(
             if token_idx < len(nli_per_token_chunked)
             else None
         )
+
+    headline_for_band = _resolve_headline_for_risk_band(
+        groundedness_v2=groundedness_v2,
+        reverse_context_calibrated=(
+            float(reverse_context_calibrated_score) if null_bank_size > 0 else None
+        ),
+        reverse_context=float(reverse_context_score),
+    )
+    risk_band = classify_risk_band(headline_for_band, stratum=risk_band_stratum)
 
     scores = {
         "primary_name": metric_name,
@@ -1854,6 +2176,28 @@ def score_groundedness_chunked(
         "echo_mean": float(echo_mean) if echo_mean is not None else None,
         "grounded_coverage": float(grounded_coverage_score) if grounded_coverage_score is not None else None,
         "null_bank_size": null_bank_size,
+        "semantic_entropy_aggregate": (
+            float(semantic_entropy_aggregate)
+            if semantic_entropy_aggregate is not None
+            else None
+        ),
+        "semantic_entropy_raw": (
+            float(semantic_entropy_payload["entropy_raw"])
+            if semantic_entropy_payload and semantic_entropy_payload.get("entropy_raw") is not None
+            else None
+        ),
+        "semantic_entropy_sample_count": (
+            int(semantic_entropy_payload["sample_count"])
+            if semantic_entropy_payload
+            else 0
+        ),
+        "structured_source_guarded": (
+            float(structured_aggregate) if structured_aggregate is not None else None
+        ),
+        "structured_source_detected": (
+            bool(structured_payload["detected"]) if structured_payload else None
+        ),
+        "risk_band": risk_band,
     }
 
     return {
@@ -1875,6 +2219,8 @@ def score_groundedness_chunked(
                 "aggregate_score": nli_payload["aggregate_score"],
             }
         ),
+        "semantic_entropy_diagnostics": semantic_entropy_payload,
+        "structured_diagnostics": structured_payload,
         "_internals": {
             "reverse_context_unit_values": reverse_context_unit_values,
             "null_mean": null_mean_tensor,

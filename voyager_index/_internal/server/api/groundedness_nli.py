@@ -17,7 +17,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+
+from voyager_index._internal.server.api.groundedness_claims import (
+    AtomicClaim,
+    decompose_sentence_into_atoms,
+    is_atomic_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +38,17 @@ _DEFAULT_FUSION_WEIGHTS: Dict[str, float] = {
     "calibrated": 0.5,
     "literal": 0.2,
     "nli": 0.3,
+    "semantic_entropy": 0.0,
+    "structured": 0.0,
 }
 
 _DEFAULT_MAX_CLAIMS = 16
 _DEFAULT_TOP_K_PREMISES = 3
 _DEFAULT_NLI_MAX_BATCH = 16
 _DEFAULT_NLI_MAX_LATENCY_MS = 2000.0
+_DEFAULT_PREMISE_CONCAT_BUDGET = 384  # tokens approximated as words
+
+_PREMISE_JOIN_SEPARATOR = " \u2022 "  # bullet keeps sentence boundaries visible
 
 _CLAIM_SPLIT_RE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)", re.UNICODE)
 _CONJUNCTION_SPLIT_RE = re.compile(r"\s*(?:;|\bbut\b|\bhowever\b|\bwhereas\b)\s+", re.IGNORECASE)
@@ -61,6 +72,20 @@ class Claim:
 
 
 @dataclass
+class AtomicVerification:
+    """Per-atom NLI score within a parent claim."""
+
+    atom: AtomicClaim
+    entailment: float
+    neutral: float
+    contradiction: float
+    score: float
+    premises: List[str] = field(default_factory=list)
+    skipped: bool = False
+    skip_reason: Optional[str] = None
+
+
+@dataclass
 class ClaimVerification:
     """Per-claim NLI score and bookkeeping."""
 
@@ -72,6 +97,7 @@ class ClaimVerification:
     premises: List[str] = field(default_factory=list)
     skipped: bool = False
     skip_reason: Optional[str] = None
+    atoms: List[AtomicVerification] = field(default_factory=list)
 
 
 class NLIProvider(Protocol):
@@ -84,6 +110,19 @@ class NLIProvider(Protocol):
     def entail(
         self, premises: Sequence[str], hypotheses: Sequence[str]
     ) -> List[Tuple[float, float, float]]:
+        ...
+
+
+class PremiseReranker(Protocol):
+    """Score a sequence of (claim, candidate-premise) pairs.
+
+    Implementations return one float per pair; higher = more entailment-relevant.
+    They must be deterministic for a given input.
+    """
+
+    def score(
+        self, claim: str, candidate_premises: Sequence[str]
+    ) -> List[float]:
         ...
 
 
@@ -158,46 +197,145 @@ def _content_set(text: str) -> set:
     return {token for token in tokens if len(token) > 2}
 
 
+def _candidate_premise_texts(support_units: Sequence[Any]) -> List[str]:
+    """Pull deduplicated, non-empty premise texts out of support units."""
+
+    seen: set = set()
+    out: List[str] = []
+    for unit in support_units:
+        text = getattr(unit, "text", "") or ""
+        if not text:
+            continue
+        # Some support units repeat verbatim across batches — dedupe to
+        # avoid feeding identical premises to the cross-encoder.
+        key = text.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _lexical_rank(claim_text: str, candidate_texts: Sequence[str]) -> List[Tuple[float, int, str]]:
+    """Lexical overlap ranking; higher count first, stable on idx."""
+
+    claim_terms = _content_set(claim_text)
+    if not claim_terms:
+        return []
+    scored: List[Tuple[float, int, str]] = []
+    for idx, text in enumerate(candidate_texts):
+        text_terms = _content_set(text)
+        if not text_terms:
+            continue
+        overlap = len(claim_terms & text_terms)
+        if overlap == 0:
+            continue
+        scored.append((-float(overlap), idx, text))
+    scored.sort()
+    return scored
+
+
 def _select_premises_for_claim(
-    claim: Claim,
+    claim: Any,
     support_units: Sequence[Any],
     *,
     top_k: int,
     fallback_join: bool,
+    reranker: Optional[PremiseReranker] = None,
 ) -> List[str]:
-    """Pick the top-k support unit texts most lexically overlapping with the claim.
+    """Pick the top-k support unit texts most likely to entail the claim.
 
-    Falls back to a single concatenated premise if no overlap is found and
-    ``fallback_join`` is True so the entailment model still sees the full
-    context (large concat may exceed the model's context window — caller
-    should keep this small).
+    Selection priority:
+
+    1. Cross-encoder reranker (if provided) — direct ``(claim, premise)``
+       relevance score; falls back to lexical if reranker call fails.
+    2. Lexical content-token overlap — same heuristic shipped in Phase D.
+    3. Concatenated fallback when neither method finds any candidate.
+
+    The function accepts either ``Claim`` or ``AtomicClaim`` so callers can
+    reuse the same selector for atomic-fact decomposition.
     """
 
-    claim_terms = _content_set(claim.text)
-    if not claim_terms:
+    claim_text = getattr(claim, "text", "") or ""
+    if not claim_text:
         return []
 
-    scored: List[Tuple[float, int, str]] = []
-    for idx, unit in enumerate(support_units):
-        unit_text = getattr(unit, "text", "") or ""
-        if not unit_text:
-            continue
-        unit_terms = _content_set(unit_text)
-        if not unit_terms:
-            continue
-        overlap = len(claim_terms & unit_terms)
-        if overlap == 0:
-            continue
-        scored.append((-float(overlap), idx, unit_text))
+    candidate_texts = _candidate_premise_texts(support_units)
+    if not candidate_texts:
+        return []
 
-    if not scored:
-        if not fallback_join:
-            return []
-        joined = " ".join(getattr(u, "text", "") or "" for u in support_units if getattr(u, "text", ""))
-        return [joined] if joined else []
+    if reranker is not None:
+        try:
+            scores = reranker.score(claim_text, candidate_texts)
+        except Exception as exc:  # noqa: BLE001 — fall back deterministically
+            logger.warning("premise_reranker_failed", extra={"error": str(exc)})
+            scores = []
+        if scores and len(scores) == len(candidate_texts):
+            indexed = sorted(
+                ((-float(score), idx) for idx, score in enumerate(scores)),
+                key=lambda item: (item[0], item[1]),
+            )
+            ranked = [candidate_texts[idx] for _score, idx in indexed]
+            return ranked[: max(1, top_k)]
 
-    scored.sort()
-    return [text for _score, _idx, text in scored[: max(1, top_k)]]
+    lexical = _lexical_rank(claim_text, candidate_texts)
+    if lexical:
+        return [text for _score, _idx, text in lexical[: max(1, top_k)]]
+
+    if not fallback_join:
+        return []
+    joined = " ".join(candidate_texts)
+    return [joined] if joined else []
+
+
+def is_premise_concat_enabled() -> bool:
+    """Return True when multi-premise concatenated NLI is enabled."""
+
+    raw = os.environ.get("VOYAGER_GROUNDEDNESS_NLI_PREMISE_CONCAT", "1")
+    return raw.lower() in {"1", "true", "yes"}
+
+
+def _concat_premises_for_nli(
+    premises: Sequence[str],
+    *,
+    token_budget: int,
+    separator: str = _PREMISE_JOIN_SEPARATOR,
+) -> str:
+    """Concatenate top-k premises into one composite premise within budget.
+
+    ``token_budget`` is approximated by whitespace word count to avoid a
+    second tokenizer dependency. Premises preserve their order; if the
+    budget is exceeded the trailing premise is truncated word-wise rather
+    than dropped, so the most relevant premise (rank 1) is always retained.
+    """
+
+    if not premises:
+        return ""
+    if token_budget <= 0:
+        return separator.join(premises)
+    out_words: List[str] = []
+    used = 0
+    sep_words = len(separator.split())
+    for idx, premise in enumerate(premises):
+        if not premise:
+            continue
+        words = premise.split()
+        if not words:
+            continue
+        budget_left = token_budget - used - (sep_words if out_words else 0)
+        if budget_left <= 0:
+            break
+        if len(words) > budget_left:
+            words = words[:budget_left]
+        if out_words:
+            out_words.extend(separator.split())
+            used += sep_words
+        out_words.extend(words)
+        used += len(words)
+        if used >= token_budget:
+            break
+        _ = idx  # noqa: F841 — cursor only
+    return " ".join(out_words)
 
 
 # ----------------------------------------------------------------------
@@ -277,6 +415,25 @@ def _aggregate_premise_scores(per_premise_scores: Sequence[Tuple[float, float, f
     return entail, neutral, contradict, score
 
 
+def _atom_min_aggregate(atoms: Sequence[AtomicVerification]) -> Tuple[float, float, float, float]:
+    """Aggregate atom-level NLI scores into a single (entail, neutral, contradict, score).
+
+    The aggregation is conservative: ``entail`` takes the **min** across atoms
+    (one unsupported atom drags the parent claim down) while ``contradict``
+    takes the **max** (any single contradictory atom flags the parent).
+    ``score`` recomputes the entail-contradict margin clipped to ``[-1, 1]``.
+    """
+
+    scored = [a for a in atoms if not a.skipped]
+    if not scored:
+        return 0.0, 0.0, 0.0, 0.0
+    entail = min(a.entailment for a in scored)
+    contradict = max(a.contradiction for a in scored)
+    neutral = max(a.neutral for a in scored)
+    score = max(-1.0, min(1.0, entail - contradict))
+    return entail, neutral, contradict, score
+
+
 def verify_claims(
     response_text: str,
     support_units: Sequence[Any],
@@ -286,8 +443,27 @@ def verify_claims(
     top_k_premises: int = _DEFAULT_TOP_K_PREMISES,
     max_batch: int = _DEFAULT_NLI_MAX_BATCH,
     max_latency_ms: float = _DEFAULT_NLI_MAX_LATENCY_MS,
+    reranker: Optional[PremiseReranker] = None,
+    concat_premises: Optional[bool] = None,
+    premise_concat_word_budget: int = _DEFAULT_PREMISE_CONCAT_BUDGET,
+    use_atomic_claims: Optional[bool] = None,
 ) -> Tuple[List[ClaimVerification], List[str]]:
     """Run NLI verification on every claim in ``response_text``.
+
+    Phase F upgrades the original Phase D pipeline with three orthogonal
+    levers. Each is independently toggleable so we can A/B them.
+
+    - ``reranker``: cross-encoder ``(claim, premise)`` reranker. When
+      provided it replaces the lexical premise selector with a much
+      stronger entailment-relevance signal. Falls back to lexical
+      selection if the reranker call raises.
+    - ``concat_premises``: when True the top-k premises are concatenated
+      into one composite premise per claim (single NLI call per claim
+      instead of k). When False each premise is scored individually and
+      aggregated via ``_aggregate_premise_scores`` (Phase D behavior).
+    - ``use_atomic_claims``: when True every parent sentence is decomposed
+      into atomic propositions; each atom is verified independently and
+      aggregated to the parent claim with conservative ``min``-of-entail.
 
     Returns ``(verifications, warnings)``. Verification is robust: any
     individual claim that fails to resolve premises or whose backend call
@@ -299,26 +475,71 @@ def verify_claims(
     if not claims:
         return [], warnings
 
-    pairs: List[Tuple[int, str, str]] = []
-    claim_premise_index: Dict[int, List[int]] = {}
-    selected_premises: Dict[int, List[str]] = {}
-    skipped: Dict[int, str] = {}
+    if concat_premises is None:
+        concat_premises = is_premise_concat_enabled()
+    if use_atomic_claims is None:
+        use_atomic_claims = is_atomic_enabled()
+
+    # -------- Build the atom graph (one entry per parent claim) -------- #
+
+    atoms_per_claim: Dict[int, List[AtomicClaim]] = {}
+    if use_atomic_claims:
+        for claim in claims:
+            atoms = decompose_sentence_into_atoms(
+                claim.text,
+                parent_index=claim.index,
+                parent_start=claim.char_start,
+            )
+            atoms_per_claim[claim.index] = atoms or [
+                AtomicClaim(
+                    parent_index=claim.index,
+                    atom_index=0,
+                    text=claim.text,
+                    char_start=claim.char_start,
+                    char_end=claim.char_end,
+                )
+            ]
+    else:
+        for claim in claims:
+            atoms_per_claim[claim.index] = [
+                AtomicClaim(
+                    parent_index=claim.index,
+                    atom_index=0,
+                    text=claim.text,
+                    char_start=claim.char_start,
+                    char_end=claim.char_end,
+                )
+            ]
+
+    pairs: List[Tuple[int, int, str, str]] = []  # (claim_idx, atom_idx, premise, hypothesis)
+    selected_premises: Dict[Tuple[int, int], List[str]] = {}
+    skipped: Dict[Tuple[int, int], str] = {}
 
     for claim in claims:
-        premises = _select_premises_for_claim(
-            claim,
-            support_units,
-            top_k=top_k_premises,
-            fallback_join=True,
-        )
-        if not premises:
-            skipped[claim.index] = "no_premises"
-            continue
-        selected_premises[claim.index] = premises
-        for premise in premises:
-            pair_idx = len(pairs)
-            pairs.append((claim.index, premise, claim.text))
-            claim_premise_index.setdefault(claim.index, []).append(pair_idx)
+        for atom in atoms_per_claim[claim.index]:
+            premises = _select_premises_for_claim(
+                atom,
+                support_units,
+                top_k=top_k_premises,
+                fallback_join=True,
+                reranker=reranker,
+            )
+            if not premises:
+                skipped[(claim.index, atom.atom_index)] = "no_premises"
+                continue
+            selected_premises[(claim.index, atom.atom_index)] = premises
+            if concat_premises:
+                composite = _concat_premises_for_nli(
+                    premises,
+                    token_budget=premise_concat_word_budget,
+                )
+                if not composite:
+                    skipped[(claim.index, atom.atom_index)] = "no_premises"
+                    continue
+                pairs.append((claim.index, atom.atom_index, composite, atom.text))
+            else:
+                for premise in premises:
+                    pairs.append((claim.index, atom.atom_index, premise, atom.text))
 
     if not pairs:
         return [
@@ -330,7 +551,20 @@ def verify_claims(
                 score=0.0,
                 premises=[],
                 skipped=True,
-                skip_reason=skipped.get(claim.index, "no_premises"),
+                skip_reason="no_premises",
+                atoms=[
+                    AtomicVerification(
+                        atom=atom,
+                        entailment=0.0,
+                        neutral=0.0,
+                        contradiction=0.0,
+                        score=0.0,
+                        premises=[],
+                        skipped=True,
+                        skip_reason=skipped.get((claim.index, atom.atom_index), "no_premises"),
+                    )
+                    for atom in atoms_per_claim[claim.index]
+                ],
             )
             for claim in claims
         ], warnings
@@ -340,8 +574,8 @@ def verify_claims(
     try:
         for batch_start in range(0, len(pairs), max(1, max_batch)):
             batch = pairs[batch_start : batch_start + max_batch]
-            batch_premises = [premise for _, premise, _ in batch]
-            batch_hypotheses = [hypothesis for _, _, hypothesis in batch]
+            batch_premises = [premise for _, _, premise, _ in batch]
+            batch_hypotheses = [hypothesis for _, _, _, hypothesis in batch]
             batch_triples = nli_provider.entail(batch_premises, batch_hypotheses)
             if len(batch_triples) != len(batch):
                 raise RuntimeError(
@@ -369,36 +603,83 @@ def verify_claims(
                 neutral=0.0,
                 contradiction=0.0,
                 score=0.0,
-                premises=selected_premises.get(claim.index, []),
+                premises=selected_premises.get((claim.index, 0), []),
                 skipped=True,
                 skip_reason="nli_provider_error",
+                atoms=[
+                    AtomicVerification(
+                        atom=atom,
+                        entailment=0.0,
+                        neutral=0.0,
+                        contradiction=0.0,
+                        score=0.0,
+                        premises=selected_premises.get((claim.index, atom.atom_index), []),
+                        skipped=True,
+                        skip_reason="nli_provider_error",
+                    )
+                    for atom in atoms_per_claim[claim.index]
+                ],
             )
             for claim in claims
         ], warnings
 
+    # -------- Stitch triples back to (claim, atom) -------- #
+
     completed_pair_count = len(triples)
+    atom_pair_index: Dict[Tuple[int, int], List[int]] = {}
+    for pair_idx, (claim_idx, atom_idx, _premise, _hypothesis) in enumerate(pairs):
+        atom_pair_index.setdefault((claim_idx, atom_idx), []).append(pair_idx)
+
     verifications: List[ClaimVerification] = []
     for claim in claims:
-        if claim.index in skipped:
-            verifications.append(
-                ClaimVerification(
-                    claim=claim,
-                    entailment=0.0,
-                    neutral=0.0,
-                    contradiction=0.0,
-                    score=0.0,
-                    premises=[],
-                    skipped=True,
-                    skip_reason=skipped[claim.index],
+        atom_records: List[AtomicVerification] = []
+        for atom in atoms_per_claim[claim.index]:
+            atom_key = (claim.index, atom.atom_index)
+            if atom_key in skipped:
+                atom_records.append(
+                    AtomicVerification(
+                        atom=atom,
+                        entailment=0.0,
+                        neutral=0.0,
+                        contradiction=0.0,
+                        score=0.0,
+                        premises=[],
+                        skipped=True,
+                        skip_reason=skipped[atom_key],
+                    )
                 )
-            )
-            continue
-        per_premise_scores: List[Tuple[float, float, float]] = []
-        for pair_idx in claim_premise_index.get(claim.index, []):
-            if pair_idx >= completed_pair_count:
                 continue
-            per_premise_scores.append(triples[pair_idx])
-        if not per_premise_scores:
+            per_premise_scores: List[Tuple[float, float, float]] = []
+            for pair_idx in atom_pair_index.get(atom_key, []):
+                if pair_idx >= completed_pair_count:
+                    continue
+                per_premise_scores.append(triples[pair_idx])
+            if not per_premise_scores:
+                atom_records.append(
+                    AtomicVerification(
+                        atom=atom,
+                        entailment=0.0,
+                        neutral=0.0,
+                        contradiction=0.0,
+                        score=0.0,
+                        premises=selected_premises.get(atom_key, []),
+                        skipped=True,
+                        skip_reason="latency_budget",
+                    )
+                )
+                continue
+            entail, neutral, contradict, score = _aggregate_premise_scores(per_premise_scores)
+            atom_records.append(
+                AtomicVerification(
+                    atom=atom,
+                    entailment=entail,
+                    neutral=neutral,
+                    contradiction=contradict,
+                    score=score,
+                    premises=selected_premises.get(atom_key, []),
+                )
+            )
+        if not atom_records or all(a.skipped for a in atom_records):
             verifications.append(
                 ClaimVerification(
                     claim=claim,
@@ -406,13 +687,37 @@ def verify_claims(
                     neutral=0.0,
                     contradiction=0.0,
                     score=0.0,
-                    premises=selected_premises.get(claim.index, []),
+                    premises=selected_premises.get((claim.index, 0), []),
                     skipped=True,
-                    skip_reason="latency_budget",
+                    skip_reason=(
+                        atom_records[0].skip_reason
+                        if atom_records else "no_premises"
+                    ),
+                    atoms=atom_records,
                 )
             )
             continue
-        entail, neutral, contradict, score = _aggregate_premise_scores(per_premise_scores)
+        # Aggregate atoms to parent claim with conservative ``min``-of-entail.
+        if len(atom_records) == 1 and not atom_records[0].skipped:
+            base = atom_records[0]
+            premises = base.premises
+            entail, neutral, contradict, score = (
+                base.entailment,
+                base.neutral,
+                base.contradiction,
+                base.score,
+            )
+        else:
+            entail, neutral, contradict, score = _atom_min_aggregate(atom_records)
+            # Surface the union of all premises that fed this claim's atoms.
+            seen_premise: set = set()
+            premises = []
+            for a in atom_records:
+                for p in a.premises:
+                    if p in seen_premise:
+                        continue
+                    seen_premise.add(p)
+                    premises.append(p)
         verifications.append(
             ClaimVerification(
                 claim=claim,
@@ -420,7 +725,8 @@ def verify_claims(
                 neutral=neutral,
                 contradiction=contradict,
                 score=score,
-                premises=selected_premises.get(claim.index, []),
+                premises=premises,
+                atoms=atom_records,
             )
         )
     return verifications, warnings
@@ -441,13 +747,20 @@ def fuse_groundedness_v2(
     reverse_context_calibrated: Optional[float],
     literal_guarded: Optional[float],
     nli_aggregate: Optional[float],
+    semantic_entropy: Optional[float] = None,
+    structured_source_guarded: Optional[float] = None,
     weights: Optional[Dict[str, float]] = None,
 ) -> Optional[float]:
-    """Convex-combination fusion of the three primary peer scores.
+    """Convex-combination fusion of the available peer scores.
 
-    Skips channels whose value is ``None``; remaining weights are renormalized
-    so the output is well-defined even when only one or two channels are
-    available. Returns ``None`` if no channel can contribute.
+    Skips channels whose value is ``None`` or whose weight is ``0``;
+    remaining weights are renormalized so the output is well-defined even
+    when only one channel is available. Returns ``None`` if no channel
+    can contribute.
+
+    The semantic-entropy and structured-source channels are opt-in: their
+    default weights are ``0`` and they renormalize the others when their
+    value is provided and a non-zero weight has been configured.
     """
 
     weights = dict(weights) if weights else dict(_DEFAULT_FUSION_WEIGHTS)
@@ -455,6 +768,8 @@ def fuse_groundedness_v2(
         ("calibrated", reverse_context_calibrated, weights.get("calibrated", 0.0)),
         ("literal", literal_guarded, weights.get("literal", 0.0)),
         ("nli", nli_aggregate, weights.get("nli", 0.0)),
+        ("semantic_entropy", semantic_entropy, weights.get("semantic_entropy", 0.0)),
+        ("structured", structured_source_guarded, weights.get("structured", 0.0)),
     ]
     contributing = [
         (value, max(0.0, weight))
@@ -575,6 +890,105 @@ class HuggingFaceNLIProvider:
 
 
 # ----------------------------------------------------------------------
+# Cross-encoder premise reranker (lazy)
+# ----------------------------------------------------------------------
+
+
+class CrossEncoderPremiseReranker:
+    """Score (claim, premise) pairs with a HuggingFace cross-encoder reranker.
+
+    The default model is ``BAAI/bge-reranker-v2-m3`` (off-the-shelf, no
+    weights trained at runtime). Loading is lazy and thread-safe; failures
+    leave the reranker silently inert so the surrounding pipeline falls
+    back to lexical selection.
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        device: Optional[str] = None,
+        max_length: int = 512,
+        batch_size: int = 32,
+    ) -> None:
+        self.model_id = model_id
+        self.device = device or self._default_device()
+        self.max_length = int(max_length)
+        self.batch_size = max(1, int(batch_size))
+        self._lock = threading.Lock()
+        self._tokenizer = None
+        self._model = None
+        self._unavailable = False
+
+    @staticmethod
+    def _default_device() -> str:
+        try:
+            import torch  # noqa: WPS433
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+
+    def _ensure_loaded(self) -> bool:
+        if self._unavailable:
+            return False
+        if self._model is not None and self._tokenizer is not None:
+            return True
+        with self._lock:
+            if self._unavailable:
+                return False
+            if self._model is not None and self._tokenizer is not None:
+                return True
+            try:
+                from transformers import AutoModelForSequenceClassification, AutoTokenizer  # noqa: WPS433
+
+                self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+                self._model = AutoModelForSequenceClassification.from_pretrained(self.model_id)
+                self._model.to(self.device)
+                self._model.eval()
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "premise_reranker_init_failed",
+                    extra={"model": self.model_id, "error": str(exc)},
+                )
+                self._unavailable = True
+                return False
+
+    def score(self, claim: str, candidate_premises: Sequence[str]) -> List[float]:
+        if not candidate_premises:
+            return []
+        if not self._ensure_loaded():
+            return []
+        import torch  # noqa: WPS433
+
+        scores: List[float] = []
+        for batch_start in range(0, len(candidate_premises), self.batch_size):
+            batch = candidate_premises[batch_start : batch_start + self.batch_size]
+            pairs = [[claim, premise] for premise in batch]
+            encoded = self._tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                max_length=self.max_length,
+            )
+            encoded = {key: value.to(self.device) for key, value in encoded.items()}
+            with torch.no_grad():
+                logits = self._model(**encoded).logits
+            # bge-reranker-v2-m3 uses 1-class regression head where the
+            # logit is the relevance score; some 2-class rerankers use
+            # softmax(positive). Handle both shapes.
+            if logits.shape[-1] == 1:
+                values = logits.squeeze(-1).float().cpu().tolist()
+            else:
+                probs = torch.softmax(logits, dim=-1)
+                values = probs[:, -1].float().cpu().tolist()
+            scores.extend(float(v) for v in values)
+        return scores
+
+
+# ----------------------------------------------------------------------
 # Service-side helpers
 # ----------------------------------------------------------------------
 
@@ -636,7 +1050,40 @@ def fusion_weights_from_env() -> Dict[str, float]:
         "calibrated": env_float("VOYAGER_GROUNDEDNESS_FUSION_W_CALIBRATED", _DEFAULT_FUSION_WEIGHTS["calibrated"]),
         "literal": env_float("VOYAGER_GROUNDEDNESS_FUSION_W_LITERAL", _DEFAULT_FUSION_WEIGHTS["literal"]),
         "nli": env_float("VOYAGER_GROUNDEDNESS_FUSION_W_NLI", _DEFAULT_FUSION_WEIGHTS["nli"]),
+        "semantic_entropy": env_float(
+            "VOYAGER_GROUNDEDNESS_FUSION_W_SEMANTIC_ENTROPY",
+            _DEFAULT_FUSION_WEIGHTS["semantic_entropy"],
+        ),
+        "structured": env_float(
+            "VOYAGER_GROUNDEDNESS_FUSION_W_STRUCTURED",
+            _DEFAULT_FUSION_WEIGHTS["structured"],
+        ),
     }
+
+
+def resolve_default_reranker() -> Optional[PremiseReranker]:
+    """Build the default cross-encoder reranker when configured.
+
+    Returns ``None`` if no model is configured. The model is loaded lazily
+    on the first ``score`` call so unused services pay no cost.
+    """
+
+    model_id = os.environ.get("VOYAGER_GROUNDEDNESS_NLI_PREMISE_RERANKER_MODEL")
+    if not model_id:
+        return None
+    try:
+        return CrossEncoderPremiseReranker(
+            model_id=model_id,
+            max_length=env_int("VOYAGER_GROUNDEDNESS_NLI_PREMISE_RERANKER_MAX_TOKENS", 512),
+            batch_size=env_int("VOYAGER_GROUNDEDNESS_NLI_PREMISE_RERANKER_BATCH", 32),
+        )
+    except Exception as exc:
+        logger.warning("premise_reranker_resolve_failed", extra={"error": str(exc)})
+        return None
+
+
+def default_premise_concat_word_budget() -> int:
+    return max(64, env_int("VOYAGER_GROUNDEDNESS_NLI_PREMISE_CONCAT_BUDGET", _DEFAULT_PREMISE_CONCAT_BUDGET))
 
 
 def default_max_claims() -> int:
@@ -656,20 +1103,27 @@ def default_max_latency_ms() -> float:
 
 
 __all__ = [
+    "AtomicVerification",
     "Claim",
     "ClaimVerification",
+    "CrossEncoderPremiseReranker",
     "HuggingFaceNLIProvider",
     "NLIProvider",
+    "PremiseReranker",
     "aggregate_nli_score",
     "default_max_batch",
     "default_max_claims",
     "default_max_latency_ms",
+    "default_premise_concat_word_budget",
     "default_top_k_premises",
     "fuse_groundedness_v2",
     "fusion_weights_from_env",
+    "is_atomic_enabled",
     "is_enabled",
+    "is_premise_concat_enabled",
     "project_claim_scores_to_tokens",
     "resolve_default_provider",
+    "resolve_default_reranker",
     "split_claims",
     "verify_claims",
 ]

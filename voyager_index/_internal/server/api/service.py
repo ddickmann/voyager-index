@@ -74,10 +74,14 @@ from .groundedness_nli import (
     default_max_batch as nli_default_max_batch,
     default_max_claims as nli_default_max_claims,
     default_max_latency_ms as nli_default_max_latency_ms,
+    default_premise_concat_word_budget as nli_default_premise_concat_word_budget,
     default_top_k_premises as nli_default_top_k_premises,
     fusion_weights_from_env as nli_fusion_weights_from_env,
+    is_atomic_enabled as nli_is_atomic_enabled,
     is_enabled as nli_is_enabled,
+    is_premise_concat_enabled as nli_is_premise_concat_enabled,
     resolve_default_provider as nli_resolve_default_provider,
+    resolve_default_reranker as nli_resolve_default_reranker,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,6 +193,8 @@ class SearchService:
         self._cached_groundedness_null_banks = {}
         self._nli_provider = None
         self._nli_provider_resolved = False
+        self._nli_reranker = None
+        self._nli_reranker_resolved = False
         logger.info("Reference API runtime capabilities: %s", self.runtime_capabilities)
         self._recover_pending_journals()
         self._load_collections()
@@ -3087,6 +3093,21 @@ class SearchService:
         self._nli_provider_resolved = True
         return self._nli_provider
 
+    def _get_nli_reranker(self):
+        """Return the cross-encoder premise reranker when configured."""
+
+        if not nli_is_enabled():
+            return None
+        if self._nli_reranker_resolved:
+            return self._nli_reranker
+        try:
+            self._nli_reranker = nli_resolve_default_reranker()
+        except Exception as exc:
+            logger.warning("nli_reranker_resolve_failed", extra={"error": str(exc)})
+            self._nli_reranker = None
+        self._nli_reranker_resolved = True
+        return self._nli_reranker
+
     def _get_groundedness_provider(
         self,
         runtime: CollectionRuntime,
@@ -3300,6 +3321,7 @@ class SearchService:
                 prompt_name=request.document_prompt_name,
             )
             nli_provider = self._get_nli_provider()
+            nli_reranker = self._get_nli_reranker() if nli_provider is not None else None
             nli_kwargs: Dict[str, Any] = {}
             if nli_provider is not None:
                 nli_kwargs = {
@@ -3308,8 +3330,22 @@ class SearchService:
                     "nli_top_k_premises": nli_default_top_k_premises(),
                     "nli_max_batch": nli_default_max_batch(),
                     "nli_max_latency_ms": nli_default_max_latency_ms(),
+                    "nli_reranker": nli_reranker,
+                    "nli_concat_premises": nli_is_premise_concat_enabled(),
+                    "nli_premise_concat_word_budget": nli_default_premise_concat_word_budget(),
+                    "nli_use_atomic_claims": nli_is_atomic_enabled(),
                     "fusion_weights": nli_fusion_weights_from_env(),
                 }
+            if request.verification_samples:
+                nli_kwargs.setdefault("fusion_weights", nli_fusion_weights_from_env())
+                nli_kwargs["verification_samples"] = list(request.verification_samples)
+                nli_kwargs["semantic_entropy_enabled"] = True
+            if request.risk_band_stratum:
+                nli_kwargs["risk_band_stratum"] = str(request.risk_band_stratum)
+            if request.content_type:
+                nli_kwargs["content_type"] = str(request.content_type)
+            if request.raw_context:
+                nli_kwargs["structured_support_text"] = request.raw_context
 
             if request.chunk_ids:
                 scored = score_groundedness(
@@ -3368,6 +3404,8 @@ class SearchService:
                 warnings=warnings,
                 literal_diagnostics=scored.get("literal_diagnostics"),
                 nli_diagnostics=scored.get("nli_diagnostics"),
+                semantic_entropy_diagnostics=scored.get("semantic_entropy_diagnostics"),
+                structured_diagnostics=scored.get("structured_diagnostics"),
                 time_ms=elapsed_ms,
             )
 

@@ -282,11 +282,29 @@ PREREGISTERED_TARGETS: Dict[str, Dict[str, Any]] = {
         "ci_lower_min": 0.50,
         "notes": "Macro span-F1 across qa/summarization/data2text strata.",
     },
+    "ragtruth_macro": {
+        "metric": "span_f1_macro",
+        "min": 0.68,
+        "ci_lower_min": 0.60,
+        "notes": "Phase J tightened macro span-F1 target on RAGTruth.",
+    },
+    "ragtruth_data2text": {
+        "metric": "paired_accuracy",
+        "min": 0.60,
+        "ci_lower_min": 0.55,
+        "notes": "Phase J structured-source stratum; benchmarks data2text pairs if present.",
+    },
     "halueval_qa": {
         "metric": "paired_accuracy",
-        "min": 0.70,
-        "ci_lower_min": 0.65,
-        "notes": "Paired ranking accuracy on HaluEval QA pairs.",
+        "min": 0.75,
+        "ci_lower_min": 0.70,
+        "notes": "Phase J tightened paired ranking accuracy on HaluEval QA pairs.",
+    },
+    "halueval_dialogue": {
+        "metric": "paired_accuracy",
+        "min": 0.60,
+        "ci_lower_min": 0.55,
+        "notes": "Phase J distributed-dialogue stratum; benchmarks HaluEval dialogue pairs if present.",
     },
     "factscore": {
         "metric": "claim_precision",
@@ -315,6 +333,27 @@ PREREGISTERED_TARGETS: Dict[str, Dict[str, Any]] = {
         "notes": "Partial-support pairs (one clause grounded, one not).",
         "strata": ("partial",),
     },
+    "minimal_pairs_hard_compound": {
+        "metric": "paired_accuracy",
+        "min": 0.60,
+        "ci_lower_min": 0.55,
+        "notes": "Phase J hard compound-fact pairs (multi-fact conjunctions with one fact flipped).",
+        "strata": ("hard_compound_facts",),
+    },
+    "minimal_pairs_hard_structured": {
+        "metric": "paired_accuracy",
+        "min": 0.65,
+        "ci_lower_min": 0.60,
+        "notes": "Phase J hard structured-source pairs (JSON, markdown table). Exercises the structured channel.",
+        "strata": ("hard_structured",),
+    },
+    "minimal_pairs_hard_dialogue_distributed": {
+        "metric": "paired_accuracy",
+        "min": 0.55,
+        "ci_lower_min": 0.50,
+        "notes": "Phase J distributed-dialogue pairs (evidence split across speaker turns).",
+        "strata": ("hard_dialogue_distributed",),
+    },
     "latency_score_only": {
         "metric": "p95_ms",
         "max": 100.0,
@@ -324,6 +363,11 @@ PREREGISTERED_TARGETS: Dict[str, Dict[str, Any]] = {
         "metric": "p95_ms",
         "max": 250.0,
         "notes": "Full-request budget with NLI verifier enabled.",
+    },
+    "latency_with_nli_and_semantic_entropy": {
+        "metric": "p95_ms",
+        "max": 400.0,
+        "notes": "Phase J full-request budget with NLI + semantic-entropy enabled.",
     },
 }
 

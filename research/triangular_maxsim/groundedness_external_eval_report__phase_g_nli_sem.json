@@ -1,0 +1,144 @@
+{
+  "all_targets_met": true,
+  "criteria": {
+    "factscore": {
+      "notes": "Per-claim atomic precision on FActScore biographies.",
+      "status": "skipped"
+    },
+    "halueval_qa": {
+      "notes": "Paired ranking accuracy on HaluEval QA pairs.",
+      "status": "skipped"
+    },
+    "latency_score_only": {
+      "applicable": false,
+      "applies_when": "nli_disabled",
+      "label": "fail",
+      "max": 100.0,
+      "met": false,
+      "metric": "p95_ms",
+      "notes": "Score-only request budget without NLI.",
+      "value": 179.21383986249563
+    },
+    "latency_with_nli": {
+      "applicable": true,
+      "applies_when": "nli_enabled",
+      "label": "pass",
+      "max": 250.0,
+      "met": true,
+      "metric": "p95_ms",
+      "notes": "Full-request budget with NLI verifier enabled.",
+      "value": 179.21383986249563
+    },
+    "minimal_pairs_lexical": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.75,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.8,
+      "n": 32,
+      "notes": "Pairs in entity_swap, date_swap, number_swap, unit_swap.",
+      "value": 1.0
+    },
+    "minimal_pairs_partial": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.6,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.65,
+      "n": 8,
+      "notes": "Partial-support pairs (one clause grounded, one not).",
+      "value": 1.0
+    },
+    "minimal_pairs_semantic": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.65,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "n": 16,
+      "notes": "Pairs in negation and role_swap (need NLI).",
+      "value": 1.0
+    },
+    "ragtruth": {
+      "notes": "Macro span-F1 across qa/summarization/data2text strata.",
+      "status": "skipped"
+    }
+  },
+  "external": {
+    "factscore": null,
+    "halueval": null,
+    "ragtruth": null
+  },
+  "headline_verdict": "feature in Beta with NLI peer, ready for evidence/QA",
+  "minimal_pairs": {
+    "encode_p50_ms": 44.29769888520241,
+    "encode_p95_ms": 46.03702872991562,
+    "headline_distribution": {
+      "groundedness_v2": 112
+    },
+    "headline_used": "groundedness_v2",
+    "latency_p50_ms": 100.22617969661951,
+    "latency_p95_ms": 179.21383986249563,
+    "nli_enabled": true,
+    "overall_accuracy": 1.0,
+    "pair_count": 56,
+    "per_stratum": {
+      "date_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "entity_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "negation": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "number_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "partial": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "role_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      },
+      "unit_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 8,
+        "paired_accuracy": 1.0
+      }
+    },
+    "score_p50_ms": 55.830868892371655,
+    "score_p95_ms": 132.16675985604525,
+    "stratum_counts": {
+      "date_swap": 8,
+      "entity_swap": 8,
+      "negation": 8,
+      "number_swap": 8,
+      "partial": 8,
+      "role_swap": 8,
+      "unit_swap": 8
+    }
+  }
+}

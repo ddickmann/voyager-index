@@ -1,0 +1,222 @@
+{
+  "all_targets_met": false,
+  "criteria": {
+    "factscore": {
+      "notes": "Per-claim atomic precision on FActScore biographies.",
+      "status": "skipped"
+    },
+    "halueval_qa": {
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "notes": "Paired ranking accuracy on HaluEval QA pairs.",
+      "value": 0.7625
+    },
+    "latency_score_only": {
+      "applicable": true,
+      "applies_when": "nli_disabled",
+      "label": "pass",
+      "max": 100.0,
+      "met": true,
+      "metric": "p95_ms",
+      "notes": "Score-only request budget without NLI.",
+      "value": 92.2672200948
+    },
+    "latency_with_nli": {
+      "applicable": false,
+      "applies_when": "nli_enabled",
+      "notes": "Full-request budget with NLI verifier enabled.",
+      "status": "not_applicable"
+    },
+    "minimal_pairs_lexical": {
+      "ci_lower": 0.5666666666666667,
+      "ci_lower_min": 0.75,
+      "label": "partial",
+      "met": false,
+      "metric": "paired_accuracy",
+      "min": 0.8,
+      "n": 120,
+      "notes": "Pairs in entity_swap, date_swap, number_swap, unit_swap.",
+      "value": 0.8
+    },
+    "minimal_pairs_partial": {
+      "ci_lower": 0.7333333333333333,
+      "ci_lower_min": 0.6,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.65,
+      "n": 30,
+      "notes": "Partial-support pairs (one clause grounded, one not).",
+      "value": 0.8666666666666667
+    },
+    "minimal_pairs_semantic": {
+      "ci_lower": 0.03333333333333333,
+      "ci_lower_min": 0.65,
+      "label": "fail",
+      "met": false,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "n": 60,
+      "notes": "Pairs in negation and role_swap (need NLI).",
+      "value": 0.5333333333333333
+    },
+    "ragtruth": {
+      "label": "pass",
+      "met": true,
+      "metric": "span_f1_macro",
+      "min": 0.55,
+      "notes": "Macro span-F1 across qa/summarization/data2text strata.",
+      "value": 0.5872206031505565
+    }
+  },
+  "external": {
+    "factscore": null,
+    "halueval": {
+      "per_stratum": {
+        "dialogue": {
+          "f1": 0.4125,
+          "fn": 47,
+          "fp": 47,
+          "n": 160,
+          "precision": 0.4125,
+          "recall": 0.4125,
+          "threshold": 0.71024489402771,
+          "tn": 33,
+          "tp": 33
+        },
+        "qa": {
+          "f1": 0.7625,
+          "fn": 19,
+          "fp": 19,
+          "n": 160,
+          "precision": 0.7625,
+          "recall": 0.7625,
+          "threshold": 0.8396668434143066,
+          "tn": 61,
+          "tp": 61
+        },
+        "summarization": {
+          "f1": 0.65,
+          "fn": 28,
+          "fp": 28,
+          "n": 160,
+          "precision": 0.65,
+          "recall": 0.65,
+          "threshold": 0.8423584176119043,
+          "tn": 52,
+          "tp": 52
+        }
+      },
+      "sample_count": 480
+    },
+    "ragtruth": {
+      "per_stratum": {
+        "data2text": {
+          "f1": 0.410958904109589,
+          "fn": 18,
+          "fp": 25,
+          "n": 80,
+          "precision": 0.375,
+          "recall": 0.45454545454545453,
+          "threshold": 0.7833107400816217,
+          "tn": 22,
+          "tp": 15
+        },
+        "qa": {
+          "f1": 0.6909090909090908,
+          "fn": 32,
+          "fp": 2,
+          "n": 80,
+          "precision": 0.95,
+          "recall": 0.5428571428571428,
+          "threshold": 0.8293188842745324,
+          "tn": 8,
+          "tp": 38
+        },
+        "summarization": {
+          "f1": 0.6597938144329897,
+          "fn": 25,
+          "fp": 8,
+          "n": 80,
+          "precision": 0.8,
+          "recall": 0.5614035087719298,
+          "threshold": 0.8446659906012949,
+          "tn": 15,
+          "tp": 32
+        }
+      },
+      "sample_count": 240
+    }
+  },
+  "headline_verdict": "feature in Beta with caveats; see per-stratum table",
+  "minimal_pairs": {
+    "encode_p50_ms": 0.41580572724342346,
+    "encode_p95_ms": 0.7722276262938975,
+    "headline_distribution": {
+      "groundedness_v2_no_nli": 420
+    },
+    "headline_used": "groundedness_v2_no_nli",
+    "latency_p50_ms": 3.7847626954317093,
+    "latency_p95_ms": 92.2672200948,
+    "nli_enabled": false,
+    "overall_accuracy": 0.7333333333333333,
+    "pair_count": 210,
+    "per_stratum": {
+      "date_swap": {
+        "ci_lower": 0.8333333333333334,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 0.9333333333333333
+      },
+      "entity_swap": {
+        "ci_lower": 0.6,
+        "ci_upper": 0.9,
+        "n": 30,
+        "paired_accuracy": 0.7666666666666667
+      },
+      "negation": {
+        "ci_lower": 0.7666666666666667,
+        "ci_upper": 1.0,
+        "n": 30,
+        "paired_accuracy": 0.9
+      },
+      "number_swap": {
+        "ci_lower": 0.5666666666666667,
+        "ci_upper": 0.8666666666666667,
+        "n": 30,
+        "paired_accuracy": 0.7333333333333333
+      },
+      "partial": {
+        "ci_lower": 0.7333333333333333,
+        "ci_upper": 0.9666666666666667,
+        "n": 30,
+        "paired_accuracy": 0.8666666666666667
+      },
+      "role_swap": {
+        "ci_lower": 0.03333333333333333,
+        "ci_upper": 0.3,
+        "n": 30,
+        "paired_accuracy": 0.16666666666666666
+      },
+      "unit_swap": {
+        "ci_lower": 0.6,
+        "ci_upper": 0.9,
+        "n": 30,
+        "paired_accuracy": 0.7666666666666667
+      }
+    },
+    "score_p50_ms": 3.250556066632271,
+    "score_p95_ms": 91.62251707166433,
+    "stratum_counts": {
+      "date_swap": 30,
+      "entity_swap": 30,
+      "negation": 30,
+      "number_swap": 30,
+      "partial": 30,
+      "role_swap": 30,
+      "unit_swap": 30
+    }
+  }
+}

@@ -1,0 +1,280 @@
+{
+  "all_targets_met": false,
+  "criteria": {
+    "factscore": {
+      "notes": "Per-claim atomic precision on FActScore biographies.",
+      "status": "skipped"
+    },
+    "halueval_qa": {
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.75,
+      "notes": "Phase J tightened paired ranking accuracy on HaluEval QA pairs.",
+      "value": 0.8
+    },
+    "latency_score_only": {
+      "applicable": false,
+      "applies_when": "nli_disabled",
+      "label": "fail",
+      "max": 100.0,
+      "met": false,
+      "metric": "p95_ms",
+      "notes": "Score-only request budget without NLI.",
+      "value": 124.9506745487454
+    },
+    "latency_with_nli": {
+      "applicable": true,
+      "applies_when": "nli_enabled",
+      "label": "pass",
+      "max": 250.0,
+      "met": true,
+      "metric": "p95_ms",
+      "notes": "Full-request budget with NLI verifier enabled.",
+      "value": 124.9506745487454
+    },
+    "minimal_pairs_hard_compound": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.55,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.6,
+      "n": 15,
+      "notes": "Phase J hard compound-fact pairs (multi-fact conjunctions with one fact flipped).",
+      "value": 1.0
+    },
+    "minimal_pairs_hard_dialogue_distributed": {
+      "ci_lower": 0.6666666666666666,
+      "ci_lower_min": 0.5,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.55,
+      "n": 15,
+      "notes": "Phase J distributed-dialogue pairs (evidence split across speaker turns).",
+      "value": 0.8666666666666667
+    },
+    "minimal_pairs_hard_structured": {
+      "ci_lower": 0.4666666666666667,
+      "ci_lower_min": 0.6,
+      "label": "partial",
+      "met": false,
+      "metric": "paired_accuracy",
+      "min": 0.65,
+      "n": 15,
+      "notes": "Phase J hard structured-source pairs (JSON, markdown table). Exercises the structured channel.",
+      "value": 0.7333333333333333
+    },
+    "minimal_pairs_lexical": {
+      "ci_lower": 0.8,
+      "ci_lower_min": 0.75,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.8,
+      "n": 60,
+      "notes": "Pairs in entity_swap, date_swap, number_swap, unit_swap.",
+      "value": 0.9833333333333334
+    },
+    "minimal_pairs_partial": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.6,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.65,
+      "n": 15,
+      "notes": "Partial-support pairs (one clause grounded, one not).",
+      "value": 1.0
+    },
+    "minimal_pairs_semantic": {
+      "ci_lower": 1.0,
+      "ci_lower_min": 0.65,
+      "label": "pass",
+      "met": true,
+      "metric": "paired_accuracy",
+      "min": 0.7,
+      "n": 30,
+      "notes": "Pairs in negation and role_swap (need NLI).",
+      "value": 1.0
+    },
+    "ragtruth": {
+      "label": "pass",
+      "met": true,
+      "metric": "span_f1_macro",
+      "min": 0.55,
+      "notes": "Macro span-F1 across qa/summarization/data2text strata.",
+      "value": 0.5992063492063492
+    }
+  },
+  "external": {
+    "factscore": null,
+    "halueval": {
+      "per_stratum": {
+        "dialogue": {
+          "f1": 0.4000000000000001,
+          "fn": 6,
+          "fp": 6,
+          "n": 20,
+          "precision": 0.4,
+          "recall": 0.4,
+          "threshold": 0.6509881431159253,
+          "tn": 4,
+          "tp": 4
+        },
+        "qa": {
+          "f1": 0.8000000000000002,
+          "fn": 2,
+          "fp": 2,
+          "n": 20,
+          "precision": 0.8,
+          "recall": 0.8,
+          "threshold": 0.817882335800927,
+          "tn": 8,
+          "tp": 8
+        },
+        "summarization": {
+          "f1": 0.5,
+          "fn": 5,
+          "fp": 5,
+          "n": 20,
+          "precision": 0.5,
+          "recall": 0.5,
+          "threshold": 0.8332206300531662,
+          "tn": 5,
+          "tp": 5
+        }
+      },
+      "sample_count": 60
+    },
+    "ragtruth": {
+      "per_stratum": {
+        "data2text": {
+          "f1": 0.25,
+          "fn": 2,
+          "fp": 4,
+          "n": 10,
+          "precision": 0.2,
+          "recall": 0.3333333333333333,
+          "threshold": 0.7176571037433024,
+          "tn": 3,
+          "tp": 1
+        },
+        "qa": {
+          "f1": 0.7142857142857143,
+          "fn": 4,
+          "fp": 0,
+          "n": 10,
+          "precision": 1.0,
+          "recall": 0.5555555555555556,
+          "threshold": 0.7679383874131989,
+          "tn": 1,
+          "tp": 5
+        },
+        "summarization": {
+          "f1": 0.8333333333333333,
+          "fn": 2,
+          "fp": 0,
+          "n": 10,
+          "precision": 1.0,
+          "recall": 0.7142857142857143,
+          "threshold": 0.8003256831364652,
+          "tn": 3,
+          "tp": 5
+        }
+      },
+      "sample_count": 30
+    }
+  },
+  "headline_verdict": "feature in Beta with NLI peer, ready for evidence/QA",
+  "minimal_pairs": {
+    "encode_p50_ms": 0.49940310418605804,
+    "encode_p95_ms": 0.6742835976183417,
+    "headline_distribution": {
+      "groundedness_v2": 300
+    },
+    "headline_used": "groundedness_v2",
+    "latency_p50_ms": 99.74236227571964,
+    "latency_p95_ms": 124.9506745487454,
+    "nli_enabled": true,
+    "overall_accuracy": 0.9533333333333334,
+    "pair_count": 150,
+    "per_stratum": {
+      "date_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "entity_swap": {
+        "ci_lower": 0.8,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 0.9333333333333333
+      },
+      "hard_compound_facts": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "hard_dialogue_distributed": {
+        "ci_lower": 0.6666666666666666,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 0.8666666666666667
+      },
+      "hard_structured": {
+        "ci_lower": 0.4666666666666667,
+        "ci_upper": 0.9333333333333333,
+        "n": 15,
+        "paired_accuracy": 0.7333333333333333
+      },
+      "negation": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "number_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "partial": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "role_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      },
+      "unit_swap": {
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "n": 15,
+        "paired_accuracy": 1.0
+      }
+    },
+    "score_p50_ms": 99.23992026597261,
+    "score_p95_ms": 124.40552348271036,
+    "stratum_counts": {
+      "date_swap": 15,
+      "entity_swap": 15,
+      "hard_compound_facts": 15,
+      "hard_dialogue_distributed": 15,
+      "hard_structured": 15,
+      "negation": 15,
+      "number_swap": 15,
+      "partial": 15,
+      "role_swap": 15,
+      "unit_swap": 15
+    }
+  }
+}

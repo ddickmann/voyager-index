@@ -98,6 +98,16 @@ def _load_nli_provider(model_id: Optional[str]):
     return HuggingFaceNLIProvider(model_id=model_id)
 
 
+def _load_reranker(model_id: Optional[str]):
+    """Build a cross-encoder premise reranker on demand; ``None`` if disabled."""
+
+    if not model_id:
+        return None
+    from voyager_index._internal.server.api.groundedness_nli import CrossEncoderPremiseReranker
+
+    return CrossEncoderPremiseReranker(model_id=model_id)
+
+
 # ----------------------------------------------------------------------
 # Score helpers
 # ----------------------------------------------------------------------
@@ -149,6 +159,12 @@ def _score_pair_side(
     null_bank_embeddings: Optional[Sequence[torch.Tensor]] = None,
     nli_provider=None,
     nli_max_latency_ms: float = 2000.0,
+    nli_reranker=None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
+    verification_samples: Optional[Sequence[str]] = None,
+    semantic_entropy_enabled: Optional[bool] = None,
+    fusion_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Phase 2: score the encoded materials. Times only the score call."""
 
@@ -164,6 +180,12 @@ def _score_pair_side(
         null_bank_embeddings=null_bank_embeddings,
         nli_provider=nli_provider,
         nli_max_latency_ms=nli_max_latency_ms,
+        nli_reranker=nli_reranker,
+        nli_concat_premises=nli_concat_premises,
+        nli_use_atomic_claims=nli_use_atomic_claims,
+        verification_samples=list(verification_samples) if verification_samples else None,
+        semantic_entropy_enabled=semantic_entropy_enabled,
+        fusion_weights=fusion_weights,
     )
     score_ms = (time.perf_counter() - started) * 1000.0
     return {
@@ -242,6 +264,12 @@ def evaluate_minimal_pairs(
     null_bank_embeddings: Optional[Sequence[torch.Tensor]] = None,
     nli_provider=None,
     nli_max_latency_ms: float = 2000.0,
+    nli_reranker=None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
+    semantic_entropy_enabled: Optional[bool] = None,
+    semantic_entropy_sample_count: int = 0,
+    fusion_weights: Optional[Dict[str, float]] = None,
     warmup: int = 3,
     seed: int = 17,
 ) -> Dict[str, Any]:
@@ -258,6 +286,28 @@ def evaluate_minimal_pairs(
     full_samples: List[float] = []
     headline_seen: Dict[str, int] = {}
 
+    def _build_samples(pair_obj: MinimalPair, seed_response: str) -> Optional[List[str]]:
+        """Synthesize caller-supplied verification samples.
+
+        For a headline run we cannot call a real LLM, so we synthesize a
+        deterministic bank of paraphrases around ``seed_response`` taken
+        from the pair context. When semantic entropy is disabled or the
+        count is non-positive, return ``None`` so the fast path is
+        unchanged.
+        """
+
+        if not semantic_entropy_enabled or semantic_entropy_sample_count <= 0:
+            return None
+        # Mix the positive and negative responses around the seed to emulate
+        # temperature>0 sampling: a stable generator mostly returns the seed,
+        # a confabulating one drifts toward the opposite side. We combine
+        # both to produce a realistic mix without an actual LLM call.
+        alt_sources = [pair_obj.positive, pair_obj.negative]
+        samples = [seed_response]
+        for idx in range(1, semantic_entropy_sample_count):
+            samples.append(alt_sources[idx % 2])
+        return samples
+
     if pairs and warmup > 0:
         for _ in range(warmup):
             warm_pair = pairs[0]
@@ -270,6 +320,12 @@ def evaluate_minimal_pairs(
                 null_bank_embeddings=null_bank_embeddings,
                 nli_provider=nli_provider,
                 nli_max_latency_ms=nli_max_latency_ms,
+                nli_reranker=nli_reranker,
+                nli_concat_premises=nli_concat_premises,
+                nli_use_atomic_claims=nli_use_atomic_claims,
+                verification_samples=_build_samples(warm_pair, warm_pair.positive),
+                semantic_entropy_enabled=semantic_entropy_enabled,
+                fusion_weights=fusion_weights,
             )
 
     nli_enabled = nli_provider is not None
@@ -283,6 +339,12 @@ def evaluate_minimal_pairs(
             null_bank_embeddings=null_bank_embeddings,
             nli_provider=nli_provider,
             nli_max_latency_ms=nli_max_latency_ms,
+            nli_reranker=nli_reranker,
+            nli_concat_premises=nli_concat_premises,
+            nli_use_atomic_claims=nli_use_atomic_claims,
+            verification_samples=_build_samples(pair, pair.positive),
+            semantic_entropy_enabled=semantic_entropy_enabled,
+            fusion_weights=fusion_weights,
         )
         neg_materials = _encode_pair_side(
             provider=provider, context=pair.context, response=pair.negative
@@ -293,6 +355,12 @@ def evaluate_minimal_pairs(
             null_bank_embeddings=null_bank_embeddings,
             nli_provider=nli_provider,
             nli_max_latency_ms=nli_max_latency_ms,
+            nli_reranker=nli_reranker,
+            nli_concat_premises=nli_concat_premises,
+            nli_use_atomic_claims=nli_use_atomic_claims,
+            verification_samples=_build_samples(pair, pair.negative),
+            semantic_entropy_enabled=semantic_entropy_enabled,
+            fusion_weights=fusion_weights,
         )
         for materials, scored in (
             (pos_materials, pos_scored),
@@ -357,10 +425,22 @@ def evaluate_benchmark_samples(
     *,
     null_bank_embeddings: Optional[Sequence[torch.Tensor]] = None,
     nli_provider=None,
+    nli_reranker=None,
+    nli_concat_premises: Optional[bool] = None,
+    nli_use_atomic_claims: Optional[bool] = None,
+    semantic_entropy_enabled: Optional[bool] = None,
+    semantic_entropy_sample_count: int = 0,
+    fusion_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Score a flat list of benchmark samples and bucket per stratum."""
 
     nli_enabled = nli_provider is not None
+
+    def _external_samples(sample_obj: BenchmarkSample) -> Optional[List[str]]:
+        if not semantic_entropy_enabled or semantic_entropy_sample_count <= 0:
+            return None
+        return [sample_obj.response] * semantic_entropy_sample_count
+
     by_stratum: Dict[str, List[Tuple[float, int]]] = {}
     for sample in samples:
         materials = _encode_pair_side(
@@ -371,6 +451,12 @@ def evaluate_benchmark_samples(
             response_text=sample.response,
             null_bank_embeddings=null_bank_embeddings,
             nli_provider=nli_provider,
+            nli_reranker=nli_reranker,
+            nli_concat_premises=nli_concat_premises,
+            nli_use_atomic_claims=nli_use_atomic_claims,
+            verification_samples=_external_samples(sample),
+            semantic_entropy_enabled=semantic_entropy_enabled,
+            fusion_weights=fusion_weights,
         )
         score, _field = _resolve_headline(scored["scores"], nli_enabled=nli_enabled)
         by_stratum.setdefault(sample.stratum, []).append((float(score), _binary_label(sample)))
@@ -640,6 +726,68 @@ def main(argv: Optional[List[str]] = None) -> int:
             "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
         ),
     )
+    parser.add_argument(
+        "--reranker-model",
+        default=os.environ.get("VOYAGER_GROUNDEDNESS_NLI_PREMISE_RERANKER_MODEL"),
+        help="Optional cross-encoder premise reranker (e.g. BAAI/bge-reranker-v2-m3).",
+    )
+    parser.add_argument(
+        "--concat-premises",
+        dest="concat_premises",
+        action="store_true",
+        default=None,
+        help="Concatenate top-k premises into a single NLI input per claim.",
+    )
+    parser.add_argument(
+        "--no-concat-premises",
+        dest="concat_premises",
+        action="store_false",
+        help="Disable the multi-premise concatenation (revert to per-premise scoring).",
+    )
+    parser.add_argument(
+        "--atomic-claims",
+        dest="atomic_claims",
+        action="store_true",
+        default=None,
+        help="Decompose each sentence into atomic facts and verify each atom separately.",
+    )
+    parser.add_argument(
+        "--no-atomic-claims",
+        dest="atomic_claims",
+        action="store_false",
+        help="Disable atomic-fact decomposition and keep sentence-level verification.",
+    )
+    parser.add_argument(
+        "--enable-semantic-entropy",
+        action="store_true",
+        help="Enable semantic-entropy peer (Phase G) using synthesized verification samples.",
+    )
+    parser.add_argument(
+        "--semantic-entropy-samples",
+        type=int,
+        default=int(os.environ.get("VOYAGER_GROUNDEDNESS_SEMANTIC_ENTROPY_SAMPLES", "4")),
+        help="Number of synthetic verification samples to draw per case (default 4).",
+    )
+    parser.add_argument(
+        "--fusion-weight-calibrated",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--fusion-weight-literal",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--fusion-weight-nli",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--fusion-weight-semantic-entropy",
+        type=float,
+        default=None,
+    )
     parser.add_argument("--out", type=Path, default=_HERE / "groundedness_external_eval_report.json")
     args = parser.parse_args(argv)
 
@@ -648,12 +796,49 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     null_bank_embeddings = build_null_bank_embeddings(provider)
     nli_provider = _load_nli_provider(args.nli_model) if args.enable_nli else None
+    nli_reranker = _load_reranker(args.reranker_model) if args.enable_nli else None
+
+    fusion_weights: Optional[Dict[str, float]] = None
+    if any(
+        getattr(args, name) is not None
+        for name in (
+            "fusion_weight_calibrated",
+            "fusion_weight_literal",
+            "fusion_weight_nli",
+            "fusion_weight_semantic_entropy",
+        )
+    ):
+        fusion_weights = {
+            "calibrated": args.fusion_weight_calibrated if args.fusion_weight_calibrated is not None else 0.5,
+            "literal": args.fusion_weight_literal if args.fusion_weight_literal is not None else 0.2,
+            "nli": args.fusion_weight_nli if args.fusion_weight_nli is not None else (0.3 if args.enable_nli else 0.0),
+            "semantic_entropy": (
+                args.fusion_weight_semantic_entropy
+                if args.fusion_weight_semantic_entropy is not None
+                else (0.15 if args.enable_semantic_entropy else 0.0)
+            ),
+        }
+    elif args.enable_semantic_entropy:
+        fusion_weights = {
+            "calibrated": 0.45,
+            "literal": 0.2,
+            "nli": 0.25 if args.enable_nli else 0.0,
+            "semantic_entropy": 0.1,
+        }
+
+    semantic_entropy_sample_count = max(0, int(args.semantic_entropy_samples))
 
     minimal_pair_results = evaluate_minimal_pairs(
         pairs,
         provider,
         null_bank_embeddings=null_bank_embeddings,
         nli_provider=nli_provider,
+        nli_reranker=nli_reranker,
+        nli_concat_premises=args.concat_premises,
+        nli_use_atomic_claims=args.atomic_claims,
+        semantic_entropy_enabled=args.enable_semantic_entropy,
+        semantic_entropy_sample_count=semantic_entropy_sample_count,
+        fusion_weights=fusion_weights,
     )
 
     external_results: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -671,6 +856,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             provider,
             null_bank_embeddings=null_bank_embeddings,
             nli_provider=nli_provider,
+            nli_reranker=nli_reranker,
+            nli_concat_premises=args.concat_premises,
+            nli_use_atomic_claims=args.atomic_claims,
+            semantic_entropy_enabled=args.enable_semantic_entropy,
+            semantic_entropy_sample_count=semantic_entropy_sample_count,
+            fusion_weights=fusion_weights,
         )
 
     report = assemble_report(

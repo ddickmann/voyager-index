@@ -362,6 +362,90 @@ _ROLE_TEMPLATES = _ROLE_TEMPLATES + _HARD_ROLE_TEMPLATES
 _PARTIAL_TEMPLATES = _PARTIAL_TEMPLATES + _HARD_PARTIAL_TEMPLATES
 
 
+# ----------------------------------------------------------------------
+# Phase J: additional hard families targeting compound facts, structured
+# sources (JSON / markdown table), and distributed dialogue evidence.
+# ----------------------------------------------------------------------
+
+_HARD_COMPOUND_FACT_TEMPLATES = [
+    (
+        "Research log entry #{value} lists three facts about the {project} expedition. "
+        "The team departed from {city} on {month} {day}, {year} under the command of Dr. {name}. "
+        "Samples were collected across {country} before returning to port. "
+        "The mission report filed on return is archived under log entry #{value}.",
+        "The {project} expedition departed from {city} on {month} {day}, {year} under Dr. {name} and collected samples in {country}.",
+        "The {project} expedition departed from {city} on {month} {day}, {year} under Dr. {name} and collected samples in {fake_country}.",
+        "Three facts are conjoined; only the country is flipped. All individual surface tokens occur in the context. [HARD]",
+    ),
+    (
+        "Shipping manifest {value} lists the {company} convoy logistics. "
+        "{value} vessels departed {city} in {month} {year} carrying {alt_value} tonnes of cargo. "
+        "The manifest was countersigned by {name}. "
+        "Cross-references to manifests from adjacent seasons appear in the appendix.",
+        "The {company} convoy had {value} vessels departing {city} in {month} {year} with {alt_value} tonnes of cargo, signed by {name}.",
+        "The {company} convoy had {value} vessels departing {city} in {month} {year} with {value} tonnes of cargo, signed by {name}.",
+        "Four facts conjoined; the numeric tonnage is flipped to the vessel count distractor. [HARD]",
+    ),
+]
+
+_HARD_STRUCTURED_TEMPLATES = [
+    (
+        '{{"item": "{project}", "region": "{country}", "year": {year}, "value": {value}, "unit": "megawatts"}}',
+        "{project} produced {value} megawatts in {country} in {year}.",
+        "{project} produced {alt_value} megawatts in {country} in {year}.",
+        "Structured JSON source: numeric value is flipped. Requires the structured-source channel. [HARD]",
+    ),
+    (
+        "| Project | Region | Year | Value |\n"
+        "|---------|--------|------|-------|\n"
+        "| {project} | {country} | {year} | {value} |\n"
+        "| {fake_project} | {fake_country} | {alt_year} | {alt_value} |",
+        "The {project} project value in {country} for {year} was {value}.",
+        "The {project} project value in {country} for {year} was {alt_value}.",
+        "Markdown table: row/column lookup required; negative steals the alternative row's value. [HARD]",
+    ),
+    (
+        '{{"name": "{name}", "institution": "{institution}", "role": "{role_a}", "year_from": {year_a}, "year_to": {year_b}}}',
+        "{name} served as the {role_a} of the {institution} from {year_a} to {year_b}.",
+        "{name} served as the {fake_role} of the {institution} from {year_a} to {year_b}.",
+        "Structured JSON source: role is flipped to an unrelated role. [HARD]",
+    ),
+]
+
+_HARD_DIALOGUE_DISTRIBUTED_TEMPLATES = [
+    (
+        "Transcript excerpt:\n"
+        "Moderator: Let us start with the timeline.\n"
+        "Dr. {name}: The {study} trial began recruiting in {year}.\n"
+        "Moderator: And the primary endpoint?\n"
+        "Dr. {name}: Hospitalisations were reduced by a clinically meaningful margin.\n"
+        "Moderator: Any secondary signals?\n"
+        "Dr. {name}: In younger subgroups we saw no significant effect, but the primary held.",
+        "The {study} trial reduced hospitalisations; it began recruiting in {year}.",
+        "The {study} trial reduced hospitalisations; it began recruiting in {alt_year}.",
+        "Evidence is split across two speaker turns; the negative flips the start year. [HARD]",
+    ),
+    (
+        "Transcript excerpt:\n"
+        "Moderator: Tell me about the {project} team.\n"
+        "{a}: I served as lead navigator through the {country} leg.\n"
+        "Moderator: And the mentorship chain?\n"
+        "{b}: {a} mentored me during that leg and I took over the {city} office afterwards.\n"
+        "Moderator: Thank you both.",
+        "{b} was mentored by {a} during the {project} program.",
+        "{a} was mentored by {b} during the {project} program.",
+        "Mentorship evidence sits in {b}'s turn; positive preserves the role order. [HARD]",
+    ),
+]
+
+
+_STRUCTURED_EXTRA_SLOTS_KEYS = ("fake_project",)
+_FAKE_PROJECTS = [
+    "Halcyon II", "Meridian II", "Calypso II", "Atlas II",
+    "Verdant II", "Luminary II", "Chronos II", "Aetherwave II",
+]
+
+
 _NAMES = [
     "Alexandra Morton", "Benedikt Hauser", "Camille Okafor", "Dilan Petrov",
     "Eira Nakamura", "Felipe Villaverde", "Gisele Toussaint", "Hiro Tanaka",
@@ -546,6 +630,7 @@ def _slot_factory(rng: random.Random) -> dict:
         "sequel": rng.choice(_SEQUELS),
         "fake_sequel": rng.choice(_FAKE_SEQUELS),
         "publisher": rng.choice(_PUBLISHERS),
+        "fake_project": rng.choice(_FAKE_PROJECTS),
     }
 
 
@@ -557,6 +642,9 @@ _STRATA = [
     ("negation", _NEGATION_TEMPLATES),
     ("role_swap", _ROLE_TEMPLATES),
     ("partial", _PARTIAL_TEMPLATES),
+    ("hard_compound_facts", _HARD_COMPOUND_FACT_TEMPLATES),
+    ("hard_structured", _HARD_STRUCTURED_TEMPLATES),
+    ("hard_dialogue_distributed", _HARD_DIALOGUE_DISTRIBUTED_TEMPLATES),
 ]
 
 
