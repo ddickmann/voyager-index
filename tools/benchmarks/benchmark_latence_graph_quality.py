@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from voyager_index._internal.inference.search_pipeline import SearchPipeline
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 _REPRESENTATIVE_FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "latence_graph_quality_eval.json"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -19,6 +20,13 @@ from .corpus import DEFAULT_NPZ, load_corpus
 from .layout import _index_dir, assign_storage_shards
 
 log = logging.getLogger(__name__)
+
+
+def _mem_gb() -> float:
+    try:
+        return int(open("/proc/self/statm").read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e9
+    except Exception:
+        return -1.0
 
 def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") -> Path:
     index_dir = _index_dir(cfg)
