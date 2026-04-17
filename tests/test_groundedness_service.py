@@ -9,6 +9,15 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from voyager_index._internal.server.api.groundedness import (
+    SupportUnitInput,
+    count_text_tokens,
+    encode_texts,
+    score_groundedness,
+    score_groundedness_chunked,
+    segment_text,
+    tokenize_text,
+)
 from voyager_index._internal.server.api.models import CreateCollectionRequest, GroundednessRequest, PointVector
 from voyager_index._internal.server.api.service import SearchService, ValidationError
 from voyager_index._internal.server.main import create_app
@@ -145,7 +154,7 @@ def test_groundedness_chunk_id_mode_late_interaction_is_heatmap_ready(tmp_path: 
     assert grounded_payload["scores"]["reverse_context"] > ungrounded_payload["scores"]["reverse_context"]
 
 
-def test_groundedness_raw_context_mode_matches_response_shape(tmp_path: Path) -> None:
+def test_groundedness_raw_context_mode_defaults_to_packed_windows(tmp_path: Path) -> None:
     provider = DummyGroundednessProvider()
 
     with _patch_provider(provider):
@@ -158,7 +167,6 @@ def test_groundedness_raw_context_mode_matches_response_shape(tmp_path: Path) ->
                     "raw_context": "alpha supports claim. beta unrelated note.",
                     "response_text": "alpha supports claim",
                     "query_text": "who supports claim",
-                    "segmentation_mode": "sentence",
                 },
             )
 
@@ -168,6 +176,172 @@ def test_groundedness_raw_context_mode_matches_response_shape(tmp_path: Path) ->
     assert payload["mode"] == "raw_context"
     assert all(unit["source_mode"] == "raw_context" for unit in payload["support_units"])
     assert payload["eligibility"]["vector_source"] == "encoded_raw_context"
+    assert len(payload["support_units"]) == 1
+    assert payload["support_units"][0]["text"] == "alpha supports claim. beta unrelated note."
+
+
+def test_groundedness_raw_context_chunk_budget_is_user_configurable(tmp_path: Path) -> None:
+    provider = DummyGroundednessProvider()
+
+    with _patch_provider(provider):
+        with _create_client(tmp_path) as client:
+            assert client.post("/collections/li", json={"dimension": provider.dim, "kind": "late_interaction"}).status_code == 200
+
+            response = client.post(
+                "/collections/li/groundedness",
+                json={
+                    "raw_context": "alpha supports claim. beta supports note. gamma supports proof.",
+                    "response_text": "gamma supports proof",
+                    "query_text": "who supports proof",
+                    "raw_context_chunk_tokens": 4,
+                },
+            )
+
+    assert response.status_code == 200
+    payload = response.json()
+    _assert_heatmap_shape(payload)
+    assert len(payload["support_units"]) == 3
+    assert [unit["text"] for unit in payload["support_units"]] == [
+        "alpha supports claim.",
+        "beta supports note.",
+        "gamma supports proof.",
+    ]
+    assert [unit["offset_start"] for unit in payload["support_units"]] == [0, 22, 42]
+
+
+def test_groundedness_packed_window_merge_matches_direct_reference() -> None:
+    provider = DummyGroundednessProvider()
+    raw_context = "alpha supports claim. beta unrelated note. gamma supports proof."
+    response_text = "gamma supports proof"
+
+    segments = segment_text(
+        raw_context,
+        "sentence_packed",
+        provider=provider,
+        chunk_token_budget=4,
+    )
+    assert len(segments) == 3
+
+    support_embeddings = encode_texts(provider, [segment["text"] for segment in segments], is_query=False)
+    support_units = [
+        SupportUnitInput(
+            support_id=f"raw-{idx}",
+            text=segment["text"],
+            embeddings=embedding,
+            tokens=tokenize_text(provider, segment["text"], expected_len=int(embedding.shape[0])),
+            source_mode="raw_context",
+            offset_start=int(segment["offset_start"]),
+            offset_end=int(segment["offset_end"]),
+        )
+        for idx, (segment, embedding) in enumerate(zip(segments, support_embeddings))
+    ]
+
+    response_embeddings = encode_texts(provider, [response_text], is_query=False)[0]
+    response_tokens = tokenize_text(provider, response_text, expected_len=int(response_embeddings.shape[0]))
+
+    merged = score_groundedness_chunked(
+        support_batches=[[unit] for unit in support_units],
+        response_embeddings=response_embeddings,
+        response_tokens=response_tokens,
+        evidence_limit=4,
+        primary_metric="reverse_context",
+    )
+    reference = score_groundedness(
+        support_units=support_units,
+        response_embeddings=response_embeddings,
+        response_tokens=response_tokens,
+        evidence_limit=4,
+        primary_metric="reverse_context",
+    )
+
+    assert merged["scores"]["reverse_context"] == pytest.approx(reference["scores"]["reverse_context"], abs=1e-6)
+    assert merged["scores"]["primary_score"] == pytest.approx(reference["scores"]["primary_score"], abs=1e-6)
+    assert len(merged["response_tokens"]) == len(reference["response_tokens"])
+    for merged_row, reference_row in zip(merged["response_tokens"], reference["response_tokens"]):
+        assert merged_row["reverse_context"] == pytest.approx(reference_row["reverse_context"], abs=1e-6)
+        assert merged_row["support_unit_index"] == reference_row["support_unit_index"]
+        assert merged_row["support_token_index"] == reference_row["support_token_index"]
+        assert merged_row["support_token"] == reference_row["support_token"]
+
+    assert [
+        (
+            evidence["response_token_index"],
+            evidence["support_unit_index"],
+            evidence["support_token_index"],
+        )
+        for evidence in merged["top_evidence"]
+    ] == [
+        (
+            evidence["response_token_index"],
+            evidence["support_unit_index"],
+            evidence["support_token_index"],
+        )
+        for evidence in reference["top_evidence"]
+    ]
+
+
+def test_groundedness_token_helpers_ignore_mapping_tokenize_outputs() -> None:
+    class MappingTokenizer:
+        def __call__(self, text: str, add_special_tokens: bool = True, truncation: bool = False):
+            token_count = len(_TOKEN_RE.findall(text))
+            return {"input_ids": list(range(token_count))}
+
+        def convert_ids_to_tokens(self, input_ids):
+            return [f"tok_{idx}" for idx, _value in enumerate(input_ids)]
+
+    class MappingTokenProvider(DummyGroundednessProvider):
+        def __init__(self):
+            super().__init__()
+            self.tokenizer = MappingTokenizer()
+
+        def tokenize(self, text: str):
+            token_count = len(_TOKEN_RE.findall(text))
+            return {
+                "input_ids": [[idx for idx in range(token_count)]],
+                "attention_mask": [[1] * token_count],
+            }
+
+    provider = MappingTokenProvider()
+    text = "alpha supports claim. beta unrelated note."
+
+    assert count_text_tokens(provider, text) == len(_TOKEN_RE.findall(text))
+    assert tokenize_text(provider, text) == [f"tok_{idx}" for idx in range(len(_TOKEN_RE.findall(text)))]
+
+
+def test_groundedness_warns_when_packed_budget_exceeds_encoder_limit(tmp_path: Path) -> None:
+    class LimitedTokenizer:
+        model_max_length = 4
+
+        def __call__(self, text: str, add_special_tokens: bool = True, truncation: bool = False):
+            return {"input_ids": list(range(len(_TOKEN_RE.findall(text))))}
+
+        def convert_ids_to_tokens(self, input_ids):
+            return [f"tok_{idx}" for idx, _value in enumerate(input_ids)]
+
+    class LimitedBudgetProvider(DummyGroundednessProvider):
+        def __init__(self):
+            super().__init__()
+            self.tokenizer = LimitedTokenizer()
+
+    provider = LimitedBudgetProvider()
+
+    with _patch_provider(provider):
+        with _create_client(tmp_path) as client:
+            assert client.post("/collections/li", json={"dimension": provider.dim, "kind": "late_interaction"}).status_code == 200
+
+            response = client.post(
+                "/collections/li/groundedness",
+                json={
+                    "raw_context": "alpha supports claim. beta supports note.",
+                    "response_text": "alpha supports claim",
+                    "query_text": "who supports claim",
+                    "raw_context_chunk_tokens": 8,
+                },
+            )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any("exceeds the groundedness encoder token limit" in warning for warning in payload["warnings"])
 
 
 def test_groundedness_validation_matrix_exposes_breakpoints(tmp_path: Path) -> None:

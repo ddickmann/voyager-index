@@ -59,7 +59,15 @@ from .models import (
     SearchStrategy,
     TransportVectorPayload,
 )
-from .groundedness import SupportUnitInput, encode_texts, score_groundedness, segment_text, tokenize_text
+from .groundedness import (
+    SupportUnitInput,
+    encode_texts,
+    provider_token_limit,
+    score_groundedness,
+    score_groundedness_chunked,
+    segment_text,
+    tokenize_text,
+)
 
 logger = logging.getLogger(__name__)
 _TASK_MAX_AGE_S = 3600
@@ -3069,7 +3077,25 @@ class SearchService:
                         )
                     )
             else:
-                segments = segment_text(request.raw_context or "", request.segmentation_mode.value)
+                encoder_token_limit = provider_token_limit(provider)
+                if (
+                    request.segmentation_mode.value == "sentence_packed"
+                    and encoder_token_limit is not None
+                    and request.raw_context_chunk_tokens > encoder_token_limit
+                ):
+                    warnings.append(
+                        "raw_context_chunk_tokens={} exceeds the groundedness encoder token limit {}; "
+                        "support windows may be truncated during encoding. Lower the budget or use a longer-context encoder.".format(
+                            request.raw_context_chunk_tokens,
+                            encoder_token_limit,
+                        )
+                    )
+                segments = segment_text(
+                    request.raw_context or "",
+                    request.segmentation_mode.value,
+                    provider=provider,
+                    chunk_token_budget=request.raw_context_chunk_tokens,
+                )
                 if not segments:
                     raise ValidationError("raw_context did not produce any support units")
                 segment_texts = [segment["text"] for segment in segments]
@@ -3125,16 +3151,28 @@ class SearchService:
                     expected_len=int(query_embeddings.shape[0]),
                 )
 
-            scored = score_groundedness(
-                support_units=support_units,
-                response_embeddings=response_embeddings,
-                response_tokens=response_tokens,
-                query_embeddings=query_embeddings,
-                query_tokens=query_tokens,
-                evidence_limit=request.evidence_limit,
-                primary_metric=request.primary_metric.value,
-                debug_dense_matrices=request.debug_dense_matrices,
-            )
+            if request.chunk_ids:
+                scored = score_groundedness(
+                    support_units=support_units,
+                    response_embeddings=response_embeddings,
+                    response_tokens=response_tokens,
+                    query_embeddings=query_embeddings,
+                    query_tokens=query_tokens,
+                    evidence_limit=request.evidence_limit,
+                    primary_metric=request.primary_metric.value,
+                    debug_dense_matrices=request.debug_dense_matrices,
+                )
+            else:
+                scored = score_groundedness_chunked(
+                    support_batches=[[unit] for unit in support_units],
+                    response_embeddings=response_embeddings,
+                    response_tokens=response_tokens,
+                    query_embeddings=query_embeddings,
+                    query_tokens=query_tokens,
+                    evidence_limit=request.evidence_limit,
+                    primary_metric=request.primary_metric.value,
+                    debug_dense_matrices=request.debug_dense_matrices,
+                )
             warnings.extend(scored.pop("warnings", []))
             warnings = list(dict.fromkeys(warnings))
 

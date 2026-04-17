@@ -31,7 +31,10 @@ from research.triangular_maxsim.groundedness_long_ambiguous_cases import LONG_AM
 from voyager_index._internal.server.api.groundedness import (  # noqa: E402
     SupportUnitInput,
     encode_texts,
+    provider_token_limit,
     score_groundedness,
+    score_groundedness_chunked,
+    segment_text,
     tokenize_text,
 )
 
@@ -40,6 +43,8 @@ GO_NO_GO = {
     "max_p95_latency_ms": 25.0,
 }
 CASE_BY_ID = {case.id: case for case in CASES}
+DEFAULT_RAW_CONTEXT_CHUNK_TOKENS = 1024
+PREVIOUS_LONG_AMBIGUOUS_REPORT = _HERE / "groundedness_service_validation__long_ambiguous_beta.json"
 
 
 def auroc(scores: Sequence[float], labels: Sequence[int]) -> float:
@@ -128,6 +133,129 @@ def _build_long_context_sections(provider, case_spec) -> tuple[List[str], int]:
     return prefix + core_sections + suffix, token_count
 
 
+def _render_long_context(provider, case_spec) -> tuple[str, int]:
+    section_texts, context_token_count = _build_long_context_sections(provider, case_spec)
+    return "\n\n".join(section_texts), context_token_count
+
+
+def _build_packed_support_units(
+    *,
+    case_id: str,
+    raw_context: str,
+    provider,
+    document_prompt_name: Optional[str],
+    chunk_token_budget: int,
+) -> List[SupportUnitInput]:
+    segments = segment_text(
+        raw_context,
+        "sentence_packed",
+        provider=provider,
+        chunk_token_budget=chunk_token_budget,
+    )
+    segment_texts = [segment["text"] for segment in segments]
+    support_embeddings = encode_texts(
+        provider,
+        segment_texts,
+        is_query=False,
+        prompt_name=document_prompt_name,
+    )
+    return [
+        SupportUnitInput(
+            support_id=f"{case_id}-packed-{idx}",
+            chunk_id=None,
+            source_mode="raw_context",
+            text=segment["text"],
+            embeddings=embedding,
+            tokens=tokenize_text(provider, segment["text"], expected_len=int(embedding.shape[0])),
+            offset_start=int(segment["offset_start"]),
+            offset_end=int(segment["offset_end"]),
+        )
+        for idx, (segment, embedding) in enumerate(zip(segments, support_embeddings))
+    ]
+
+
+def _select_hardest_previous_case_row() -> Optional[Dict[str, Any]]:
+    if not PREVIOUS_LONG_AMBIGUOUS_REPORT.exists():
+        return None
+    payload = json.loads(PREVIOUS_LONG_AMBIGUOUS_REPORT.read_text(encoding="utf-8"))
+    rows = payload.get("rows") or []
+    if not rows:
+        return None
+
+    non_grounded = [row for row in rows if row.get("label") != "grounded"]
+    candidates = non_grounded or rows
+    return max(
+        candidates,
+        key=lambda row: (
+            float(row["scores"]["reverse_context"]),
+            int(row.get("support_unit_count", 0)),
+        ),
+    )
+
+
+def _verify_chunked_merge(
+    *,
+    support_units: Sequence[SupportUnitInput],
+    response_embeddings: torch.Tensor,
+    response_tokens: Sequence[str],
+    query_embeddings: Optional[torch.Tensor],
+    query_tokens: Optional[Sequence[str]],
+) -> Dict[str, Any]:
+    chunked = score_groundedness_chunked(
+        support_batches=[[unit] for unit in support_units],
+        response_embeddings=response_embeddings,
+        response_tokens=response_tokens,
+        query_embeddings=query_embeddings,
+        query_tokens=query_tokens,
+        evidence_limit=3,
+        primary_metric="reverse_context",
+        debug_dense_matrices=False,
+    )
+    reference = score_groundedness(
+        support_units=support_units,
+        response_embeddings=response_embeddings,
+        response_tokens=response_tokens,
+        query_embeddings=query_embeddings,
+        query_tokens=query_tokens,
+        evidence_limit=3,
+        primary_metric="reverse_context",
+        debug_dense_matrices=False,
+    )
+
+    token_diffs = [
+        abs(chunked_row["reverse_context"] - reference_row["reverse_context"])
+        for chunked_row, reference_row in zip(chunked["response_tokens"], reference["response_tokens"])
+    ]
+    evidence_matches = all(
+        chunked_row["support_unit_index"] == reference_row["support_unit_index"]
+        and chunked_row["support_token_index"] == reference_row["support_token_index"]
+        for chunked_row, reference_row in zip(chunked["response_tokens"], reference["response_tokens"])
+    )
+    return {
+        "per_token_max_abs_diff": float(max(token_diffs) if token_diffs else 0.0),
+        "scalar_abs_diff": float(
+            abs(chunked["scores"]["reverse_context"] - reference["scores"]["reverse_context"])
+        ),
+        "evidence_mappings_match": evidence_matches,
+        "top_evidence_matches": [
+            (
+                evidence["response_token_index"],
+                evidence["support_unit_index"],
+                evidence["support_token_index"],
+            )
+            for evidence in chunked["top_evidence"]
+        ]
+        == [
+            (
+                evidence["response_token_index"],
+                evidence["support_unit_index"],
+                evidence["support_token_index"],
+            )
+            for evidence in reference["top_evidence"]
+        ],
+    }
+
+
 def score_embedded_case(embedded_case) -> Dict[str, Any]:
     support_units = [
         SupportUnitInput(
@@ -168,31 +296,22 @@ def score_embedded_case(embedded_case) -> Dict[str, Any]:
     }
 
 
-def score_long_context_case(
+def _score_packed_long_context_case(
     case_spec,
     provider,
     *,
     query_prompt_name: Optional[str],
     document_prompt_name: Optional[str],
-) -> Dict[str, Any]:
-    section_texts, context_token_count = _build_long_context_sections(provider, case_spec)
-    support_embeddings = encode_texts(
-        provider,
-        section_texts,
-        is_query=False,
-        prompt_name=document_prompt_name,
+    chunk_token_budget: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    raw_context, context_token_count = _render_long_context(provider, case_spec)
+    support_units = _build_packed_support_units(
+        case_id=case_spec.id,
+        raw_context=raw_context,
+        provider=provider,
+        document_prompt_name=document_prompt_name,
+        chunk_token_budget=chunk_token_budget,
     )
-    support_units = [
-        SupportUnitInput(
-            support_id=f"{case_spec.id}-section-{idx}",
-            chunk_id=None,
-            source_mode="raw_context",
-            text=text,
-            embeddings=embedding,
-            tokens=tokenize_text(provider, text, expected_len=int(embedding.shape[0])),
-        )
-        for idx, (text, embedding) in enumerate(zip(section_texts, support_embeddings))
-    ]
 
     query_embeddings = encode_texts(
         provider,
@@ -210,8 +329,8 @@ def score_long_context_case(
     response_tokens = tokenize_text(provider, case_spec.response, expected_len=int(response_embeddings.shape[0]))
 
     start = time.perf_counter()
-    result = score_groundedness(
-        support_units=support_units,
+    result = score_groundedness_chunked(
+        support_batches=[[unit] for unit in support_units],
         response_embeddings=response_embeddings,
         response_tokens=response_tokens,
         query_embeddings=query_embeddings,
@@ -221,7 +340,7 @@ def score_long_context_case(
         debug_dense_matrices=False,
     )
     latency_ms = (time.perf_counter() - start) * 1000.0
-    return {
+    row = {
         "id": case_spec.id,
         "source": ", ".join(CASE_BY_ID[case_id].source for case_id in case_spec.core_case_ids),
         "label": case_spec.label,
@@ -234,8 +353,35 @@ def score_long_context_case(
         "latency_ms": latency_ms,
         "notes": case_spec.notes,
         "context_token_count": context_token_count,
-        "support_unit_count": len(section_texts),
+        "support_unit_count": len(support_units),
+        "raw_context_chunk_tokens": chunk_token_budget,
     }
+    details = {
+        "support_units": support_units,
+        "query_embeddings": query_embeddings,
+        "query_tokens": query_tokens,
+        "response_embeddings": response_embeddings,
+        "response_tokens": response_tokens,
+    }
+    return row, details
+
+
+def score_long_context_case(
+    case_spec,
+    provider,
+    *,
+    query_prompt_name: Optional[str],
+    document_prompt_name: Optional[str],
+    chunk_token_budget: int,
+) -> Dict[str, Any]:
+    row, _details = _score_packed_long_context_case(
+        case_spec,
+        provider,
+        query_prompt_name=query_prompt_name,
+        document_prompt_name=document_prompt_name,
+        chunk_token_budget=chunk_token_budget,
+    )
+    return row
 
 
 def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -254,6 +400,7 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "latency_p95_ms": float(np.percentile([row["latency_ms"] for row in rows], 95)),
         "mean_context_tokens": float(np.mean([row["context_token_count"] for row in rows])),
         "max_context_tokens": int(max(row["context_token_count"] for row in rows)),
+        "mean_support_units": float(np.mean([row["support_unit_count"] for row in rows])),
     }
     metrics["gate_anchor_auroc_pass"] = (
         metrics["AUROC_reverse_context"] is not None
@@ -313,6 +460,9 @@ def render_markdown(
     model_name: str,
     use_prompts: bool,
     profile: str,
+    raw_context_chunk_tokens: int,
+    encoder_token_limit: Optional[int],
+    hardest_case_comparison: Optional[Dict[str, Any]] = None,
 ) -> str:
     metrics = summary["metrics"]
     lines = [
@@ -321,12 +471,15 @@ def render_markdown(
         f"- profile: `{profile}`",
         f"- model: `{model_name}`",
         f"- prompts: `{use_prompts}`",
+        f"- packed raw_context chunk tokens: `{raw_context_chunk_tokens}`",
+        f"- encoder token limit: `{encoder_token_limit}`",
         f"- anchor count: `{metrics['anchor_count']}`",
         f"- anchor AUROC (reverse_context): `{_fmt_metric(metrics['AUROC_reverse_context'])}`",
         f"- anchor AUROC (reverse_query_context): `{_fmt_metric(metrics['AUROC_reverse_query_context'])}`",
         f"- anchor AUROC (triangular): `{_fmt_metric(metrics['AUROC_triangular'])}`",
         f"- latency p50/p95 ms: `{metrics['latency_p50_ms']:.2f}` / `{metrics['latency_p95_ms']:.2f}`",
         f"- mean/max context tokens: `{metrics['mean_context_tokens']:.0f}` / `{metrics['max_context_tokens']}`",
+        f"- mean packed support units: `{metrics['mean_support_units']:.1f}`",
         f"- user-facing go/no-go: `{metrics['go_for_user_facing']}`",
         "",
         "## Difficulty Summary",
@@ -341,6 +494,40 @@ def render_markdown(
     lines.extend(
         [
             "",
+            "## Hardest Previous Case Rerun",
+            "",
+        ]
+    )
+    if encoder_token_limit is not None and raw_context_chunk_tokens > encoder_token_limit:
+        lines.extend(
+            [
+                "- note: the requested packed budget exceeds this encoder's tokenizer limit, so support windows can be truncated during encoding on this model.",
+                "",
+            ]
+        )
+    if hardest_case_comparison is None:
+        lines.append("- No previous long-ambiguous baseline report was available for comparison.")
+        lines.append("")
+    else:
+        previous_row = hardest_case_comparison["previous"]
+        rerun_row = hardest_case_comparison["rerun"]
+        verification = hardest_case_comparison["verification"]
+        lines.extend(
+            [
+                f"- selected case: `{previous_row['id']}` ({previous_row['label']})",
+                f"- rationale: highest previous non-grounded reverse_context score (`{previous_row['scores']['reverse_context']:.4f}`) in the earlier long-context report",
+                f"- before: reverse_context `{previous_row['scores']['reverse_context']:.4f}`, support_units `{previous_row['support_unit_count']}`",
+                f"- after packed-{raw_context_chunk_tokens}: reverse_context `{rerun_row['scores']['reverse_context']:.4f}`, support_units `{rerun_row['support_unit_count']}`",
+                f"- verification per-token max abs diff: `{verification['per_token_max_abs_diff']:.8f}`",
+                f"- verification scalar abs diff: `{verification['scalar_abs_diff']:.8f}`",
+                f"- evidence mapping exact match: `{verification['evidence_mappings_match']}`",
+                f"- top-evidence exact match: `{verification['top_evidence_matches']}`",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
             "## Example Evidence",
             "",
         ]
@@ -382,7 +569,16 @@ def render_markdown(
     return "\n".join(lines) + "\n"
 
 
-def run(model_name: str, use_prompts: bool, rebuild: bool, tag: str, profile: str) -> Tuple[Dict[str, Any], Path, Path]:
+def run(
+    model_name: str,
+    use_prompts: bool,
+    rebuild: bool,
+    tag: str,
+    profile: str,
+    raw_context_chunk_tokens: int,
+) -> Tuple[Dict[str, Any], Path, Path]:
+    hardest_case_comparison: Optional[Dict[str, Any]] = None
+    encoder_token_limit: Optional[int] = None
     if profile == "default":
         embedded = load_or_build(rebuild=rebuild, model_name=model_name, use_prompts=use_prompts)
         if embedded:
@@ -390,12 +586,14 @@ def run(model_name: str, use_prompts: bool, rebuild: bool, tag: str, profile: st
         rows = [score_embedded_case(case) for case in embedded]
     elif profile == "long_ambiguous":
         provider, query_prompt_name, document_prompt_name = _load_provider(model_name, use_prompts)
+        encoder_token_limit = provider_token_limit(provider)
         if LONG_AMBIGUOUS_CASES:
             score_long_context_case(
                 LONG_AMBIGUOUS_CASES[0],
                 provider,
                 query_prompt_name=query_prompt_name,
                 document_prompt_name=document_prompt_name,
+                chunk_token_budget=raw_context_chunk_tokens,
             )
         rows = [
             score_long_context_case(
@@ -403,9 +601,33 @@ def run(model_name: str, use_prompts: bool, rebuild: bool, tag: str, profile: st
                 provider,
                 query_prompt_name=query_prompt_name,
                 document_prompt_name=document_prompt_name,
+                chunk_token_budget=raw_context_chunk_tokens,
             )
             for case_spec in LONG_AMBIGUOUS_CASES
         ]
+        previous_hardest = _select_hardest_previous_case_row()
+        if previous_hardest is not None:
+            hardest_case_id = previous_hardest["id"]
+            matching_case = next((case for case in LONG_AMBIGUOUS_CASES if case.id == hardest_case_id), None)
+            if matching_case is not None:
+                rerun_row, details = _score_packed_long_context_case(
+                    matching_case,
+                    provider,
+                    query_prompt_name=query_prompt_name,
+                    document_prompt_name=document_prompt_name,
+                    chunk_token_budget=raw_context_chunk_tokens,
+                )
+                hardest_case_comparison = {
+                    "previous": previous_hardest,
+                    "rerun": rerun_row,
+                    "verification": _verify_chunked_merge(
+                        support_units=details["support_units"],
+                        response_embeddings=details["response_embeddings"],
+                        response_tokens=details["response_tokens"],
+                        query_embeddings=details["query_embeddings"],
+                        query_tokens=details["query_tokens"],
+                    ),
+                }
     else:
         raise ValueError(f"Unknown validation profile: {profile}")
 
@@ -414,14 +636,26 @@ def run(model_name: str, use_prompts: bool, rebuild: bool, tag: str, profile: st
         "profile": profile,
         "model": model_name,
         "use_prompts": use_prompts,
+        "raw_context_chunk_tokens": raw_context_chunk_tokens,
+        "encoder_token_limit": encoder_token_limit,
         "summary": summary,
         "rows": rows,
+        "hardest_case_comparison": hardest_case_comparison,
     }
     json_path = _HERE / f"groundedness_service_validation__{tag}.json"
     md_path = _HERE / f"groundedness_service_validation__{tag}.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     md_path.write_text(
-        render_markdown(summary, rows, model_name=model_name, use_prompts=use_prompts, profile=profile),
+        render_markdown(
+            summary,
+            rows,
+            model_name=model_name,
+            use_prompts=use_prompts,
+            profile=profile,
+            raw_context_chunk_tokens=raw_context_chunk_tokens,
+            encoder_token_limit=encoder_token_limit,
+            hardest_case_comparison=hardest_case_comparison,
+        ),
         encoding="utf-8",
     )
     return payload, json_path, md_path
@@ -434,6 +668,7 @@ if __name__ == "__main__":
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--profile", default="default", choices=["default", "long_ambiguous"])
     parser.add_argument("--tag", default="default")
+    parser.add_argument("--raw-context-chunk-tokens", type=int, default=DEFAULT_RAW_CONTEXT_CHUNK_TOKENS)
     args = parser.parse_args()
 
     payload, json_path, md_path = run(
@@ -442,6 +677,7 @@ if __name__ == "__main__":
         rebuild=args.rebuild,
         tag=args.tag,
         profile=args.profile,
+        raw_context_chunk_tokens=args.raw_context_chunk_tokens,
     )
     print(f"Wrote {json_path}")
     print(f"Wrote {md_path}")

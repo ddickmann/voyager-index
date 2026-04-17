@@ -50,7 +50,9 @@ LLM.
 
 Use this when chunk IDs are unavailable.
 
-- the endpoint splits `raw_context` into sentence or paragraph support units
+- the endpoint defaults to `segmentation_mode="sentence_packed"`
+- it packs adjacent sentences into support windows with a default
+  `raw_context_chunk_tokens` budget of `1024`
 - it encodes those support units on demand
 - it returns the same groundedness response schema as `chunk_ids[]`
 
@@ -64,6 +66,11 @@ VOYAGER_GROUNDEDNESS_MODEL=lightonai/GTE-ModernColBERT-v1 voyager-index-server
 ```
 
 `VOYAGER_ENCODE_MODEL` can also act as the fallback encoder source.
+
+Keep `raw_context_chunk_tokens` at or below the encoder's real document-length
+limit. The API warns when the requested packed window is larger than the active
+encoder can reliably process, because overly large packed windows may be
+truncated during encoding.
 
 ## Example: `chunk_ids[]`
 
@@ -86,10 +93,17 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
   -d '{
     "raw_context": "Teardrops is a single by George Harrison, released on 20 July 1981 in the United States. It was the second single from Somewhere in England.",
     "query_text": "When was Teardrops released in the United States?",
-    "response_text": "Teardrops was released in the United States on 20 July 1981.",
-    "segmentation_mode": "sentence"
+    "response_text": "Teardrops was released in the United States on 20 July 1981."
   }'
 ```
+
+The example above relies on the default packed fallback:
+
+- `segmentation_mode="sentence_packed"`
+- `raw_context_chunk_tokens=1024`
+
+Override either field only when you want a smaller packed budget or a different
+segmentation strategy such as explicit `sentence` or `paragraph`.
 
 ## What The Response Returns
 
@@ -130,6 +144,7 @@ It is not yet the right contract for:
 - automated policy action without human review
 - claim verification where exact lexical fidelity is required
 - very long mixed-support context blocks near the model limit
+- packed raw-context windows that exceed the active encoder's usable token limit
 
 If you need stronger protection on high-risk tokens, combine the groundedness
 score with simple lexical checks for entities, dates, numbers, and units.

@@ -656,7 +656,8 @@ POST /collections/{name}/groundedness
 What it is for:
 
 - score a final answer against the exact `chunk_ids` passed to the LLM
-- fall back to `raw_context` when chunk IDs are unavailable
+- fall back to `raw_context` when chunk IDs are unavailable, using packed
+  sentence-aware support windows by default
 - return heatmap-ready token scores and top evidence links
 
 What it is not:
@@ -669,6 +670,9 @@ Preferred production path:
 
 - use `chunk_ids[]` when your generation layer tracks the final support set
 - treat `raw_context` as a compatibility fallback
+- on `raw_context`, the default fallback is `segmentation_mode="sentence_packed"`
+  with `raw_context_chunk_tokens=1024`
+- keep the packed budget at or below the active encoder's usable document length
 - use the naive reverse-context score as the product headline
 
 Minimal example:

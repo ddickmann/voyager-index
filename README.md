@@ -443,7 +443,8 @@ endpoint for post-generation answers:
 
 - fast path: score a final answer against the exact `chunk_ids` that were passed
   to the LLM, without re-encoding support context
-- fallback path: score against `raw_context` when chunk IDs are unavailable
+- fallback path: score against `raw_context` when chunk IDs are unavailable,
+  using sentence-aware packed support windows by default
 - output: scalar groundedness, response-token heatmaps, top evidence links, and
   optional dense debug matrices
 
@@ -454,6 +455,12 @@ entity swaps, dates, numbers, and other semantically close factual errors.
 Very long mixed-support contexts near the model limit are also materially harder
 than short anchored answers, so keep product wording conservative on ambiguous
 long-context responses.
+
+The default `raw_context` fallback packs adjacent sentences into roughly
+`1024`-token windows via `segmentation_mode="sentence_packed"` with
+`raw_context_chunk_tokens` as the user override. Keep that budget at or below
+your encoder's real document-length limit; shorter-window models will warn when
+the requested packed budget is too large and may truncate support windows.
 
 The production headline score uses **naive reverse-context MaxSim**. Optional
 query-conditioned channels remain diagnostic-only and are not the recommended

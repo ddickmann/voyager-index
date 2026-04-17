@@ -367,7 +367,8 @@ Important truth-in-advertising note:
 Use groundedness after generation, not as a replacement for retrieval:
 
 - fast path: score a final answer against the exact `chunk_ids` passed to the LLM
-- fallback path: score against `raw_context` when chunk IDs are unavailable
+- fallback path: score against `raw_context` when chunk IDs are unavailable,
+  using sentence-aware packed windows by default
 - output: scalar groundedness, response-token heatmaps, and top evidence links
 
 For text collections, start the server with a groundedness-capable encoder:
@@ -398,9 +399,17 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-li/groundedness \
     "raw_context": "Invoice total due. Payment due on receipt.",
     "query_text": "invoice total due",
     "response_text": "The invoice total is due.",
-    "segmentation_mode": "sentence"
+    "segmentation_mode": "sentence_packed",
+    "raw_context_chunk_tokens": 1024
   }'
 ```
+
+The `raw_context` path now defaults to `segmentation_mode="sentence_packed"`
+with a `raw_context_chunk_tokens` budget of `1024`, so you only need to pass
+those fields when you want a non-default budget or another segmentation mode.
+Keep the packed budget at or below the active encoder's real document-length
+limit; the API returns a warning when the requested packed window is larger than
+the encoder can reliably process.
 
 Look for these response fields:
 
@@ -416,6 +425,8 @@ Truth-in-advertising note:
 - it is useful for evidence views and QA
 - it is **not** a final truth oracle, especially on negation, entity swaps,
   dates, or exact numeric claims
+- very long raw-context packing is only as good as the encoder's effective
+  document length
 
 ## 8. Persistence And Inspection
 

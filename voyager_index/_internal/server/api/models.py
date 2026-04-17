@@ -1141,6 +1141,7 @@ class EncodeResponse(BaseModel):
 
 class GroundednessSegmentationMode(str, Enum):
     SENTENCE = "sentence"
+    SENTENCE_PACKED = "sentence_packed"
     PARAGRAPH = "paragraph"
 
 
@@ -1160,6 +1161,7 @@ class GroundednessRequest(BaseModel):
                 "response_text": "Teardrops was released in the United States on 20 July 1981.",
                 "evidence_limit": 5,
                 "primary_metric": "reverse_context",
+                "raw_context_chunk_tokens": 1024,
             }
         }
     )
@@ -1182,8 +1184,21 @@ class GroundednessRequest(BaseModel):
         description="Compatibility fallback: raw context text to segment and re-encode on demand.",
     )
     segmentation_mode: GroundednessSegmentationMode = Field(
-        default=GroundednessSegmentationMode.SENTENCE,
-        description="How raw_context should be segmented into support units before scoring.",
+        default=GroundednessSegmentationMode.SENTENCE_PACKED,
+        description=(
+            "How raw_context should be segmented into support units before scoring. "
+            "The default sentence_packed mode packs adjacent sentences into token-budgeted windows."
+        ),
+    )
+    raw_context_chunk_tokens: int = Field(
+        default=1024,
+        ge=1,
+        le=8192,
+        description=(
+            "Approximate token budget for packed raw_context support windows. "
+            "Applies to raw_context only and is used by sentence_packed mode. "
+            "Budgets above the active encoder limit may trigger warnings and truncation."
+        ),
     )
     primary_metric: GroundednessPrimaryMetric = Field(
         default=GroundednessPrimaryMetric.REVERSE_CONTEXT,

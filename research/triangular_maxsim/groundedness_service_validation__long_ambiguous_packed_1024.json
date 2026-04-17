@@ -1,0 +1,724 @@
+{
+  "profile": "long_ambiguous",
+  "model": "lightonai/GTE-ModernColBERT-v1",
+  "use_prompts": false,
+  "raw_context_chunk_tokens": 1024,
+  "encoder_token_limit": 299,
+  "summary": {
+    "metrics": {
+      "anchor_count": 4,
+      "AUROC_reverse_context": 0.0,
+      "AUROC_reverse_query_context": 0.0,
+      "AUROC_triangular": 0.0,
+      "latency_p50_ms": 82.59657397866249,
+      "latency_p95_ms": 108.72507328167558,
+      "mean_context_tokens": 7847.0,
+      "max_context_tokens": 7888,
+      "mean_support_units": 8.0,
+      "gate_anchor_auroc_pass": false,
+      "gate_latency_pass": false,
+      "go_for_user_facing": false
+    },
+    "by_subcategory": {
+      "grounded": {
+        "count": 2,
+        "mean_reverse_context": 0.9443526668484508,
+        "mean_triangular": 0.9415084618870648,
+        "mean_context_tokens": 7816.0,
+        "examples": [
+          {
+            "id": "LG1",
+            "response": "Teardrops, the second single from George Harrison's album Somewhere in England, was released in the United States on 20 July 1981.",
+            "top_evidence": [
+              {
+                "response_token_index": 25,
+                "response_token": "\u012020",
+                "support_unit_index": 3,
+                "support_token_index": 164,
+                "support_token": "\u0120at",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9850355386734009
+              },
+              {
+                "response_token_index": 27,
+                "response_token": "\u01201981",
+                "support_unit_index": 3,
+                "support_token_index": 15,
+                "support_token": "\u0120is",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9840183854103088
+              },
+              {
+                "response_token_index": 23,
+                "response_token": "\u0120States",
+                "support_unit_index": 4,
+                "support_token_index": 137,
+                "support_token": "\u0120is",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.989486813545227
+              }
+            ],
+            "notes": "Long distractor-heavy context with the George Harrison evidence paragraph buried near the middle."
+          },
+          {
+            "id": "LG2",
+            "response": "Aptamer-functionalized lipid nanoparticles can target specific cell types such as osteoblasts, as demonstrated with the CH6 aptamer-functionalized LNP system.",
+            "top_evidence": [
+              {
+                "response_token_index": 24,
+                "response_token": "6",
+                "support_unit_index": 2,
+                "support_token_index": 227,
+                "support_token": "X",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9060226082801819
+              },
+              {
+                "response_token_index": 20,
+                "response_token": "\u0120demonstrated",
+                "support_unit_index": 2,
+                "support_token_index": 55,
+                "support_token": "\u0120of",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9945380687713623
+              },
+              {
+                "response_token_index": 14,
+                "response_token": "\u0120such",
+                "support_unit_index": 0,
+                "support_token_index": 86,
+                "support_token": "\u0120responses",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9939021468162537
+              }
+            ],
+            "notes": "Long biomedical context where the relevant aptamer paragraph must survive thousands of unrelated tokens."
+          }
+        ]
+      },
+      "entity_swap": {
+        "count": 2,
+        "mean_reverse_context": 0.9841711132456005,
+        "mean_triangular": 0.961514149764995,
+        "mean_context_tokens": 7858.0,
+        "examples": [
+          {
+            "id": "LG3",
+            "response": "Construction on the Royal Arena in Copenhagen, where the 2017 European Short Course Swimming Championships will be held, broke ground on 26 July 2013.",
+            "top_evidence": [
+              {
+                "response_token_index": 11,
+                "response_token": "\u01202017",
+                "support_unit_index": 4,
+                "support_token_index": 19,
+                "support_token": "\u01202017",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9905759692192078
+              },
+              {
+                "response_token_index": 25,
+                "response_token": "\u012026",
+                "support_unit_index": 0,
+                "support_token_index": 200,
+                "support_token": "ae",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9901795387268066
+              },
+              {
+                "response_token_index": 27,
+                "response_token": "\u01202013",
+                "support_unit_index": 4,
+                "support_token_index": 43,
+                "support_token": "\u0120The",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.989499032497406
+              }
+            ],
+            "notes": "Date-swap near miss inside an ultra-long context; hard for embeddings and easy for a human to miss."
+          },
+          {
+            "id": "LG4",
+            "response": "Treg-cell-specific deletion of integrin \u03b1v\u03b26 did not result in a spontaneous inflammatory phenotype in the studied mice.",
+            "top_evidence": [
+              {
+                "response_token_index": 13,
+                "response_token": "6",
+                "support_unit_index": 4,
+                "support_token_index": 44,
+                "support_token": "\u0120\u00ce\u00b1",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9976755380630493
+              },
+              {
+                "response_token_index": 12,
+                "response_token": "\u00ce\u00b2",
+                "support_unit_index": 7,
+                "support_token_index": 3,
+                "support_token": "6",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9527221322059631
+              },
+              {
+                "response_token_index": 16,
+                "response_token": "\u0120result",
+                "support_unit_index": 4,
+                "support_token_index": 47,
+                "support_token": "8",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9964748024940491
+              }
+            ],
+            "notes": "Single-character entity swap inside a long scientific context block."
+          }
+        ]
+      },
+      "partial": {
+        "count": 2,
+        "mean_reverse_context": 0.9494048324285769,
+        "mean_triangular": 0.9420843785105188,
+        "mean_context_tokens": 7867.0,
+        "examples": [
+          {
+            "id": "LG5",
+            "response": "SHP2 signal-deficient knockin mice display lymphadenopathy and splenomegaly, and were the first transgenic model used in human clinical trials for lupus nephritis.",
+            "top_evidence": [
+              {
+                "response_token_index": 3,
+                "response_token": "2",
+                "support_unit_index": 2,
+                "support_token_index": 22,
+                "support_token": "\u0120helper",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.907924473285675
+              },
+              {
+                "response_token_index": 26,
+                "response_token": "\u0120used",
+                "support_unit_index": 4,
+                "support_token_index": 2,
+                "support_token": "\u0120a",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9940652847290039
+              },
+              {
+                "response_token_index": 30,
+                "response_token": "\u0120trials",
+                "support_unit_index": 2,
+                "support_token_index": 45,
+                "support_token": "\u0120lupus",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9916909337043762
+              }
+            ],
+            "notes": "First clause is supported, second clause is a plausible biomedical extrapolation hidden inside a long context."
+          },
+          {
+            "id": "LG6",
+            "response": "Be Quick '28 is a football club from Zwolle in the province of Overijssel, and it currently plays in the Dutch Eredivisie top flight.",
+            "top_evidence": [
+              {
+                "response_token_index": 4,
+                "response_token": "28",
+                "support_unit_index": 0,
+                "support_token_index": 206,
+                "support_token": "rops",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9780759215354919
+              },
+              {
+                "response_token_index": 7,
+                "response_token": "\u0120football",
+                "support_unit_index": 3,
+                "support_token_index": 133,
+                "support_token": "]",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9947023987770081
+              },
+              {
+                "response_token_index": 25,
+                "response_token": "\u0120currently",
+                "support_unit_index": 4,
+                "support_token_index": 3,
+                "support_token": "\u0120play",
+                "chunk_id": null,
+                "metric": "reverse_context",
+                "score": 0.9932994246482849
+              }
+            ],
+            "notes": "Supported province fact mixed with an unsupported league claim under heavy distractor load."
+          }
+        ]
+      }
+    },
+    "go_no_go": {
+      "min_anchor_auroc_reverse_context": 0.9,
+      "max_p95_latency_ms": 25.0
+    }
+  },
+  "rows": [
+    {
+      "id": "LG1",
+      "source": "HP:5ae48aff",
+      "label": "grounded",
+      "subcategory": null,
+      "query": "When was George Harrison's second single from his album, that was made with rising conflicts with Warner Bros., released in the United States?",
+      "response": "Teardrops, the second single from George Harrison's album Somewhere in England, was released in the United States on 20 July 1981.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.946971993697317,
+        "reverse_context": 0.946971993697317,
+        "reverse_query_context": 0.9564252150686163,
+        "triangular": 0.9433448189183286,
+        "echo_mean": 0.9502480155543277,
+        "grounded_coverage": 0.9515304565429688
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 25,
+          "response_token": "\u012020",
+          "support_unit_index": 3,
+          "support_token_index": 164,
+          "support_token": "\u0120at",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9850355386734009
+        },
+        {
+          "response_token_index": 27,
+          "response_token": "\u01201981",
+          "support_unit_index": 3,
+          "support_token_index": 15,
+          "support_token": "\u0120is",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9840183854103088
+        },
+        {
+          "response_token_index": 23,
+          "response_token": "\u0120States",
+          "support_unit_index": 4,
+          "support_token_index": 137,
+          "support_token": "\u0120is",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.989486813545227
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 84.10795964300632,
+      "notes": "Long distractor-heavy context with the George Harrison evidence paragraph buried near the middle.",
+      "context_token_count": 7808,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    {
+      "id": "LG2",
+      "source": "SF:839",
+      "label": "grounded",
+      "subcategory": null,
+      "query": "Nanoparticles can be targeted against specific cell types by incorporating aptamers into lipid nanoparticles.",
+      "response": "Aptamer-functionalized lipid nanoparticles can target specific cell types such as osteoblasts, as demonstrated with the CH6 aptamer-functionalized LNP system.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9417333399995844,
+        "reverse_context": 0.9417333399995844,
+        "reverse_query_context": 0.9545018622215758,
+        "triangular": 0.9396721048558012,
+        "echo_mean": 0.9513868778309924,
+        "grounded_coverage": 0.9480360746383667
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 24,
+          "response_token": "6",
+          "support_unit_index": 2,
+          "support_token_index": 227,
+          "support_token": "X",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9060226082801819
+        },
+        {
+          "response_token_index": 20,
+          "response_token": "\u0120demonstrated",
+          "support_unit_index": 2,
+          "support_token_index": 55,
+          "support_token": "\u0120of",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9945380687713623
+        },
+        {
+          "response_token_index": 14,
+          "response_token": "\u0120such",
+          "support_unit_index": 0,
+          "support_token_index": 86,
+          "support_token": "\u0120responses",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9939021468162537
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 65.83460606634617,
+      "notes": "Long biomedical context where the relevant aptamer paragraph must survive thousands of unrelated tokens.",
+      "context_token_count": 7824,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    {
+      "id": "LG3",
+      "source": "HP:5ab3ddbc",
+      "label": "ungrounded",
+      "subcategory": "entity_swap",
+      "query": "The 2017 European Short Course Swimming Championships will be held in an Arena which began construction when?",
+      "response": "Construction on the Royal Arena in Copenhagen, where the 2017 European Short Course Swimming Championships will be held, broke ground on 26 July 2013.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9857228907143197,
+        "reverse_context": 0.9857228907143197,
+        "reverse_query_context": 0.9867241091844512,
+        "triangular": 0.9606290677698647,
+        "echo_mean": 0.9540607173268388,
+        "grounded_coverage": 0.9532169103622437
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 11,
+          "response_token": "\u01202017",
+          "support_unit_index": 4,
+          "support_token_index": 19,
+          "support_token": "\u01202017",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9905759692192078
+        },
+        {
+          "response_token_index": 25,
+          "response_token": "\u012026",
+          "support_unit_index": 0,
+          "support_token_index": 200,
+          "support_token": "ae",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9901795387268066
+        },
+        {
+          "response_token_index": 27,
+          "response_token": "\u01202013",
+          "support_unit_index": 4,
+          "support_token_index": 43,
+          "support_token": "\u0120The",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.989499032497406
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 81.08518831431866,
+      "notes": "Date-swap near miss inside an ultra-long context; hard for embeddings and easy for a human to miss.",
+      "context_token_count": 7828,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    {
+      "id": "LG4",
+      "source": "SF:327",
+      "label": "ungrounded",
+      "subcategory": "entity_swap",
+      "query": "Deletion of \u03b1v\u03b28 does not result in a spontaneous inflammatory phenotype.",
+      "response": "Treg-cell-specific deletion of integrin \u03b1v\u03b26 did not result in a spontaneous inflammatory phenotype in the studied mice.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9826193357768812,
+        "reverse_context": 0.9826193357768812,
+        "reverse_query_context": 0.9826193357768812,
+        "triangular": 0.9623992317601254,
+        "echo_mean": 0.9520708385266756,
+        "grounded_coverage": 0.9396434426307678
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 13,
+          "response_token": "6",
+          "support_unit_index": 4,
+          "support_token_index": 44,
+          "support_token": "\u0120\u00ce\u00b1",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9976755380630493
+        },
+        {
+          "response_token_index": 12,
+          "response_token": "\u00ce\u00b2",
+          "support_unit_index": 7,
+          "support_token_index": 3,
+          "support_token": "6",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9527221322059631
+        },
+        {
+          "response_token_index": 16,
+          "response_token": "\u0120result",
+          "support_unit_index": 4,
+          "support_token_index": 47,
+          "support_token": "8",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9964748024940491
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 108.11158642172813,
+      "notes": "Single-character entity swap inside a long scientific context block.",
+      "context_token_count": 7888,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    {
+      "id": "LG5",
+      "source": "SF:729",
+      "label": "ambiguous",
+      "subcategory": "partial",
+      "query": "Lymphadenopathy is observed in knockin mouse lacking the SHP-2 MAPK pathway.",
+      "response": "SHP2 signal-deficient knockin mice display lymphadenopathy and splenomegaly, and were the first transgenic model used in human clinical trials for lupus nephritis.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9515303069469976,
+        "reverse_context": 0.9515303069469976,
+        "reverse_query_context": 0.9577530505610448,
+        "triangular": 0.943947436762791,
+        "echo_mean": 0.9410783356311274,
+        "grounded_coverage": 0.9210336804389954
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 3,
+          "response_token": "2",
+          "support_unit_index": 2,
+          "support_token_index": 22,
+          "support_token": "\u0120helper",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.907924473285675
+        },
+        {
+          "response_token_index": 26,
+          "response_token": "\u0120used",
+          "support_unit_index": 4,
+          "support_token_index": 2,
+          "support_token": "\u0120a",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9940652847290039
+        },
+        {
+          "response_token_index": 30,
+          "response_token": "\u0120trials",
+          "support_unit_index": 2,
+          "support_token_index": 45,
+          "support_token": "\u0120lupus",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9916909337043762
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 108.92956890165806,
+      "notes": "First clause is supported, second clause is a plausible biomedical extrapolation hidden inside a long context.",
+      "context_token_count": 7884,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    {
+      "id": "LG6",
+      "source": "HP:5ab2ac3d",
+      "label": "ambiguous",
+      "subcategory": "partial",
+      "query": "Be Quick '28 football club is located in what province?",
+      "response": "Be Quick '28 is a football club from Zwolle in the province of Overijssel, and it currently plays in the Dutch Eredivisie top flight.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9472793579101563,
+        "reverse_context": 0.9472793579101563,
+        "reverse_query_context": 0.9508514404296875,
+        "triangular": 0.9402213202582466,
+        "echo_mean": 0.9278721279568143,
+        "grounded_coverage": 0.9366382956504822
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 4,
+          "response_token": "28",
+          "support_unit_index": 0,
+          "support_token_index": 206,
+          "support_token": "rops",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9780759215354919
+        },
+        {
+          "response_token_index": 7,
+          "response_token": "\u0120football",
+          "support_unit_index": 3,
+          "support_token_index": 133,
+          "support_token": "]",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9947023987770081
+        },
+        {
+          "response_token_index": 25,
+          "response_token": "\u0120currently",
+          "support_unit_index": 4,
+          "support_token_index": 3,
+          "support_token": "\u0120play",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9932994246482849
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 27.401359751820564,
+      "notes": "Supported province fact mixed with an unsupported league claim under heavy distractor load.",
+      "context_token_count": 7850,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    }
+  ],
+  "hardest_case_comparison": {
+    "previous": {
+      "id": "LG3",
+      "source": "HP:5ab3ddbc",
+      "label": "ungrounded",
+      "subcategory": "entity_swap",
+      "query": "The 2017 European Short Course Swimming Championships will be held in an Arena which began construction when?",
+      "response": "Construction on the Royal Arena in Copenhagen, where the 2017 European Short Course Swimming Championships will be held, broke ground on 26 July 2013.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9908342128846703,
+        "reverse_context": 0.9908342128846703,
+        "reverse_query_context": 0.9908342128846703,
+        "triangular": 0.9611678704982851,
+        "echo_mean": 0.9520933569931402,
+        "grounded_coverage": 0.9540954828262329
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 19,
+          "response_token": "tok_19",
+          "support_unit_index": 33,
+          "support_token_index": 76,
+          "support_token": "tok_76",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9979388117790222
+        },
+        {
+          "response_token_index": 18,
+          "response_token": "tok_18",
+          "support_unit_index": 33,
+          "support_token_index": 67,
+          "support_token": "tok_67",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9975880980491638
+        },
+        {
+          "response_token_index": 3,
+          "response_token": "tok_3",
+          "support_unit_index": 33,
+          "support_token_index": 26,
+          "support_token": "tok_26",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9970579147338867
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 7.2043538093566895,
+      "notes": "Date-swap near miss inside an ultra-long context; hard for embeddings and easy for a human to miss.",
+      "context_token_count": 7828,
+      "support_unit_count": 66
+    },
+    "rerun": {
+      "id": "LG3",
+      "source": "HP:5ab3ddbc",
+      "label": "ungrounded",
+      "subcategory": "entity_swap",
+      "query": "The 2017 European Short Course Swimming Championships will be held in an Arena which began construction when?",
+      "response": "Construction on the Royal Arena in Copenhagen, where the 2017 European Short Course Swimming Championships will be held, broke ground on 26 July 2013.",
+      "scores": {
+        "primary_name": "reverse_context",
+        "primary_score": 0.9857228907143197,
+        "reverse_context": 0.9857228907143197,
+        "reverse_query_context": 0.9867241091844512,
+        "triangular": 0.9606290677698647,
+        "echo_mean": 0.9540607173268388,
+        "grounded_coverage": 0.9532169103622437
+      },
+      "top_evidence": [
+        {
+          "response_token_index": 11,
+          "response_token": "\u01202017",
+          "support_unit_index": 4,
+          "support_token_index": 19,
+          "support_token": "\u01202017",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9905759692192078
+        },
+        {
+          "response_token_index": 25,
+          "response_token": "\u012026",
+          "support_unit_index": 0,
+          "support_token_index": 200,
+          "support_token": "ae",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.9901795387268066
+        },
+        {
+          "response_token_index": 27,
+          "response_token": "\u01202013",
+          "support_unit_index": 4,
+          "support_token_index": 43,
+          "support_token": "\u0120The",
+          "chunk_id": null,
+          "metric": "reverse_context",
+          "score": 0.989499032497406
+        }
+      ],
+      "warnings": [],
+      "latency_ms": 78.22977751493454,
+      "notes": "Date-swap near miss inside an ultra-long context; hard for embeddings and easy for a human to miss.",
+      "context_token_count": 7828,
+      "support_unit_count": 8,
+      "raw_context_chunk_tokens": 1024
+    },
+    "verification": {
+      "per_token_max_abs_diff": 0.0,
+      "scalar_abs_diff": 0.0,
+      "evidence_mappings_match": true,
+      "top_evidence_matches": true
+    }
+  }
+}
