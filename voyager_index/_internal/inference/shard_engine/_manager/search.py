@@ -173,21 +173,39 @@ class ShardSegmentManagerSearchMixin:
                 doc_meta_rows: List[np.ndarray] = []
                 num_shards = 0
                 for shard_id, dids in shard_groups.items():
-                    loaded = self._store.load_shard_roq4(shard_id)
-                    if loaded is None:
-                        continue
+                    cached = self._roq4_shard_view_cache.get(int(shard_id))
+                    if cached is None:
+                        loaded = self._store.load_shard_roq4(shard_id)
+                        if loaded is None:
+                            continue
+                        shard_codes, shard_meta, shard_offsets, shard_ids = loaded
+                        cached = {
+                            "codes": shard_codes.cpu().numpy(),
+                            "meta": shard_meta.cpu().numpy(),
+                            "offsets": shard_offsets.cpu().numpy()
+                                if hasattr(shard_offsets, "cpu") else np.asarray(shard_offsets),
+                            "row_by_doc": {
+                                int(d): idx for idx, d in enumerate(
+                                    shard_ids.tolist()
+                                    if hasattr(shard_ids, "tolist") else list(shard_ids)
+                                )
+                            },
+                        }
+                        self._roq4_shard_view_cache[int(shard_id)] = cached
                     num_shards += 1
-                    shard_codes, shard_meta, shard_offsets, shard_ids = loaded
-                    row_by_doc = {int(doc_id): idx for idx, doc_id in enumerate(shard_ids.tolist())}
+                    shard_codes_np = cached["codes"]
+                    shard_meta_np = cached["meta"]
+                    shard_offsets_np = cached["offsets"]
+                    row_by_doc = cached["row_by_doc"]
                     for did in dids:
                         row = row_by_doc.get(int(did))
                         if row is None:
                             continue
-                        start = int(shard_offsets[row, 0])
-                        end = int(shard_offsets[row, 1])
+                        start = int(shard_offsets_np[row, 0])
+                        end = int(shard_offsets_np[row, 1])
                         doc_ids.append(int(did))
-                        doc_codes_rows.append(shard_codes[start:end].cpu().numpy())
-                        doc_meta_rows.append(shard_meta[start:end].cpu().numpy())
+                        doc_codes_rows.append(shard_codes_np[start:end])
+                        doc_meta_rows.append(shard_meta_np[start:end])
                 if not doc_ids:
                     return None
                 max_tok = max(item.shape[0] for item in doc_codes_rows)
@@ -297,23 +315,40 @@ class ShardSegmentManagerSearchMixin:
                 sin_rows: List[np.ndarray] = []
                 num_shards = 0
                 for shard_id, dids in shard_groups.items():
-                    loaded = self._store.load_shard_rroq158(shard_id)
-                    if loaded is None:
-                        continue
+                    cached = self._rroq158_shard_view_cache.get(int(shard_id))
+                    if cached is None:
+                        loaded = self._store.load_shard_rroq158(shard_id)
+                        if loaded is None:
+                            continue
+                        sign_t = loaded["sign_plane"].cpu().numpy()
+                        nz_t = loaded["nonzero_plane"].cpu().numpy()
+                        cached = {
+                            # Packing to int32 words is independent of the
+                            # query, so we do it once per shard at first
+                            # touch instead of per-query in the hot path.
+                            "sign_words": pack_doc_codes_to_int32_words(sign_t),
+                            "nz_words": pack_doc_codes_to_int32_words(nz_t),
+                            "scl": loaded["scales"].cpu().numpy().astype(np.float32, copy=False),
+                            "cid": loaded["centroid_id"].cpu().numpy().astype(np.int32, copy=False),
+                            "cos": loaded["cos_norm"].cpu().numpy().astype(np.float32, copy=False),
+                            "sin": loaded["sin_norm"].cpu().numpy().astype(np.float32, copy=False),
+                            "offsets": loaded["doc_offsets"].cpu().numpy(),
+                            "row_by_doc": {
+                                int(d): idx for idx, d in enumerate(
+                                    loaded["doc_ids"].cpu().numpy().tolist()
+                                )
+                            },
+                        }
+                        self._rroq158_shard_view_cache[int(shard_id)] = cached
                     num_shards += 1
-                    sign_t = loaded["sign_plane"].cpu().numpy()
-                    nz_t = loaded["nonzero_plane"].cpu().numpy()
-                    scl_t = loaded["scales"].cpu().numpy().astype(np.float32, copy=False)
-                    cid_t = loaded["centroid_id"].cpu().numpy().astype(np.int32, copy=False)
-                    cos_t = loaded["cos_norm"].cpu().numpy().astype(np.float32, copy=False)
-                    sin_t = loaded["sin_norm"].cpu().numpy().astype(np.float32, copy=False)
-                    offsets = loaded["doc_offsets"].cpu().numpy()
-                    shard_ids_arr = loaded["doc_ids"].cpu().numpy()
-                    row_by_doc = {int(d): idx for idx, d in enumerate(shard_ids_arr.tolist())}
-                    # sign/nz are stored as packed bytes per token; convert to
-                    # int32 words exactly as the kernel/Triton consume them.
-                    sign_words = pack_doc_codes_to_int32_words(sign_t)
-                    nz_words = pack_doc_codes_to_int32_words(nz_t)
+                    sign_words = cached["sign_words"]
+                    nz_words = cached["nz_words"]
+                    scl_t = cached["scl"]
+                    cid_t = cached["cid"]
+                    cos_t = cached["cos"]
+                    sin_t = cached["sin"]
+                    offsets = cached["offsets"]
+                    row_by_doc = cached["row_by_doc"]
                     for did in dids:
                         row = row_by_doc.get(int(did))
                         if row is None:

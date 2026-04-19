@@ -571,6 +571,15 @@ def _run_rroq158_cpu_mode(
 
     worker_count = max(1, min(n_workers, len(query_vecs)))
 
+    # Bound the Rust kernel's rayon pool so the total CPU thread count
+    # stays at one-per-core. Without this, each of `worker_count` python
+    # workers spawns its own rayon pool sized to `cpu_count()`, leading to
+    # `worker_count * cpu_count()` competing threads (1024 on a 128-core
+    # box with 8 workers). The scorer reads VOYAGER_RROQ158_N_WORKERS to
+    # decide n_threads = max(1, cpu_count // n_workers).
+    import os
+    os.environ["VOYAGER_RROQ158_N_WORKERS"] = str(worker_count)
+
     routers = []
     for _ in range(worker_count):
         rt = LemurRouter(

@@ -49,6 +49,13 @@ class ShardSegmentManagerLifecycleMixin:
         self._colbandit_reranker: Optional[RerankerProtocol] = None
         self._roq_quantizer = None
         self._rroq158_meta = None  # lazy: dict{centroids, fwht_seed, dim, group_size} or False
+        # Per-shard numpy view cache for ROQ4 / RROQ158 scoring. Caches the
+        # `.cpu().numpy()` materialization of the per-shard tensors so the
+        # inner per-query loop does not re-materialize them every call. Keyed
+        # by shard_id; values are dicts of numpy arrays. See
+        # `_score_roq4_candidates` / `_score_rroq158_candidates`.
+        self._roq4_shard_view_cache: Dict[int, Dict[str, Any]] = {}
+        self._rroq158_shard_view_cache: Dict[int, Dict[str, Any]] = {}
         self._last_exact_path: Optional[str] = None
         self._last_prune_path: Optional[str] = None
         self._checkpoint_mgr = ShardCheckpointManager(self._path)
