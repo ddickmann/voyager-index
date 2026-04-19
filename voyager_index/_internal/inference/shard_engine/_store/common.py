@@ -7,7 +7,7 @@ import os
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch

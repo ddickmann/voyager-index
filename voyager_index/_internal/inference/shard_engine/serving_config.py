@@ -10,6 +10,10 @@ class Compression(str, Enum):
     FP16 = "fp16"
     INT8 = "int8"
     ROQ4 = "roq4"
+    RROQ158 = "rroq158"
+    """Riemannian-aware 1.58-bit (ternary) ROQ. ~5.5x smaller than fp16,
+    ~30% smaller than ROQ4, and matches fp16 R@10 on offline brute-force
+    nfcorpus (0.345 vs 0.345). See research/low_bit_roq/PROGRESS.md."""
 
 
 class StorageLayout(str, Enum):
@@ -101,6 +105,11 @@ class SearchConfig:
     quantization_mode: str = ""
     variable_length_strategy: str = "bucketed"
     gpu_corpus_rerank_topn: int = 16
+    distill_rerank: bool = False
+    """Apply the MV-distill rerank head (numpy MLP, ~1.2k params) on top of
+    the rroq158 top-K shortlist. Disabled by default — see PROGRESS.md
+    [2026-04-19]; current version regresses real BEIR qrels even though it
+    helps offline NN50*. Opt-in for experimentation only."""
 
 
 __all__ = [

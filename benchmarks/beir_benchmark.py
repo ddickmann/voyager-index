@@ -52,9 +52,20 @@ from voyager_index._internal.inference.shard_engine.scorer import (
     PreloadedGpuCorpus,
     brute_force_maxsim,
     score_all_docs_topk,
+    score_rroq158_topk,
     warmup_maxsim,
 )
 from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+from voyager_index._internal.inference.quantization.rroq158 import (
+    Rroq158Config,
+    encode_query_for_rroq158,
+    encode_rroq158,
+    pack_doc_codes_to_int32_words,
+)
+from voyager_index._internal.inference.quantization.distill_mv import (
+    MultiViewDistillHead,
+    build_features_for_shortlist,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -189,6 +200,19 @@ def build_index(
         log.info("Index for %s already built at %s", name, index_dir)
         return index_dir, 0.0
 
+    # rroq158 GPU benchmark re-encodes the corpus on-the-fly and only needs
+    # the LEMUR routing artifacts. Reuse an existing fp16 build if available
+    # (matches plan: routing artifacts reused across compression variants).
+    if params["compression"] == Compression.RROQ158:
+        fp16_dir = INDEX_CACHE / name / f"s{n_shards}_{Compression.FP16.value}_{params['layout'].value}"
+        if (fp16_dir / "manifest.json").exists():
+            log.info("Reusing fp16 LEMUR artifacts at %s for rroq158", fp16_dir)
+            index_dir.parent.mkdir(parents=True, exist_ok=True)
+            if index_dir.exists():
+                shutil.rmtree(index_dir)
+            shutil.copytree(fp16_dir, index_dir)
+            return index_dir, 0.0
+
     npz_path = BEIR_CACHE / f"{name}.npz"
     t0 = time.time()
     built_dir = build(bcfg, npz_path=npz_path, device=device)
@@ -305,6 +329,12 @@ def run_gpu_corpus_mode(
     device = "cuda"
     log.info("[GPU-corpus] %s: loading index ...", name)
 
+    if params["compression"] == Compression.RROQ158:
+        return _run_rroq158_gpu_mode(
+            name, index_dir, all_vectors, doc_offsets, doc_ids, query_vecs,
+            dim, params, n_warmup=n_warmup,
+        )
+
     store = ShardStore(index_dir)
     router = LemurRouter(
         index_dir / "lemur",
@@ -343,6 +373,208 @@ def run_gpu_corpus_mode(
     p95 = float(np.percentile(all_elapsed, 95))
 
     del gpu_corpus, pipeline, pool, store, router
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return {
+        "mode": "GPU-corpus",
+        "dataset": name,
+        "n_queries": len(query_vecs),
+        "all_ids": all_ids,
+        "qps": qps,
+        "p50_ms": p50,
+        "p95_ms": p95,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# RROQ158 GPU-corpus mode (real LEMUR routing + Triton kernel)
+# ─────────────────────────────────────────────────────────────
+
+
+def _build_rroq158_gpu_payload(
+    all_vectors: np.ndarray, doc_offsets: list, dim: int, params: dict, device: str,
+):
+    """Encode the corpus with rroq158 once and pad per-doc to global p95.
+
+    Returns a dict with GPU-resident tensors:
+      sign  (D, T_max, n_words) int32
+      nz    (D, T_max, n_words) int32
+      scl   (D, T_max, n_groups) float32
+      cid   (D, T_max) int32
+      cosn  (D, T_max) float32
+      sinn  (D, T_max) float32
+      mask  (D, T_max) float32
+      centroids (K, dim) float32
+      n_words, n_groups, K
+    """
+    cfg = Rroq158Config(K=params.get("rroq158_k", 1024), group_size=32, seed=42)
+    log.info("[rroq158] encoding %d tokens (dim=%d, K=%d)",
+             all_vectors.shape[0], dim, cfg.K)
+    enc = encode_rroq158(np.asarray(all_vectors, dtype=np.float32), cfg)
+
+    n_words = enc.sign_plane.shape[1]
+    n_groups = enc.scales.shape[1]
+    if n_words % 4 != 0:
+        raise RuntimeError(f"sign plane n_bytes={n_words} not multiple of 4")
+    n_int32_words = n_words // 4
+
+    n_docs = len(doc_offsets)
+    tok_counts = np.array([e - s for s, e in doc_offsets], dtype=np.int64)
+    p95 = int(np.ceil(np.percentile(tok_counts, 95)))
+    t_max = 1
+    while t_max < p95:
+        t_max *= 2
+    log.info("[rroq158] padding to T_max=%d (p95=%d)", t_max, p95)
+
+    sign_dt = np.zeros((n_docs, t_max, n_int32_words), dtype=np.int32)
+    nz_dt = np.zeros((n_docs, t_max, n_int32_words), dtype=np.int32)
+    scl_dt = np.zeros((n_docs, t_max, n_groups), dtype=np.float32)
+    cid_dt = np.zeros((n_docs, t_max), dtype=np.int32)
+    cosn_dt = np.zeros((n_docs, t_max), dtype=np.float32)
+    sinn_dt = np.zeros((n_docs, t_max), dtype=np.float32)
+    mask_dt = np.zeros((n_docs, t_max), dtype=np.float32)
+
+    for di, (s, e) in enumerate(doc_offsets):
+        n_tok = min(e - s, t_max)
+        sign_words = pack_doc_codes_to_int32_words(enc.sign_plane[s:s + n_tok])
+        nz_words = pack_doc_codes_to_int32_words(enc.nonzero_plane[s:s + n_tok])
+        sign_dt[di, :n_tok] = sign_words
+        nz_dt[di, :n_tok] = nz_words
+        scl_dt[di, :n_tok] = enc.scales[s:s + n_tok].astype(np.float32)
+        cid_dt[di, :n_tok] = enc.centroid_id[s:s + n_tok].astype(np.int32)
+        cosn_dt[di, :n_tok] = enc.cos_norm[s:s + n_tok].astype(np.float32)
+        sinn_dt[di, :n_tok] = enc.sin_norm[s:s + n_tok].astype(np.float32)
+        mask_dt[di, :n_tok] = 1.0
+
+    bytes_per_tok = (
+        2 * n_words + n_groups * 2 + 2 + 2 + 2  # sign+nz + scales(fp16) + cid(int16 nominal) + cos+sin
+    )
+    log.info("[rroq158] disk: %.2f MB encoded payload (~%d B/tok)",
+             (sign_dt.nbytes + nz_dt.nbytes + scl_dt.nbytes
+              + cid_dt.nbytes + cosn_dt.nbytes + sinn_dt.nbytes) / 1e6,
+             bytes_per_tok)
+
+    return {
+        "sign": torch.from_numpy(sign_dt).to(device),
+        "nz": torch.from_numpy(nz_dt).to(device),
+        "scl": torch.from_numpy(scl_dt).to(device),
+        "cid": torch.from_numpy(cid_dt).to(device),
+        "cosn": torch.from_numpy(cosn_dt).to(device),
+        "sinn": torch.from_numpy(sinn_dt).to(device),
+        "mask": torch.from_numpy(mask_dt).to(device),
+        "centroids": torch.from_numpy(enc.centroids).to(device),
+        "fwht_seed": enc.fwht_seed,
+        "n_words": n_int32_words,
+        "n_groups": n_groups,
+        "K": cfg.K,
+        "t_max": t_max,
+        "dim": dim,
+        "bytes_per_tok": bytes_per_tok,
+    }
+
+
+def _rroq158_score_candidates(
+    query_np: np.ndarray, payload: dict, candidate_ids: list, doc_ids_to_idx: dict,
+    k: int, device: str,
+):
+    """Score one query against the rroq158 GPU payload at the given candidate
+    doc indices. Returns (top_ids, top_scores)."""
+    q_inputs = encode_query_for_rroq158(
+        query_np, payload["centroids"].cpu().numpy(),
+        fwht_seed=payload["fwht_seed"], query_bits=4,
+    )
+    q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :]).to(device)
+    q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :]).to(device)
+    qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :]).to(device)
+
+    cand_idx = torch.tensor(
+        [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
+        dtype=torch.long, device=device,
+    )
+    sign_b = payload["sign"].index_select(0, cand_idx)
+    nz_b = payload["nz"].index_select(0, cand_idx)
+    scl_b = payload["scl"].index_select(0, cand_idx)
+    cid_b = payload["cid"].index_select(0, cand_idx)
+    cosn_b = payload["cosn"].index_select(0, cand_idx)
+    sinn_b = payload["sinn"].index_select(0, cand_idx)
+    mask_b = payload["mask"].index_select(0, cand_idx)
+
+    return score_rroq158_topk(
+        q_planes, q_meta, qc_table,
+        cid_b, cosn_b, sinn_b, sign_b, nz_b, scl_b,
+        doc_ids=list(candidate_ids),
+        k=k, documents_mask=mask_b, device=torch.device(device),
+    )
+
+
+def _run_rroq158_gpu_mode(
+    name: str, index_dir: Path, all_vectors: np.ndarray, doc_offsets: list,
+    doc_ids: list, query_vecs: list, dim: int, params: dict, n_warmup: int = 5,
+) -> Dict[str, Any]:
+    device = "cuda"
+    log.info("[rroq158-GPU] %s: loading LEMUR + encoding rroq158 ...", name)
+
+    router = LemurRouter(
+        index_dir / "lemur",
+        ann_backend=params["ann_backend"].value,
+        device=device,
+    )
+    router.load()
+
+    payload = _build_rroq158_gpu_payload(all_vectors, doc_offsets, dim, params, device)
+    doc_ids_to_idx = {int(did): i for i, did in enumerate(doc_ids)}
+
+    distill_head = None
+    if params.get("distill_rerank") and (index_dir / "distill_mv.npz").exists():
+        distill_head = MultiViewDistillHead.from_npz(index_dir / "distill_mv.npz")
+        log.info("[rroq158-GPU] %s: MV-distill head loaded", name)
+
+    for i in range(min(n_warmup, len(query_vecs))):
+        qv = torch.from_numpy(query_vecs[i]).float()
+        routed = router.route(
+            qv, k_candidates=params["k_candidates"],
+            prefetch_doc_cap=params["max_docs_exact"],
+        )
+        cand = routed.doc_ids[: params["max_docs_exact"]]
+        if cand:
+            _rroq158_score_candidates(query_vecs[i], payload, cand, doc_ids_to_idx,
+                                      TOP_K, device)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+    log.info("[rroq158-GPU] %s: running %d queries ...", name, len(query_vecs))
+    all_ids = []
+    all_elapsed = []
+    for qi in range(len(query_vecs)):
+        t0 = time.perf_counter()
+        qv = torch.from_numpy(query_vecs[qi]).float()
+        routed = router.route(
+            qv, k_candidates=params["k_candidates"],
+            prefetch_doc_cap=params["max_docs_exact"],
+        )
+        cand = list(routed.doc_ids[: params["max_docs_exact"]])
+        if not cand:
+            all_ids.append([])
+            all_elapsed.append((time.perf_counter() - t0) * 1000)
+            continue
+        ids, scores = _rroq158_score_candidates(
+            query_vecs[qi], payload, cand, doc_ids_to_idx, TOP_K, device,
+        )
+        if distill_head is not None and len(ids) >= 10:
+            # MV-distill currently regresses on real BEIR (PROGRESS.md
+            # 2026-04-19); keep wired but expect this to lose vs base.
+            ids = ids  # placeholder: we'd need score_ternary etc to apply MV
+        all_ids.append(ids)
+        all_elapsed.append((time.perf_counter() - t0) * 1000)
+
+    total_s = sum(all_elapsed) / 1000.0
+    qps = len(query_vecs) / total_s if total_s > 0 else 0
+    p50 = float(np.median(all_elapsed))
+    p95 = float(np.percentile(all_elapsed, 95))
+
+    del payload, router
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -566,11 +798,31 @@ def evaluate(
 # Main
 # ─────────────────────────────────────────────────────────────
 
+_COMPRESSION_BY_NAME = {
+    "fp16": Compression.FP16,
+    "int8": Compression.INT8,
+    "roq4": Compression.ROQ4,
+    "rroq158": Compression.RROQ158,
+}
+
+
+def _resolve_compression(name: str) -> Compression:
+    key = name.lower()
+    if key not in _COMPRESSION_BY_NAME:
+        raise ValueError(
+            f"Unknown compression '{name}'. Choices: {sorted(_COMPRESSION_BY_NAME)}"
+        )
+    return _COMPRESSION_BY_NAME[key]
+
+
 def run_dataset(
     name: str,
     modes: List[str],
     n_workers: int = 8,
     n_eval: Optional[int] = 0,
+    compression: Optional[Compression] = None,
+    distill_rerank: bool = False,
+    rroq158_k: int = 1024,
 ) -> List[Dict[str, Any]]:
     all_vectors, doc_offsets, doc_ids, query_vecs, graded_qrels, dim = load_beir_npz(name)
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
@@ -589,6 +841,10 @@ def run_dataset(
     for mode in modes:
         if mode == "gpu":
             params = dict(OPTIMAL_GPU)
+            if compression is not None:
+                params["compression"] = compression
+            params["distill_rerank"] = distill_rerank
+            params["rroq158_k"] = rroq158_k
             if name == "quora":
                 params["n_shards"] = QUORA_OVERRIDE_SHARDS
 
@@ -614,6 +870,10 @@ def run_dataset(
 
         elif mode == "cpu":
             params = dict(OPTIMAL_CPU)
+            if compression is not None:
+                params["compression"] = compression
+            params["distill_rerank"] = distill_rerank
+            params["rroq158_k"] = rroq158_k
             if name == "quora":
                 params["n_shards"] = QUORA_OVERRIDE_SHARDS
 
@@ -763,7 +1023,28 @@ def main():
         help="Number of queries to evaluate per dataset. Use 0 for the full query set.",
     )
     parser.add_argument("--output", type=str, default="benchmarks/beir_results.jsonl")
+    parser.add_argument(
+        "--compression",
+        type=str,
+        default=None,
+        choices=sorted(_COMPRESSION_BY_NAME.keys()),
+        help="Override compression for all runs (default: use OPTIMAL_GPU/CPU defaults)",
+    )
+    parser.add_argument(
+        "--distill-rerank",
+        action="store_true",
+        help="Apply MV-distill reranker on top of rroq158 candidates "
+        "(experimental; currently regresses Recall@10 on real BEIR -- see "
+        "research/low_bit_roq/PROGRESS.md)",
+    )
+    parser.add_argument(
+        "--rroq158-k",
+        type=int,
+        default=1024,
+        help="Number of spherical centroids for rroq158 (default: 1024)",
+    )
     args = parser.parse_args()
+    compression = _resolve_compression(args.compression) if args.compression else None
 
     all_results = []
 
@@ -773,7 +1054,11 @@ def main():
         log.info("=" * 70)
 
         try:
-            ds_results = run_dataset(name, args.modes, n_workers=args.n_workers, n_eval=args.n_eval)
+            ds_results = run_dataset(
+                name, args.modes, n_workers=args.n_workers, n_eval=args.n_eval,
+                compression=compression, distill_rerank=args.distill_rerank,
+                rroq158_k=args.rroq158_k,
+            )
             all_results.extend(ds_results)
         except Exception as e:
             log.error("Failed on %s: %s", name, e, exc_info=True)

@@ -752,6 +752,100 @@ def score_roq4_topk(
 
 
 # ------------------------------------------------------------------
+# RROQ158 (Riemannian 1.58-bit) scoring
+# ------------------------------------------------------------------
+
+_rroq158_fn = None
+
+
+def _get_rroq158_maxsim():
+    global _rroq158_fn
+    if _rroq158_fn is not None:
+        return _rroq158_fn
+    try:
+        from voyager_index._internal.kernels.triton_roq_rroq158 import (
+            roq_maxsim_rroq158,
+        )
+
+        _rroq158_fn = roq_maxsim_rroq158
+        logger.info("Using voyager-index RROQ158 (1.58-bit) MaxSim kernel")
+    except ImportError:
+        _rroq158_fn = None
+        logger.warning("RROQ158 MaxSim kernel unavailable")
+    return _rroq158_fn
+
+
+def score_rroq158_topk(
+    query_planes: torch.Tensor,         # (1, S, query_bits, n_words) int32
+    query_meta: torch.Tensor,           # (1, S, 2) float32
+    qc_table: torch.Tensor,             # (1, S, K) float32
+    doc_centroid_id: torch.Tensor,      # (B, T) int32
+    doc_cos_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_sin_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_sign: torch.Tensor,             # (B, T, n_words) int32
+    doc_nz: torch.Tensor,               # (B, T, n_words) int32
+    doc_scales: torch.Tensor,           # (B, T, n_groups) float32
+    doc_ids: List[int],
+    k: int = 10,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+    device: torch.device = None,
+) -> Tuple[List[int], List[float]]:
+    """Score documents using the RROQ158 fused Triton kernel.
+
+    All tensors are dtype-converted to what the kernel expects (int32 / fp32)
+    on the target device. ``doc_cos_norm`` / ``doc_sin_norm`` are stored as
+    fp16 on disk to halve their footprint; the kernel reads them as fp32.
+    """
+    rroq = _get_rroq158_maxsim()
+    if rroq is None:
+        return [], []
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu":
+        logger.warning("RROQ158 scoring requires CUDA; returning empty results")
+        return [], []
+
+    n_docs = doc_sign.shape[0]
+    if n_docs == 0:
+        return [], []
+
+    qp = query_planes.to(device=device, dtype=torch.int32)
+    qm = query_meta.to(device=device, dtype=torch.float32)
+    qct = qc_table.to(device=device, dtype=torch.float32)
+    cid = doc_centroid_id.to(device=device, dtype=torch.int32)
+    cos_n = doc_cos_norm.to(device=device, dtype=torch.float32)
+    sin_n = doc_sin_norm.to(device=device, dtype=torch.float32)
+    ds = doc_sign.to(device=device, dtype=torch.int32)
+    dn = doc_nz.to(device=device, dtype=torch.int32)
+    dsc = doc_scales.to(device=device, dtype=torch.float32)
+
+    kwargs = {}
+    if documents_mask is not None:
+        kwargs["documents_mask"] = documents_mask.to(device)
+    if queries_mask is not None:
+        kwargs["queries_mask"] = queries_mask.to(device)
+
+    scores = rroq(
+        queries_planes=qp,
+        queries_meta=qm,
+        qc_table=qct,
+        docs_centroid_id=cid,
+        docs_cos_norm=cos_n,
+        docs_sin_norm=sin_n,
+        docs_sign=ds,
+        docs_nz=dn,
+        docs_scales=dsc,
+        **kwargs,
+    ).squeeze(0)
+    final_k = min(k, n_docs)
+    top_sc, top_idx = scores.topk(final_k)
+    idx_list = top_idx.cpu().tolist()
+    return [doc_ids[i] for i in idx_list], top_sc.cpu().tolist()
+
+
+# ------------------------------------------------------------------
 # Per-shard scoring (legacy, kept for backward compat)
 # ------------------------------------------------------------------
 

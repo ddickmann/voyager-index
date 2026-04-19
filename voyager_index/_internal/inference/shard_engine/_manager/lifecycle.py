@@ -144,6 +144,7 @@ class ShardSegmentManagerLifecycleMixin:
 
             roq_doc_codes = None
             roq_doc_meta = None
+            rroq158_payload = None
             effective_compression = cfg.compression
             if cfg.compression == Compression.ROQ4:
                 try:
@@ -169,6 +170,39 @@ class ShardSegmentManagerLifecycleMixin:
                 except (ImportError, Exception) as exc:
                     logger.warning("ROQ quantizer unavailable (%s), falling back to FP16", exc)
                     effective_compression = Compression.FP16
+            elif cfg.compression == Compression.RROQ158:
+                try:
+                    from voyager_index._internal.inference.quantization.rroq158 import (
+                        Rroq158Config,
+                        encode_rroq158,
+                    )
+
+                    logger.info("Training RROQ158 (Riemannian 1.58-bit) quantizer ...")
+                    rroq_cfg = Rroq158Config(
+                        K=getattr(cfg, "rroq158_k", 1024),
+                        group_size=32,
+                        seed=cfg.seed,
+                    )
+                    rroq158_payload = encode_rroq158(
+                        np.asarray(all_vecs, dtype=np.float32), rroq_cfg
+                    )
+                    np.savez(
+                        self._path / "rroq158_meta.npz",
+                        centroids=rroq158_payload.centroids,
+                        fwht_seed=np.array(rroq158_payload.fwht_seed, dtype=np.int64),
+                        dim=np.array(rroq158_payload.dim, dtype=np.int32),
+                        group_size=np.array(rroq158_payload.group_size, dtype=np.int32),
+                    )
+                    logger.info(
+                        "RROQ158 encoding done for %d docs (%d tokens, K=%d)",
+                        n_docs, all_vecs.shape[0], rroq_cfg.K,
+                    )
+                except (ImportError, Exception) as exc:
+                    logger.warning(
+                        "RROQ158 quantizer unavailable (%s), falling back to FP16", exc
+                    )
+                    effective_compression = Compression.FP16
+                    rroq158_payload = None
 
             store = ShardStore(self._path)
             store.build(
@@ -182,6 +216,7 @@ class ShardSegmentManagerLifecycleMixin:
                 uniform_shard_tokens=cfg.uniform_shard_tokens,
                 roq_doc_codes=roq_doc_codes,
                 roq_doc_meta=roq_doc_meta,
+                rroq158_payload=rroq158_payload,
             )
 
             meta = {
