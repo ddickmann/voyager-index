@@ -48,6 +48,7 @@ class ShardSegmentManagerLifecycleMixin:
         self._native_backend_reason: str = "not_probed"
         self._colbandit_reranker: Optional[RerankerProtocol] = None
         self._roq_quantizer = None
+        self._rroq158_meta = None  # lazy: dict{centroids, fwht_seed, dim, group_size} or False
         self._last_exact_path: Optional[str] = None
         self._last_prune_path: Optional[str] = None
         self._checkpoint_mgr = ShardCheckpointManager(self._path)

@@ -51,6 +51,41 @@ class ShardSegmentManagerSearchMixin:
             return None
         return self._roq_quantizer
 
+    def _load_rroq158_meta(self):
+        """Lazy-load `rroq158_meta.npz` (centroids + fwht_seed) from the index dir.
+
+        The artifact is written by `lifecycle.build()` when
+        `Compression.RROQ158` is selected. If absent we cache `False` so we
+        don't keep stat-ing the path on every query.
+        """
+        if self._rroq158_meta is False:
+            return None
+        if self._rroq158_meta is not None:
+            return self._rroq158_meta
+        meta_path = self._path / "rroq158_meta.npz"
+        if not meta_path.exists():
+            self._rroq158_meta = False
+            return None
+        try:
+            arr = np.load(str(meta_path))
+            self._rroq158_meta = {
+                "centroids": np.asarray(arr["centroids"], dtype=np.float32),
+                "fwht_seed": int(np.asarray(arr["fwht_seed"]).item()),
+                "dim": int(np.asarray(arr["dim"]).item()),
+                "group_size": int(np.asarray(arr["group_size"]).item()),
+            }
+            logger.info(
+                "RROQ158 meta loaded: K=%d, dim=%d, group_size=%d",
+                self._rroq158_meta["centroids"].shape[0],
+                self._rroq158_meta["dim"],
+                self._rroq158_meta["group_size"],
+            )
+        except Exception as exc:
+            logger.warning("Failed to load RROQ158 meta from %s: %s", meta_path, exc)
+            self._rroq158_meta = False
+            return None
+        return self._rroq158_meta
+
     def _score_pipeline_fetch(
         self,
         q: torch.Tensor,
@@ -180,6 +215,152 @@ class ShardSegmentManagerSearchMixin:
             logger.warning("ROQ4 serving path failed; falling back to standard scoring: %s", exc)
             return None
 
+    def _score_rroq158_candidates(
+        self,
+        q: torch.Tensor,
+        shard_groups: Dict[int, List[int]],
+        internal_k: int,
+        dev: torch.device,
+    ) -> Optional[Tuple[List[Tuple[int, float]], Dict[str, Any]]]:
+        """Score `shard_groups` using the rroq158 packed shards.
+
+        Works on both CUDA (Triton kernel) and CPU (Rust SIMD kernel via
+        `latence_shard_engine`). The shard payloads must have been built with
+        `Compression.RROQ158`, otherwise `_load_rroq158_meta` returns None
+        and we fall through.
+        """
+        if self._store is None:
+            return None
+        meta = self._load_rroq158_meta()
+        if meta is None:
+            return None
+        try:
+            from voyager_index._internal.inference.quantization.rroq158 import (
+                encode_query_for_rroq158,
+                pack_doc_codes_to_int32_words,
+            )
+            from voyager_index._internal.inference.shard_engine.scorer import (
+                score_rroq158_topk,
+            )
+        except ImportError as exc:
+            logger.warning("rroq158 scoring imports unavailable: %s", exc)
+            return None
+
+        try:
+            with Timer(sync_cuda=False) as t_prepare:
+                q_np = q.detach().cpu().numpy().astype(np.float32)
+                centroids = meta["centroids"]
+                q_inputs = encode_query_for_rroq158(
+                    q_np,
+                    centroids,
+                    fwht_seed=meta["fwht_seed"],
+                    query_bits=4,
+                )
+                qp = torch.from_numpy(q_inputs["q_planes"][None, :, :, :])
+                qm = torch.from_numpy(q_inputs["q_meta"][None, :, :])
+                qct = torch.from_numpy(q_inputs["qc_table"][None, :, :])
+
+            with Timer(sync_cuda=False) as t_fetch:
+                doc_ids: List[int] = []
+                sign_rows: List[np.ndarray] = []
+                nz_rows: List[np.ndarray] = []
+                scl_rows: List[np.ndarray] = []
+                cid_rows: List[np.ndarray] = []
+                cos_rows: List[np.ndarray] = []
+                sin_rows: List[np.ndarray] = []
+                num_shards = 0
+                for shard_id, dids in shard_groups.items():
+                    loaded = self._store.load_shard_rroq158(shard_id)
+                    if loaded is None:
+                        continue
+                    num_shards += 1
+                    sign_t = loaded["sign_plane"].cpu().numpy()
+                    nz_t = loaded["nonzero_plane"].cpu().numpy()
+                    scl_t = loaded["scales"].cpu().numpy().astype(np.float32, copy=False)
+                    cid_t = loaded["centroid_id"].cpu().numpy().astype(np.int32, copy=False)
+                    cos_t = loaded["cos_norm"].cpu().numpy().astype(np.float32, copy=False)
+                    sin_t = loaded["sin_norm"].cpu().numpy().astype(np.float32, copy=False)
+                    offsets = loaded["doc_offsets"].cpu().numpy()
+                    shard_ids_arr = loaded["doc_ids"].cpu().numpy()
+                    row_by_doc = {int(d): idx for idx, d in enumerate(shard_ids_arr.tolist())}
+                    # sign/nz are stored as packed bytes per token; convert to
+                    # int32 words exactly as the kernel/Triton consume them.
+                    sign_words = pack_doc_codes_to_int32_words(sign_t)
+                    nz_words = pack_doc_codes_to_int32_words(nz_t)
+                    for did in dids:
+                        row = row_by_doc.get(int(did))
+                        if row is None:
+                            continue
+                        start = int(offsets[row, 0])
+                        end = int(offsets[row, 1])
+                        doc_ids.append(int(did))
+                        sign_rows.append(sign_words[start:end])
+                        nz_rows.append(nz_words[start:end])
+                        scl_rows.append(scl_t[start:end])
+                        cid_rows.append(cid_t[start:end])
+                        cos_rows.append(cos_t[start:end])
+                        sin_rows.append(sin_t[start:end])
+                if not doc_ids:
+                    return None
+                T_max = max(r.shape[0] for r in sign_rows)
+                B = len(doc_ids)
+                n_words = sign_rows[0].shape[1]
+                n_groups = scl_rows[0].shape[1]
+                doc_sign = np.zeros((B, T_max, n_words), dtype=np.int32)
+                doc_nz = np.zeros((B, T_max, n_words), dtype=np.int32)
+                doc_scl = np.zeros((B, T_max, n_groups), dtype=np.float32)
+                doc_cid = np.zeros((B, T_max), dtype=np.int32)
+                doc_cos = np.zeros((B, T_max), dtype=np.float32)
+                doc_sin = np.zeros((B, T_max), dtype=np.float32)
+                docs_mask = np.zeros((B, T_max), dtype=np.float32)
+                for i, (sg, nz, sc, ci, co, si) in enumerate(
+                    zip(sign_rows, nz_rows, scl_rows, cid_rows, cos_rows, sin_rows)
+                ):
+                    t = sg.shape[0]
+                    doc_sign[i, :t] = sg
+                    doc_nz[i, :t] = nz
+                    doc_scl[i, :t] = sc
+                    doc_cid[i, :t] = ci
+                    doc_cos[i, :t] = co
+                    doc_sin[i, :t] = si
+                    docs_mask[i, :t] = 1.0
+
+            with Timer(sync_cuda=dev.type == "cuda") as t_exact:
+                ids, scores = score_rroq158_topk(
+                    query_planes=qp,
+                    query_meta=qm,
+                    qc_table=qct,
+                    doc_centroid_id=torch.from_numpy(doc_cid),
+                    doc_cos_norm=torch.from_numpy(doc_cos),
+                    doc_sin_norm=torch.from_numpy(doc_sin),
+                    doc_sign=torch.from_numpy(doc_sign),
+                    doc_nz=torch.from_numpy(doc_nz),
+                    doc_scales=torch.from_numpy(doc_scl),
+                    doc_ids=doc_ids,
+                    k=internal_k,
+                    documents_mask=torch.from_numpy(docs_mask),
+                    device=dev,
+                )
+            if not ids and doc_ids:
+                return None
+            stage_stats = self._empty_exact_stage_stats("rroq158_pipeline")
+            stage_stats["prepare_ms"] = t_prepare.elapsed_ms
+            stage_stats["fetch_ms"] = t_fetch.elapsed_ms
+            stage_stats["exact_ms"] = t_exact.elapsed_ms
+            stage_stats["maxsim_ms"] = t_exact.elapsed_ms
+            stage_stats["num_shards_fetched"] = num_shards
+            stage_stats["num_docs_scored"] = len(doc_ids)
+            stage_stats["h2d_bytes"] = int(
+                doc_sign.nbytes + doc_nz.nbytes + doc_scl.nbytes
+                + doc_cid.nbytes + doc_cos.nbytes + doc_sin.nbytes
+            )
+            return list(zip(ids, scores)), stage_stats
+        except Exception as exc:
+            logger.warning(
+                "RROQ158 serving path failed; falling back to standard scoring: %s", exc,
+            )
+            return None
+
     def _resolve_scoring_device(self) -> torch.device:
         if str(self._device).startswith("cuda") and torch.cuda.is_available():
             return torch.device(self._device)
@@ -274,6 +455,7 @@ class ShardSegmentManagerSearchMixin:
         shard_groups = docs_by_shard or self._group_candidate_ids_by_shard(exact_candidate_ids)
         quant_mode = str(getattr(scfg, "quantization_mode", "") or "").strip().lower()
         want_roq4 = dev.type == "cuda" and quant_mode == "roq4"
+        want_rroq158 = quant_mode == "rroq158"
         want_quantized_kernel = dev.type == "cuda" and quant_mode in {"int8", "fp8"}
         want_colbandit = bool(getattr(scfg, "use_colbandit", False))
 
@@ -287,6 +469,18 @@ class ShardSegmentManagerSearchMixin:
             if roq_result is not None:
                 results, stage_stats = roq_result
                 return results, exact_candidate_ids, "roq4_pipeline", stage_stats
+
+        if want_rroq158:
+            # rroq158 works on both CUDA (Triton) and CPU (Rust SIMD).
+            rroq_result = self._score_rroq158_candidates(
+                q,
+                shard_groups,
+                internal_k,
+                dev,
+            )
+            if rroq_result is not None:
+                results, stage_stats = rroq_result
+                return results, exact_candidate_ids, "rroq158_pipeline", stage_stats
 
         if want_colbandit and self._pipeline is not None:
             results, stage_stats = self._score_pipeline_fetch(

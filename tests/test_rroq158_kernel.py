@@ -106,6 +106,128 @@ def _brute_force_maxsim(queries, enc, n_docs, n_d_tok):
     return out
 
 
+def test_rroq158_rust_simd_matches_python_reference():
+    """The Rust AVX2/NEON CPU kernel must produce per-(query, doc) scores
+    that are bitwise-identical (up to f32 rounding) to the python reference.
+    This is the critical parity test for the production CPU lane.
+    """
+    pytest.importorskip("latence_shard_engine")
+    import latence_shard_engine as eng
+
+    enc, q_in, _queries, _, n_docs, n_d_tok = _make_fixture(
+        n_docs=8, n_q_tok=4, n_d_tok=8, dim=128, K=64, seed=2,
+    )
+    sign_doc, nz_doc, scales_doc, cid_doc, cos_doc, sin_doc = _reshape_doc_arrays(
+        enc, n_docs, n_d_tok,
+    )
+
+    qp = q_in["q_planes"][None, :, :, :]
+    qm = q_in["q_meta"][None, :, :]
+    qc = q_in["qc_table"][None, :, :]
+
+    ref = reference_score_rroq158(
+        qp, qm, qc, cid_doc, cos_doc, sin_doc, sign_doc, nz_doc, scales_doc,
+    )
+
+    A, S, query_bits, n_words = qp.shape
+    B, T = sign_doc.shape[:2]
+    n_groups = scales_doc.shape[-1]
+    K = qc.shape[-1]
+
+    flat = eng.rroq158_score_batch(
+        qp.astype(np.int32, copy=False).ravel(),
+        qm.astype(np.float32, copy=False).ravel(),
+        qc.astype(np.float32, copy=False).ravel(),
+        sign_doc.astype(np.int32, copy=False).ravel(),
+        nz_doc.astype(np.int32, copy=False).ravel(),
+        scales_doc.astype(np.float32, copy=False).ravel(),
+        cid_doc.astype(np.int32, copy=False).ravel(),
+        cos_doc.astype(np.float32, copy=False).ravel(),
+        sin_doc.astype(np.float32, copy=False).ravel(),
+        A, B, S, T, n_words, n_groups, query_bits, K,
+    )
+    out = flat.reshape(A, B)
+    np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4)
+
+
+def test_rroq158_rust_simd_microbench():
+    """Microbench drop for the Rust CPU kernel — records p50/p95/QPS into
+    ``reports/kernel_rroq158_rust.json``. CPU-only, no CUDA needed."""
+    pytest.importorskip("latence_shard_engine")
+    import latence_shard_engine as eng
+
+    rng = np.random.default_rng(11)
+    n_q_tok = 32
+    n_d_tok = 32
+    dim = 128
+    K = 1024
+    n_docs = 512
+
+    n_total_d = n_docs * n_d_tok
+    docs = rng.standard_normal((n_total_d, dim)).astype(np.float32)
+    queries = rng.standard_normal((n_q_tok, dim)).astype(np.float32)
+
+    cfg = Rroq158Config(K=K, group_size=32, fit_sample_cap=8_000,
+                        encode_chunk=8_000, seed=0)
+    enc = encode_rroq158(docs, cfg)
+    q_in = encode_query_for_rroq158(queries, enc.centroids,
+                                    fwht_seed=enc.fwht_seed, query_bits=4)
+    sign_doc, nz_doc, scales_doc, cid_doc, cos_doc, sin_doc = _reshape_doc_arrays(
+        enc, n_docs, n_d_tok,
+    )
+
+    qp = q_in["q_planes"][None, :, :, :]
+    qm = q_in["q_meta"][None, :, :]
+    qc = q_in["qc_table"][None, :, :]
+    A, S, query_bits, n_words = qp.shape
+    B, T = sign_doc.shape[:2]
+    n_groups = scales_doc.shape[-1]
+
+    qp_f = qp.astype(np.int32, copy=False).ravel()
+    qm_f = qm.astype(np.float32, copy=False).ravel()
+    qc_f = qc.astype(np.float32, copy=False).ravel()
+    sg_f = sign_doc.astype(np.int32, copy=False).ravel()
+    nz_f = nz_doc.astype(np.int32, copy=False).ravel()
+    sc_f = scales_doc.astype(np.float32, copy=False).ravel()
+    ci_f = cid_doc.astype(np.int32, copy=False).ravel()
+    co_f = cos_doc.astype(np.float32, copy=False).ravel()
+    si_f = sin_doc.astype(np.float32, copy=False).ravel()
+
+    # warm up the rayon pool
+    for _ in range(5):
+        eng.rroq158_score_batch(
+            qp_f, qm_f, qc_f, sg_f, nz_f, sc_f, ci_f, co_f, si_f,
+            A, B, S, T, n_words, n_groups, query_bits, K,
+        )
+
+    times = []
+    for _ in range(50):
+        t0 = time.perf_counter()
+        eng.rroq158_score_batch(
+            qp_f, qm_f, qc_f, sg_f, nz_f, sc_f, ci_f, co_f, si_f,
+            A, B, S, T, n_words, n_groups, query_bits, K,
+        )
+        times.append((time.perf_counter() - t0) * 1000.0)
+    times.sort()
+    p50 = times[len(times) // 2]
+    p95 = times[int(len(times) * 0.95)]
+    qps = (n_docs * 1000.0) / p50
+
+    out_dir = Path("reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.joinpath("kernel_rroq158_rust.json").write_text(json.dumps({
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "docs_per_query": n_docs,
+        "qps": qps,
+        "n_q_tok": n_q_tok,
+        "n_d_tok": n_d_tok,
+        "dim": dim,
+        "K": K,
+    }, indent=2))
+    print(f"\n[rroq158-rust-cpu] p50={p50:.2f}ms  p95={p95:.2f}ms  QPS={qps:.0f} docs/s")
+
+
 def test_rroq158_python_reference_matches_brute():
     enc, q_in, queries, _, n_docs, n_d_tok = _make_fixture(
         n_docs=4, n_q_tok=3, n_d_tok=8, dim=64, K=32, seed=0,

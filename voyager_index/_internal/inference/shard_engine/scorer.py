@@ -775,6 +775,105 @@ def _get_rroq158_maxsim():
     return _rroq158_fn
 
 
+_rroq158_cpu_fn = None
+
+
+def _get_rroq158_cpu_kernel():
+    """Lazy-load the Rust SIMD CPU kernel from `latence_shard_engine`.
+
+    Returns ``None`` if the wheel is unavailable, in which case
+    ``score_rroq158_topk`` on CPU falls back to an empty result and the
+    caller should reroute to a CPU FP16 path.
+    """
+    global _rroq158_cpu_fn
+    if _rroq158_cpu_fn is not None:
+        return _rroq158_cpu_fn
+    try:
+        import latence_shard_engine as _eng
+
+        _rroq158_cpu_fn = getattr(_eng, "rroq158_score_batch", None)
+        if _rroq158_cpu_fn is not None:
+            logger.info("Using latence_shard_engine RROQ158 CPU SIMD kernel")
+        else:
+            logger.warning(
+                "latence_shard_engine missing rroq158_score_batch; rebuild the "
+                "Rust wheel from src/kernels/shard_engine to enable CPU rroq158"
+            )
+    except ImportError:
+        _rroq158_cpu_fn = None
+        logger.warning("latence_shard_engine unavailable; CPU rroq158 disabled")
+    return _rroq158_cpu_fn
+
+
+def _score_rroq158_cpu(
+    query_planes: torch.Tensor,
+    query_meta: torch.Tensor,
+    qc_table: torch.Tensor,
+    doc_centroid_id: torch.Tensor,
+    doc_cos_norm: torch.Tensor,
+    doc_sin_norm: torch.Tensor,
+    doc_sign: torch.Tensor,
+    doc_nz: torch.Tensor,
+    doc_scales: torch.Tensor,
+    doc_ids: List[int],
+    k: int,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+) -> Tuple[List[int], List[float]]:
+    """CPU dispatch for `score_rroq158_topk` via the Rust SIMD kernel."""
+    fn = _get_rroq158_cpu_kernel()
+    if fn is None:
+        return [], []
+
+    import numpy as np
+
+    qp_np = query_planes.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
+    qm_np = query_meta.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+    qc_np = qc_table.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+    cid_np = doc_centroid_id.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
+    cos_np = doc_cos_norm.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+    sin_np = doc_sin_norm.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+    ds_np = doc_sign.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
+    dn_np = doc_nz.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
+    dsc_np = doc_scales.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+
+    A, S, query_bits, n_words = qp_np.shape
+    B, T = ds_np.shape[:2]
+    n_groups = dsc_np.shape[-1]
+    K = qc_np.shape[-1]
+
+    q_mask_np = None
+    if queries_mask is not None:
+        q_mask_np = (
+            queries_mask.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+        ).ravel()
+    d_mask_np = None
+    if documents_mask is not None:
+        d_mask_np = (
+            documents_mask.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+        ).ravel()
+
+    flat = fn(
+        qp_np.ravel(),
+        qm_np.ravel(),
+        qc_np.ravel(),
+        ds_np.ravel(),
+        dn_np.ravel(),
+        dsc_np.ravel(),
+        cid_np.ravel(),
+        cos_np.ravel(),
+        sin_np.ravel(),
+        A, B, S, T, n_words, n_groups, query_bits, K,
+        q_mask_np,
+        d_mask_np,
+    )
+    scores = flat.reshape(A, B)[0]
+    final_k = min(k, B)
+    top_idx = np.argpartition(-scores, final_k - 1)[:final_k]
+    top_idx = top_idx[np.argsort(-scores[top_idx])]
+    return [doc_ids[i] for i in top_idx.tolist()], scores[top_idx].tolist()
+
+
 def score_rroq158_topk(
     query_planes: torch.Tensor,         # (1, S, query_bits, n_words) int32
     query_meta: torch.Tensor,           # (1, S, 2) float32
@@ -797,18 +896,26 @@ def score_rroq158_topk(
     on the target device. ``doc_cos_norm`` / ``doc_sin_norm`` are stored as
     fp16 on disk to halve their footprint; the kernel reads them as fp32.
     """
-    rroq = _get_rroq158_maxsim()
-    if rroq is None:
-        return [], []
-
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == "cpu":
-        logger.warning("RROQ158 scoring requires CUDA; returning empty results")
-        return [], []
 
     n_docs = doc_sign.shape[0]
     if n_docs == 0:
+        return [], []
+
+    if device.type == "cpu":
+        # CPU lane uses the Rust SIMD kernel (latence_shard_engine.
+        # rroq158_score_batch). Same math as the Triton GPU kernel; parity
+        # validated to rtol=1e-4 in tests/test_rroq158_kernel.py.
+        return _score_rroq158_cpu(
+            query_planes, query_meta, qc_table,
+            doc_centroid_id, doc_cos_norm, doc_sin_norm,
+            doc_sign, doc_nz, doc_scales,
+            doc_ids, k, documents_mask, queries_mask,
+        )
+
+    rroq = _get_rroq158_maxsim()
+    if rroq is None:
         return [], []
 
     qp = query_planes.to(device=device, dtype=torch.int32)

@@ -11,6 +11,7 @@ pub mod centroid_approx;
 pub mod codec;
 pub mod merged_mmap;
 pub mod fused_maxsim;
+pub mod fused_rroq158;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,7 +21,8 @@ use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
-use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods, PyArrayMethods};
+use pyo3::wrap_pyfunction;
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods, PyArrayMethods};
 
 use crate::codec::ResidualCodec;
 use crate::merged_mmap::MergedMmap;
@@ -1092,10 +1094,234 @@ fn cpu_maxsim(query: &[f32], doc: &[f32], dim: usize, n_q: usize) -> f32 {
 // Python module
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// rroq158 fused CPU scorer (free function)
+// ---------------------------------------------------------------
+
+/// Score a batch of (query × document) pairs with the rroq158 fused MaxSim
+/// kernel on CPU. Mirrors `voyager_index._internal.kernels.triton_roq_rroq158
+/// .roq_maxsim_rroq158` exactly so per-token scores are bitwise-identical
+/// (ignoring float-rounding) to the Triton GPU kernel and the python reference.
+///
+/// All bit-plane tensors must be `int32`; all float tensors must be `float32`.
+///
+/// Returns a flat `(A * B,)` `float32` numpy array of scores; the python
+/// caller reshapes and runs top-k.
+#[pyfunction]
+#[pyo3(signature = (
+    q_planes, q_meta, qc_table,
+    docs_sign, docs_nz, docs_scl, docs_cid, docs_cos, docs_sin,
+    big_a, big_b, big_s, big_t,
+    n_words, n_groups, query_bits, big_k,
+    q_mask = None, docs_mask = None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn rroq158_score_batch<'py>(
+    py: Python<'py>,
+    q_planes: PyReadonlyArray1<i32>,
+    q_meta: PyReadonlyArray1<f32>,
+    qc_table: PyReadonlyArray1<f32>,
+    docs_sign: PyReadonlyArray1<i32>,
+    docs_nz: PyReadonlyArray1<i32>,
+    docs_scl: PyReadonlyArray1<f32>,
+    docs_cid: PyReadonlyArray1<i32>,
+    docs_cos: PyReadonlyArray1<f32>,
+    docs_sin: PyReadonlyArray1<f32>,
+    big_a: usize,
+    big_b: usize,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    query_bits: usize,
+    big_k: usize,
+    q_mask: Option<PyReadonlyArray1<f32>>,
+    docs_mask: Option<PyReadonlyArray1<f32>>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    // Shape sanity checks — we treat the inputs as flat row-major buffers
+    // and rely on the python caller to pass contiguous arrays in the right
+    // logical shape.
+    let group_words = n_words / n_groups;
+    if group_words * n_groups != n_words {
+        return Err(PyValueError::new_err(format!(
+            "n_words ({n_words}) must be divisible by n_groups ({n_groups})"
+        )));
+    }
+    let exp_q_planes = big_a * big_s * query_bits * n_words;
+    let exp_q_meta = big_a * big_s * 2;
+    let exp_qc = big_a * big_s * big_k;
+    let exp_d_bp = big_b * big_t * n_words;
+    let exp_d_scl = big_b * big_t * n_groups;
+    let exp_d_cid = big_b * big_t;
+    let exp_d_norm = big_b * big_t;
+
+    let q_planes_slice = q_planes
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("q_planes must be contiguous"))?;
+    if q_planes_slice.len() != exp_q_planes {
+        return Err(PyValueError::new_err(format!(
+            "q_planes len {} != A*S*query_bits*n_words {}",
+            q_planes_slice.len(),
+            exp_q_planes
+        )));
+    }
+    let q_meta_slice = q_meta
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("q_meta must be contiguous"))?;
+    if q_meta_slice.len() != exp_q_meta {
+        return Err(PyValueError::new_err(format!(
+            "q_meta len {} != A*S*2 {}",
+            q_meta_slice.len(),
+            exp_q_meta
+        )));
+    }
+    let qc_table_slice = qc_table
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("qc_table must be contiguous"))?;
+    if qc_table_slice.len() != exp_qc {
+        return Err(PyValueError::new_err(format!(
+            "qc_table len {} != A*S*K {}",
+            qc_table_slice.len(),
+            exp_qc
+        )));
+    }
+    let docs_sign_slice = docs_sign
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_sign must be contiguous"))?;
+    if docs_sign_slice.len() != exp_d_bp {
+        return Err(PyValueError::new_err(format!(
+            "docs_sign len {} != B*T*n_words {}",
+            docs_sign_slice.len(),
+            exp_d_bp
+        )));
+    }
+    let docs_nz_slice = docs_nz
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_nz must be contiguous"))?;
+    if docs_nz_slice.len() != exp_d_bp {
+        return Err(PyValueError::new_err(format!(
+            "docs_nz len {} != B*T*n_words {}",
+            docs_nz_slice.len(),
+            exp_d_bp
+        )));
+    }
+    let docs_scl_slice = docs_scl
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_scl must be contiguous"))?;
+    if docs_scl_slice.len() != exp_d_scl {
+        return Err(PyValueError::new_err(format!(
+            "docs_scl len {} != B*T*n_groups {}",
+            docs_scl_slice.len(),
+            exp_d_scl
+        )));
+    }
+    let docs_cid_slice = docs_cid
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_cid must be contiguous"))?;
+    if docs_cid_slice.len() != exp_d_cid {
+        return Err(PyValueError::new_err(format!(
+            "docs_cid len {} != B*T {}",
+            docs_cid_slice.len(),
+            exp_d_cid
+        )));
+    }
+    let docs_cos_slice = docs_cos
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_cos must be contiguous"))?;
+    if docs_cos_slice.len() != exp_d_norm {
+        return Err(PyValueError::new_err(format!(
+            "docs_cos len {} != B*T {}",
+            docs_cos_slice.len(),
+            exp_d_norm
+        )));
+    }
+    let docs_sin_slice = docs_sin
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("docs_sin must be contiguous"))?;
+    if docs_sin_slice.len() != exp_d_norm {
+        return Err(PyValueError::new_err(format!(
+            "docs_sin len {} != B*T {}",
+            docs_sin_slice.len(),
+            exp_d_norm
+        )));
+    }
+    let q_mask_owned = q_mask
+        .as_ref()
+        .map(|a| a.as_slice().map(|s| s.to_vec()))
+        .transpose()
+        .map_err(|_| PyValueError::new_err("q_mask must be contiguous"))?;
+    if let Some(qm) = q_mask_owned.as_ref() {
+        if qm.len() != big_a * big_s {
+            return Err(PyValueError::new_err(format!(
+                "q_mask len {} != A*S {}",
+                qm.len(),
+                big_a * big_s
+            )));
+        }
+    }
+    let d_mask_owned = docs_mask
+        .as_ref()
+        .map(|a| a.as_slice().map(|s| s.to_vec()))
+        .transpose()
+        .map_err(|_| PyValueError::new_err("docs_mask must be contiguous"))?;
+    if let Some(dm) = d_mask_owned.as_ref() {
+        if dm.len() != big_b * big_t {
+            return Err(PyValueError::new_err(format!(
+                "docs_mask len {} != B*T {}",
+                dm.len(),
+                big_b * big_t
+            )));
+        }
+    }
+
+    // Copy the bit-plane and float slices we need to give ownership to the
+    // worker thread; numpy slices borrow the GIL. The bit-plane buffers are
+    // tiny relative to the work (typical: B*T*n_words ≤ 2000 * 256 * 16 = 8 MB).
+    let q_planes_v = q_planes_slice.to_vec();
+    let q_meta_v = q_meta_slice.to_vec();
+    let qc_table_v = qc_table_slice.to_vec();
+    let docs_sign_v = docs_sign_slice.to_vec();
+    let docs_nz_v = docs_nz_slice.to_vec();
+    let docs_scl_v = docs_scl_slice.to_vec();
+    let docs_cid_v = docs_cid_slice.to_vec();
+    let docs_cos_v = docs_cos_slice.to_vec();
+    let docs_sin_v = docs_sin_slice.to_vec();
+
+    let scores = py.allow_threads(move || {
+        let mut out = vec![0f32; big_a * big_b];
+        fused_rroq158::score_batch(
+            &q_planes_v,
+            &q_meta_v,
+            &qc_table_v,
+            q_mask_owned.as_deref(),
+            &docs_sign_v,
+            &docs_nz_v,
+            &docs_scl_v,
+            &docs_cid_v,
+            &docs_cos_v,
+            &docs_sin_v,
+            d_mask_owned.as_deref(),
+            big_a,
+            big_b,
+            big_s,
+            big_t,
+            n_words,
+            n_groups,
+            query_bits,
+            big_k,
+            &mut out,
+        );
+        out
+    });
+
+    Ok(PyArray1::from_vec_bound(py, scores))
+}
+
 #[pymodule]
 fn latence_shard_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ShardIndex>()?;
     m.add_class::<metadata::MetadataStore>()?;
+    m.add_function(wrap_pyfunction!(rroq158_score_batch, m)?)?;
     Ok(())
 }
 
