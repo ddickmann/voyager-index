@@ -805,6 +805,43 @@ def _get_rroq158_cpu_kernel():
     return _rroq158_cpu_fn
 
 
+def _resolve_rroq158_n_threads(default: int | None = None) -> int | None:
+    """Return ``n_threads`` argument for the Rust kernel, or None to use the
+    rayon global pool.
+
+    Heuristic:
+
+    - ``VOYAGER_RROQ158_N_THREADS`` env var wins if set (``0`` or empty
+      string disables — use the global pool).
+    - Otherwise, if the python side runs the kernel from N parallel
+      ``ThreadPoolExecutor`` workers (set via ``VOYAGER_RROQ158_N_WORKERS``),
+      cap rayon to ``cpu_count() // n_workers`` so the total kernel
+      thread count never exceeds physical cores. This avoids the
+      1024-way over-subscription scenario (8 python workers × 128 default
+      rayon threads on a 128-core box).
+    - Default: leave rayon's global pool alone (``None``). The default
+      pool is one thread per logical core, which is fine when the kernel
+      is the sole consumer.
+    """
+    import os
+    raw = os.environ.get("VOYAGER_RROQ158_N_THREADS")
+    if raw is not None:
+        try:
+            n = int(raw)
+            return n if n > 0 else None
+        except ValueError:
+            pass
+    workers_raw = os.environ.get("VOYAGER_RROQ158_N_WORKERS")
+    if workers_raw is not None:
+        try:
+            n_workers = max(1, int(workers_raw))
+            cpu = os.cpu_count() or 1
+            return max(1, cpu // n_workers)
+        except ValueError:
+            pass
+    return default
+
+
 def _score_rroq158_cpu(
     query_planes: torch.Tensor,
     query_meta: torch.Tensor,
@@ -819,6 +856,7 @@ def _score_rroq158_cpu(
     k: int,
     documents_mask: torch.Tensor = None,
     queries_mask: torch.Tensor = None,
+    n_threads: int | None = None,
 ) -> Tuple[List[int], List[float]]:
     """CPU dispatch for `score_rroq158_topk` via the Rust SIMD kernel."""
     fn = _get_rroq158_cpu_kernel()
@@ -853,6 +891,8 @@ def _score_rroq158_cpu(
             documents_mask.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
         ).ravel()
 
+    n_threads_eff = _resolve_rroq158_n_threads(default=n_threads)
+
     flat = fn(
         qp_np.ravel(),
         qm_np.ravel(),
@@ -866,6 +906,7 @@ def _score_rroq158_cpu(
         A, B, S, T, n_words, n_groups, query_bits, K,
         q_mask_np,
         d_mask_np,
+        n_threads=n_threads_eff,
     )
     scores = flat.reshape(A, B)[0]
     final_k = min(k, B)

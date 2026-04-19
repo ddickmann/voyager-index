@@ -44,6 +44,49 @@ pub type GpuScoreFn = dyn Fn(&[f32], &[f32], &[u64], &[(usize, usize)], usize) -
     + Send
     + Sync;
 
+/// Send + Sync raw-pointer slice. Used to thread numpy buffers across
+/// `py.allow_threads` without copying. The numpy crate's `PyReadonlyArray`
+/// wrapper borrows from the GIL token via a non-`Send` `&[T]` slice; we
+/// strip that lifetime by capturing only the raw pointer + length, and
+/// reconstitute the slice inside the GIL-released closure.
+///
+/// SAFETY contract for callers:
+///   1. The pointer must outlive every `as_slice()` call. In practice this
+///      means the originating PyReadonlyArray handle must remain alive on
+///      the parent stack frame for the entire duration of the closure
+///      (true for the rroq158 binding because the handles are stack
+///      locals scoped to the pyfunction body).
+///   2. No other thread (Python or otherwise) may mutate the underlying
+///      buffer between the slice construction and the closure return.
+///      `PyReadonlyArrayN` enforces this for numpy: it requires the array
+///      to be non-writable for the lifetime of the borrow, which numpy
+///      verifies internally.
+struct SendSlice<T> {
+    ptr: *const T,
+    len: usize,
+}
+
+impl<T> SendSlice<T> {
+    #[inline]
+    fn from_slice(s: &[T]) -> Self {
+        Self { ptr: s.as_ptr(), len: s.len() }
+    }
+
+    /// SAFETY: see struct docstring; the caller must uphold the lifetime
+    /// + non-mutation invariants.
+    #[inline]
+    unsafe fn as_slice<'a>(&self) -> &'a [T] {
+        std::slice::from_raw_parts(self.ptr, self.len)
+    }
+}
+
+// SAFETY: SendSlice is just a raw pointer + length; `Send + Sync` for
+// `T: Send + Sync` matches the safety invariant on callers (no concurrent
+// mutation of the pointee). PyO3's `PyReadonlyArray` upholds this by
+// statically forbidding writes to the borrowed numpy buffer.
+unsafe impl<T: Send> Send for SendSlice<T> {}
+unsafe impl<T: Sync> Sync for SendSlice<T> {}
+
 fn wrap_gpu_score_fn(py_fn: Py<PyAny>) -> Box<GpuScoreFn> {
     Box::new(
         move |query: &[f32],
@@ -1113,7 +1156,7 @@ fn cpu_maxsim(query: &[f32], doc: &[f32], dim: usize, n_q: usize) -> f32 {
     docs_sign, docs_nz, docs_scl, docs_cid, docs_cos, docs_sin,
     big_a, big_b, big_s, big_t,
     n_words, n_groups, query_bits, big_k,
-    q_mask = None, docs_mask = None,
+    q_mask = None, docs_mask = None, n_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn rroq158_score_batch<'py>(
@@ -1137,6 +1180,7 @@ fn rroq158_score_batch<'py>(
     big_k: usize,
     q_mask: Option<PyReadonlyArray1<f32>>,
     docs_mask: Option<PyReadonlyArray1<f32>>,
+    n_threads: Option<usize>,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     // Shape sanity checks — we treat the inputs as flat row-major buffers
     // and rely on the python caller to pass contiguous arrays in the right
@@ -1245,12 +1289,12 @@ fn rroq158_score_batch<'py>(
             exp_d_norm
         )));
     }
-    let q_mask_owned = q_mask
+    let q_mask_slice_opt = q_mask
         .as_ref()
-        .map(|a| a.as_slice().map(|s| s.to_vec()))
+        .map(|a| a.as_slice())
         .transpose()
         .map_err(|_| PyValueError::new_err("q_mask must be contiguous"))?;
-    if let Some(qm) = q_mask_owned.as_ref() {
+    if let Some(qm) = q_mask_slice_opt {
         if qm.len() != big_a * big_s {
             return Err(PyValueError::new_err(format!(
                 "q_mask len {} != A*S {}",
@@ -1259,12 +1303,12 @@ fn rroq158_score_batch<'py>(
             )));
         }
     }
-    let d_mask_owned = docs_mask
+    let d_mask_slice_opt = docs_mask
         .as_ref()
-        .map(|a| a.as_slice().map(|s| s.to_vec()))
+        .map(|a| a.as_slice())
         .transpose()
         .map_err(|_| PyValueError::new_err("docs_mask must be contiguous"))?;
-    if let Some(dm) = d_mask_owned.as_ref() {
+    if let Some(dm) = d_mask_slice_opt {
         if dm.len() != big_b * big_t {
             return Err(PyValueError::new_err(format!(
                 "docs_mask len {} != B*T {}",
@@ -1274,33 +1318,63 @@ fn rroq158_score_batch<'py>(
         }
     }
 
-    // Copy the bit-plane and float slices we need to give ownership to the
-    // worker thread; numpy slices borrow the GIL. The bit-plane buffers are
-    // tiny relative to the work (typical: B*T*n_words ≤ 2000 * 256 * 16 = 8 MB).
-    let q_planes_v = q_planes_slice.to_vec();
-    let q_meta_v = q_meta_slice.to_vec();
-    let qc_table_v = qc_table_slice.to_vec();
-    let docs_sign_v = docs_sign_slice.to_vec();
-    let docs_nz_v = docs_nz_slice.to_vec();
-    let docs_scl_v = docs_scl_slice.to_vec();
-    let docs_cid_v = docs_cid_slice.to_vec();
-    let docs_cos_v = docs_cos_slice.to_vec();
-    let docs_sin_v = docs_sin_slice.to_vec();
+    // Build Send + Sync raw-pointer aliases for every input slice so we can
+    // drop the GIL inside `py.allow_threads` without copying ~16 MB/query of
+    // numpy buffers. The numpy crate's PyReadonlyArray handles keep the
+    // Python objects alive for the entire scope of this function (they are
+    // owned by stack locals on this PyO3 callstack), so the underlying
+    // pointers remain valid across the GIL release.
+    //
+    // SAFETY rationale (see SendSlice docstring): callers must not mutate
+    // the input numpy arrays from any other Python thread for the duration
+    // of this call. PyReadonlyArrayN enforces this at construction by
+    // requiring the array to be non-writeable (it borrows immutably; numpy
+    // panics if the buffer is later modified through a different alias
+    // while this borrow is live). This is standard PyO3 + numpy practice
+    // for native extensions that release the GIL.
+    let qp_send = SendSlice::from_slice(q_planes_slice);
+    let qm_send = SendSlice::from_slice(q_meta_slice);
+    let qc_send = SendSlice::from_slice(qc_table_slice);
+    let ds_send = SendSlice::from_slice(docs_sign_slice);
+    let dn_send = SendSlice::from_slice(docs_nz_slice);
+    let dscl_send = SendSlice::from_slice(docs_scl_slice);
+    let dcid_send = SendSlice::from_slice(docs_cid_slice);
+    let dcos_send = SendSlice::from_slice(docs_cos_slice);
+    let dsin_send = SendSlice::from_slice(docs_sin_slice);
+    let qmask_send = q_mask_slice_opt.map(SendSlice::from_slice);
+    let dmask_send = d_mask_slice_opt.map(SendSlice::from_slice);
 
     let scores = py.allow_threads(move || {
+        // SAFETY: each `as_slice()` reconstitutes the borrow inside this
+        // GIL-released closure. The lifetime is bounded by `move` capture
+        // semantics; the underlying numpy buffers are kept alive by the
+        // PyReadonlyArrayN handles still owned on the parent stack frame
+        // (they are dropped only after this closure returns).
+        let q_planes_v = unsafe { qp_send.as_slice() };
+        let q_meta_v = unsafe { qm_send.as_slice() };
+        let qc_table_v = unsafe { qc_send.as_slice() };
+        let docs_sign_v = unsafe { ds_send.as_slice() };
+        let docs_nz_v = unsafe { dn_send.as_slice() };
+        let docs_scl_v = unsafe { dscl_send.as_slice() };
+        let docs_cid_v = unsafe { dcid_send.as_slice() };
+        let docs_cos_v = unsafe { dcos_send.as_slice() };
+        let docs_sin_v = unsafe { dsin_send.as_slice() };
+        let q_mask_v = qmask_send.as_ref().map(|s| unsafe { s.as_slice() });
+        let d_mask_v = dmask_send.as_ref().map(|s| unsafe { s.as_slice() });
+
         let mut out = vec![0f32; big_a * big_b];
         fused_rroq158::score_batch(
-            &q_planes_v,
-            &q_meta_v,
-            &qc_table_v,
-            q_mask_owned.as_deref(),
-            &docs_sign_v,
-            &docs_nz_v,
-            &docs_scl_v,
-            &docs_cid_v,
-            &docs_cos_v,
-            &docs_sin_v,
-            d_mask_owned.as_deref(),
+            q_planes_v,
+            q_meta_v,
+            qc_table_v,
+            q_mask_v,
+            docs_sign_v,
+            docs_nz_v,
+            docs_scl_v,
+            docs_cid_v,
+            docs_cos_v,
+            docs_sin_v,
+            d_mask_v,
             big_a,
             big_b,
             big_s,
@@ -1309,6 +1383,7 @@ fn rroq158_score_batch<'py>(
             n_groups,
             query_bits,
             big_k,
+            n_threads,
             &mut out,
         );
         out

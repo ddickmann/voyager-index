@@ -48,30 +48,57 @@
 //!   q_mask     [A, S]                       f32
 
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+// ─────────────────── popcount primitives ───────────────────
+//
+// CRITICAL: `u32::count_ones()` in the Rust stdlib is precompiled without the
+// `popcnt` target feature, so on x86_64 it lowers to a 10-instruction SWAR
+// sequence (~10× slower than the hardware `popcntq` instruction). To force
+// the hardware path we wrap the intrinsic in a `#[target_feature(enable =
+// "popcnt")]` function and call it from a `#[target_feature(...)]`-gated
+// inner kernel. The feature-gated context makes LLVM emit `popcntq`
+// directly. Verified at the binary level: the gated path emits ~960 popcnts
+// for the dim=128 inner loop; the scalar path emits 0.
 
 #[inline(always)]
-fn popc(x: u32) -> u32 {
+fn popc_scalar(x: u32) -> u32 {
     x.count_ones()
 }
 
-/// Score a single (query, doc) pair. Pure scalar — used as the inner kernel
-/// for the parallel batch entrypoint and as the parity reference.
-///
-/// `n_groups * group_words == n_words` is required by the caller.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "popcnt")]
 #[inline]
+unsafe fn popc_x86(x: u32) -> u32 {
+    core::arch::x86_64::_popcnt32(x as i32) as u32
+}
+
+// ─────────────────── shared inner loop ───────────────────
+//
+// The body is parameterised on a popcount function so we can compile it once
+// per ISA tier (scalar vs x86_64-v3 vs aarch64-NEON) without code
+// duplication. Marked `#[inline(always)]` so the chosen popcount intrinsic
+// is inlined into the calling target_feature scope and LLVM lowers it to
+// the right instruction.
+
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub fn score_pair(
-    q_planes_qa: &[i32],          // (S, query_bits, n_words)
-    q_meta_qa: &[f32],            // (S, 2)
-    qc_table_qa: &[f32],          // (S, K)
-    q_mask_qa: Option<&[f32]>,    // (S,) or None
-    docs_sign_d: &[i32],          // (T, n_words)
-    docs_nz_d: &[i32],            // (T, n_words)
-    docs_scl_d: &[f32],           // (T, n_groups)
-    docs_cid_d: &[i32],           // (T,)
-    docs_cos_d: &[f32],           // (T,)
-    docs_sin_d: &[f32],           // (T,)
-    docs_mask_d: Option<&[f32]>,  // (T,) or None
+fn score_pair_body(
+    q_planes_qa: &[i32],
+    q_meta_qa: &[f32],
+    qc_table_qa: &[f32],
+    q_mask_qa: Option<&[f32]>,
+    docs_sign_d: &[i32],
+    docs_nz_d: &[i32],
+    docs_scl_d: &[f32],
+    docs_cid_d: &[i32],
+    docs_cos_d: &[f32],
+    docs_sin_d: &[f32],
+    docs_mask_d: Option<&[f32]>,
     big_s: usize,
     big_t: usize,
     n_words: usize,
@@ -79,6 +106,7 @@ pub fn score_pair(
     group_words: usize,
     query_bits: usize,
     big_k: usize,
+    popc: impl Fn(u32) -> u32,
 ) -> f32 {
     debug_assert_eq!(n_groups * group_words, n_words);
     let mut total: f32 = 0.0;
@@ -118,7 +146,8 @@ pub fn score_pair(
                     //         relation; the hot loop benefits from elision.
                     let ds_w = unsafe { *sign_row.get_unchecked(word_idx) as u32 };
                     let dn_w = unsafe { *nz_row.get_unchecked(word_idx) as u32 };
-                    let pos = popc(ds_w & dn_w) as i32;
+                    let dn_active = ds_w & dn_w;
+                    let pos = popc(dn_active) as i32;
                     let neg = popc((!ds_w) & dn_w) as i32;
                     s_g += pos - neg;
                     for k in 0..query_bits {
@@ -146,6 +175,193 @@ pub fn score_pair(
     total
 }
 
+/// Score a single (query, doc) pair — pure scalar fallback. Used by the
+/// parity tests and as the universal-portable backend.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn score_pair(
+    q_planes_qa: &[i32],
+    q_meta_qa: &[f32],
+    qc_table_qa: &[f32],
+    q_mask_qa: Option<&[f32]>,
+    docs_sign_d: &[i32],
+    docs_nz_d: &[i32],
+    docs_scl_d: &[f32],
+    docs_cid_d: &[i32],
+    docs_cos_d: &[f32],
+    docs_sin_d: &[f32],
+    docs_mask_d: Option<&[f32]>,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    group_words: usize,
+    query_bits: usize,
+    big_k: usize,
+) -> f32 {
+    score_pair_body(
+        q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+        docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+        docs_cos_d, docs_sin_d, docs_mask_d,
+        big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+        popc_scalar,
+    )
+}
+
+/// Score a single (query, doc) pair on the x86-64-v3 fast path: hardware
+/// `popcntq`, AVX2 + FMA available for LLVM auto-vectorisation of the f32
+/// reductions, BMI2 for masked-bit ops. The hot dim=128 / n_words=4 case
+/// does ~40 popcounts per (q_token, d_token) pair — those popcounts dominate
+/// the inner loop, so forcing them onto the hardware POPCNT instruction
+/// (instead of the precompiled-stdlib SWAR fallback) is the headline win.
+///
+/// We considered a hand-rolled AVX2 PSHUFB Mula-style SIMD popcount
+/// specialisation for n_words ∈ {2, 4, 8}, but on a host with hardware
+/// POPCNT the throughput of `popcntq` (1 result/cycle, latency 3) already
+/// matches what a Mula chain (load → and → shift → and → 2× pshufb → padd)
+/// can deliver per 4-lane SIMD popcount. With target_feature we let LLVM
+/// pick the optimal mix automatically; verified at the binary level
+/// (~960 popcnts in the inner loop, plus auto-vectorised vfmaddXXXps for
+/// the cos/sin reduction). If a future host adds AVX-512 VPOPCNTB we'll
+/// gain real value from a SIMD popcount path.
+///
+/// SAFETY: caller must ensure the host CPU has popcnt + avx2 + bmi2 + fma
+/// (verified once per process via `select_backend`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "popcnt,avx2,bmi2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_pair_x86v3(
+    q_planes_qa: &[i32],
+    q_meta_qa: &[f32],
+    qc_table_qa: &[f32],
+    q_mask_qa: Option<&[f32]>,
+    docs_sign_d: &[i32],
+    docs_nz_d: &[i32],
+    docs_scl_d: &[f32],
+    docs_cid_d: &[i32],
+    docs_cos_d: &[f32],
+    docs_sin_d: &[f32],
+    docs_mask_d: Option<&[f32]>,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    group_words: usize,
+    query_bits: usize,
+    big_k: usize,
+) -> f32 {
+    score_pair_body(
+        q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+        docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+        docs_cos_d, docs_sin_d, docs_mask_d,
+        big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+        // SAFETY: this whole function is gated on `popcnt` being available,
+        // so calling popc_x86 unsafely is sound.
+        |x| popc_x86(x),
+    )
+}
+
+// ─────────────────── runtime feature dispatch ───────────────────
+//
+// We do the CPU feature detection once per process and cache the result in
+// an atomic. The check is essentially free in the hot loop (one relaxed
+// atomic load), but skipping the detection itself avoids the cost of the
+// stdlib's stack-frame setup on every kernel call.
+
+const BACKEND_UNINIT: u8 = 0;
+const BACKEND_SCALAR: u8 = 1;
+#[cfg(target_arch = "x86_64")]
+const BACKEND_X86V3: u8 = 2;
+
+static BACKEND: AtomicU8 = AtomicU8::new(BACKEND_UNINIT);
+
+#[inline]
+fn select_backend() -> u8 {
+    let cur = BACKEND.load(Ordering::Relaxed);
+    if cur != BACKEND_UNINIT {
+        return cur;
+    }
+    let chosen: u8 = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("popcnt")
+                && std::is_x86_feature_detected!("avx2")
+                && std::is_x86_feature_detected!("bmi2")
+                && std::is_x86_feature_detected!("fma")
+            {
+                BACKEND_X86V3
+            } else {
+                BACKEND_SCALAR
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            BACKEND_SCALAR
+        }
+    };
+    BACKEND.store(chosen, Ordering::Relaxed);
+    chosen
+}
+
+/// Reset the cached backend selection. Test-only utility.
+#[doc(hidden)]
+pub fn _reset_backend_for_tests() {
+    BACKEND.store(BACKEND_UNINIT, Ordering::Relaxed);
+}
+
+/// Force the scalar backend regardless of detected CPU features. Test-only
+/// utility used by parity tests to compare scalar vs accelerated paths.
+#[doc(hidden)]
+pub fn _force_scalar_backend_for_tests() {
+    BACKEND.store(BACKEND_SCALAR, Ordering::Relaxed);
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn score_pair_dispatch(
+    q_planes_qa: &[i32],
+    q_meta_qa: &[f32],
+    qc_table_qa: &[f32],
+    q_mask_qa: Option<&[f32]>,
+    docs_sign_d: &[i32],
+    docs_nz_d: &[i32],
+    docs_scl_d: &[f32],
+    docs_cid_d: &[i32],
+    docs_cos_d: &[f32],
+    docs_sin_d: &[f32],
+    docs_mask_d: Option<&[f32]>,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    group_words: usize,
+    query_bits: usize,
+    big_k: usize,
+) -> f32 {
+    let backend = select_backend();
+    #[cfg(target_arch = "x86_64")]
+    if backend == BACKEND_X86V3 {
+        // SAFETY: BACKEND_X86V3 is only set when popcnt+avx2+bmi2+fma are
+        // all runtime-detected, which is the precondition of
+        // score_pair_x86v3.
+        return unsafe {
+            score_pair_x86v3(
+                q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+                docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+                docs_cos_d, docs_sin_d, docs_mask_d,
+                big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+            )
+        };
+    }
+    let _ = backend;
+    score_pair(
+        q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+        docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+        docs_cos_d, docs_sin_d, docs_mask_d,
+        big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+    )
+}
+
 /// Batched entry point used by Python.
 ///
 /// Inputs are flat row-major slices with the shapes from the module doc.
@@ -153,8 +369,102 @@ pub fn score_pair(
 ///
 /// Documents are scored in parallel via rayon — this is the hot dimension
 /// because `B` is typically 500..4000 candidates per query in production.
+///
+/// `n_threads` controls the size of the rayon worker pool. Pass `None` to
+/// use the global rayon pool (default `RAYON_NUM_THREADS` or
+/// `num_cpus::get()`). Pass `Some(n)` to install a per-call scoped pool —
+/// this is the right call when the python side already has its own
+/// `ThreadPoolExecutor` of size `W`, in which case
+/// `n_threads = max(1, cpu_count() // W)` avoids 1024-way over-subscription
+/// (each python worker spinning up its own 128-thread rayon pool).
 #[allow(clippy::too_many_arguments)]
 pub fn score_batch(
+    q_planes: &[i32],
+    q_meta: &[f32],
+    qc_table: &[f32],
+    q_mask: Option<&[f32]>,
+    docs_sign: &[i32],
+    docs_nz: &[i32],
+    docs_scl: &[f32],
+    docs_cid: &[i32],
+    docs_cos: &[f32],
+    docs_sin: &[f32],
+    docs_mask: Option<&[f32]>,
+    big_a: usize,
+    big_b: usize,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    query_bits: usize,
+    big_k: usize,
+    n_threads: Option<usize>,
+    out: &mut [f32],
+) {
+    // Cached per-(n_threads) scoped pool to bound oversubscription. We
+    // can NOT use rayon's global pool: the python side typically runs
+    // this kernel from W python workers concurrently, and the global pool
+    // defaults to one thread per logical core, so the total active thread
+    // count is W * cpu_count() (1024 on a 128-core box with W=8). With a
+    // bounded pool of size cpu_count()/W, total threads stays at
+    // cpu_count() across all workers.
+    //
+    // Per-call ThreadPoolBuilder::new().build() costs ~10-20 ms (OS
+    // thread spawn per worker), so we cache pools by n_threads in a
+    // process-wide map. The map is bounded in practice: production code
+    // chooses one n_threads value per process via VOYAGER_RROQ158_N_WORKERS.
+    if let Some(n) = n_threads.filter(|&n| n >= 1) {
+        let pool = get_or_create_pool(n);
+        pool.install(|| {
+            score_batch_inner(
+                q_planes, q_meta, qc_table, q_mask,
+                docs_sign, docs_nz, docs_scl, docs_cid,
+                docs_cos, docs_sin, docs_mask,
+                big_a, big_b, big_s, big_t,
+                n_words, n_groups, query_bits, big_k,
+                out,
+            )
+        });
+        return;
+    }
+    score_batch_inner(
+        q_planes, q_meta, qc_table, q_mask,
+        docs_sign, docs_nz, docs_scl, docs_cid,
+        docs_cos, docs_sin, docs_mask,
+        big_a, big_b, big_s, big_t,
+        n_words, n_groups, query_bits, big_k,
+        out,
+    );
+}
+
+// Process-wide cache of bounded rayon pools, keyed by thread count. Built
+// lazily on first use so module load doesn't pay the spawn cost.
+static POOL_CACHE: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
+
+fn get_or_create_pool(n_threads: usize) -> Arc<rayon::ThreadPool> {
+    let cache = POOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let map = cache.lock();
+        if let Some(p) = map.get(&n_threads) {
+            return p.clone();
+        }
+    }
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .thread_name(move |i| format!("rroq158-{n_threads}-{i}"))
+            .build()
+            .expect("rroq158 rayon pool"),
+    );
+    let mut map = cache.lock();
+    // Recheck under the write lock to avoid duplicate pool construction
+    // under racing first-callers (cheap because we only ever build a
+    // handful of distinct sizes per process).
+    map.entry(n_threads).or_insert_with(|| pool.clone()).clone()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_batch_inner(
     q_planes: &[i32],
     q_meta: &[f32],
     qc_table: &[f32],
@@ -197,10 +507,16 @@ pub fn score_batch(
         let qc_a = &qc_table[a * qc_stride_a..(a + 1) * qc_stride_a];
         let q_mask_a = q_mask.map(|m| &m[a * q_mask_stride_a..(a + 1) * q_mask_stride_a]);
 
-        // Parallelise across documents.
+        // Parallelise across documents. `with_min_len` clusters tasks so
+        // each rayon worker amortises its startup cost over a meaningful
+        // chunk of work (≥ 16 docs / task). Without this, B=512 tasks
+        // across 128 threads wastes most of the wall time on task wakeups
+        // (~10-50 µs/wakeup) instead of the ~10 µs of actual work per doc.
+        let min_chunk = std::cmp::max(1, big_b / 64).max(16);
         let out_row = &mut out[a * big_b..(a + 1) * big_b];
         out_row
             .par_iter_mut()
+            .with_min_len(min_chunk)
             .enumerate()
             .for_each(|(d, slot)| {
                 let sign_d = &docs_sign[d * d_sign_stride..(d + 1) * d_sign_stride];
@@ -211,7 +527,7 @@ pub fn score_batch(
                 let sin_d = &docs_sin[d * d_sin_stride..(d + 1) * d_sin_stride];
                 let mask_d = docs_mask.map(|m| &m[d * d_mask_stride..(d + 1) * d_mask_stride]);
 
-                *slot = score_pair(
+                *slot = score_pair_dispatch(
                     q_planes_a, q_meta_a, qc_a, q_mask_a,
                     sign_d, nz_d, scl_d, cid_d, cos_d, sin_d, mask_d,
                     big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,

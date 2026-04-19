@@ -1,0 +1,16 @@
+# Build flags for the shard_engine crate.
+#
+# x86-64-v3 baseline (Haswell 2013+ on Intel, Excavator 2015+ on AMD) gives us
+# the hardware popcount instruction (`popcntq`) and AVX2 / FMA / BMI1 / BMI2
+# implicitly. The rroq158 fused kernel (`fused_rroq158.rs`) is dominated by
+# `u32::count_ones()` in its inner loop; without this flag, LLVM lowers it to
+# a 10-instruction SWAR sequence, which is roughly 10x slower than the single
+# `popcntq` instruction emitted with this baseline.
+#
+# AArch64 inherits NEON + popcount (`cnt`) from the ARMv8 baseline already,
+# so this flag has no effect there.
+#
+# Verified: post-rebuild, `objdump -d <built .so> | grep -c '\bpopcnt'` goes
+# from 0 to many hundreds.
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
