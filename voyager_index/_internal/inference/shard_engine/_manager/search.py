@@ -67,11 +67,17 @@ class ShardSegmentManagerSearchMixin:
             self._rroq158_meta = False
             return None
         try:
-            arr = np.load(str(meta_path))
-            centroids = np.ascontiguousarray(arr["centroids"], dtype=np.float32)
-            seed = int(np.asarray(arr["fwht_seed"]).item())
-            dim = int(np.asarray(arr["dim"]).item())
-            group_size = int(np.asarray(arr["group_size"]).item())
+            # ``np.load`` on a non-pickled ``.npz`` returns an ``NpzFile``
+            # backed by an open zipfile handle. The handle stays open for
+            # the lifetime of the object — leaking a file descriptor
+            # per-shard for the lifetime of the manager. Use the explicit
+            # context manager so we copy the arrays we need into owning
+            # numpy objects and close the zip immediately.
+            with np.load(str(meta_path)) as arr:
+                centroids = np.ascontiguousarray(arr["centroids"], dtype=np.float32)
+                seed = int(np.asarray(arr["fwht_seed"]).item())
+                dim = int(np.asarray(arr["dim"]).item())
+                group_size = int(np.asarray(arr["group_size"]).item())
             try:
                 from voyager_index._internal.inference.quantization.rroq158 import (
                     get_cached_fwht_rotator,
@@ -428,6 +434,23 @@ class ShardSegmentManagerSearchMixin:
             return torch.device(self._device)
         return torch.device("cpu")
 
+    def _derive_quantization_mode_from_storage(self) -> str:
+        """Pick the runtime kernel lane from the build-time storage codec.
+
+        The shard manifest and on-disk artefacts (``rroq158_meta.npz``,
+        ``roq_quantizer.pkl``) are the source of truth — once an index has
+        been written with a given codec the matching kernel is the only
+        one that can score it. Returns the ``quantization_mode`` string the
+        scorer should use; ``""`` means "no override, use the default
+        fp16 path". Probes are cheap (cached `is False` sentinel) so this
+        runs on the per-query hot path with negligible overhead.
+        """
+        if self._load_rroq158_meta() is not None:
+            return "rroq158"
+        if self._load_roq_quantizer() is not None:
+            return "roq4"
+        return ""
+
     @staticmethod
     def _route_prefetch_cap(scfg: SearchConfig) -> int:
         return max(
@@ -516,6 +539,15 @@ class ShardSegmentManagerSearchMixin:
 
         shard_groups = docs_by_shard or self._group_candidate_ids_by_shard(exact_candidate_ids)
         quant_mode = str(getattr(scfg, "quantization_mode", "") or "").strip().lower()
+        # Auto-derive the runtime kernel from the build-time storage codec
+        # when the caller didn't override `quantization_mode`. This is what
+        # makes the rroq158 default end-to-end: a user who builds with
+        # `Compression.RROQ158` and searches without touching SearchConfig
+        # gets the rroq158 kernel automatically. Explicit overrides
+        # (e.g. quantization_mode='int8') still win — the override is only
+        # applied when the user did NOT set one.
+        if not quant_mode:
+            quant_mode = self._derive_quantization_mode_from_storage()
         want_roq4 = dev.type == "cuda" and quant_mode == "roq4"
         want_rroq158 = quant_mode == "rroq158"
         want_quantized_kernel = dev.type == "cuda" and quant_mode in {"int8", "fp8"}

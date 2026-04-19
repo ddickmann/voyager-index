@@ -133,25 +133,46 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
     roq_doc_meta = None
     rroq158_payload = None
     if cfg.compression == Compression.RROQ158:
-        try:
-            from voyager_index._internal.inference.quantization.rroq158 import (
-                Rroq158Config,
-                encode_rroq158,
+        # Hard-fail on actual codec errors (silently writing a 12× larger
+        # FP16 index that scores in a different range would be a debugging
+        # nightmare) — but auto-shrink K and auto-fall-back to FP16 when
+        # the corpus is physically too small to host the codec, with a
+        # loud log. Mirrors
+        # ``voyager_index/_internal/inference/shard_engine/_manager/lifecycle.py``.
+        from voyager_index._internal.inference.quantization.rroq158 import (
+            Rroq158Config,
+            choose_effective_rroq158_k,
+            encode_rroq158,
+        )
+        n_tokens = int(np.asarray(active_vectors).shape[0])
+        gs = int(cfg.rroq158_group_size)
+        if n_tokens < gs:
+            log.warning(
+                "RROQ158 requested but corpus has only %d tokens "
+                "(< group_size=%d). Falling back to FP16 — rroq158 needs "
+                "at least one ternary group of tokens to encode.",
+                n_tokens, gs,
+            )
+            cfg.compression = Compression.FP16
+        else:
+            effective_k = choose_effective_rroq158_k(
+                n_tokens=n_tokens,
+                requested_k=int(cfg.rroq158_k),
+                group_size=gs,
             )
             log.info(
                 "Training RROQ158 (Riemannian 1.58-bit) quantizer "
                 "(K=%d, group_size=%d, seed=%d) ...",
-                int(cfg.rroq158_k),
-                int(cfg.rroq158_group_size),
-                int(cfg.rroq158_seed),
+                effective_k, gs, int(cfg.rroq158_seed),
             )
             t_rroq = time.time()
             rroq158_payload = encode_rroq158(
                 np.asarray(active_vectors, dtype=np.float32),
                 Rroq158Config(
-                    K=int(cfg.rroq158_k),
-                    group_size=int(cfg.rroq158_group_size),
+                    K=effective_k,
+                    group_size=gs,
                     seed=int(cfg.rroq158_seed),
+                    fit_sample_cap=max(100_000, effective_k),
                 ),
             )
             np.savez(
@@ -163,16 +184,8 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
             )
             log.info(
                 "RROQ158 encoding done in %.1fs (%d tokens, K=%d)",
-                time.time() - t_rroq,
-                int(np.asarray(active_vectors).shape[0]),
-                int(cfg.rroq158_k),
+                time.time() - t_rroq, n_tokens, effective_k,
             )
-        except Exception as exc:
-            log.warning(
-                "RROQ158 quantizer unavailable (%s), falling back to FP16", exc,
-            )
-            cfg.compression = Compression.FP16
-            rroq158_payload = None
     if cfg.compression == Compression.ROQ4:
         try:
             from voyager_index._internal.inference.quantization.rotational import (

@@ -105,7 +105,8 @@ docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 
 ### BEIR retrieval — RTX A5000, search-only, full query set
 
-Encoder: `lightonai/GTE-ModernColBERT-v1`. CPU lane uses 8 native Rust workers.
+Encoder: `lightonai/GTE-ModernColBERT-v1`, codec: `Compression.RROQ158`
+(K=8192 — the new default). CPU lane uses 8 native Rust workers.
 
 | Dataset  | Docs   | NDCG@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
 |----------|-------:|--------:|-----------:|--------:|-------------:|--------:|-------------:|

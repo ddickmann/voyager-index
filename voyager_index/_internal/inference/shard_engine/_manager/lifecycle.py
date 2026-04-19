@@ -179,23 +179,53 @@ class ShardSegmentManagerLifecycleMixin:
                     logger.warning("ROQ quantizer unavailable (%s), falling back to FP16", exc)
                     effective_compression = Compression.FP16
             elif cfg.compression == Compression.RROQ158:
-                try:
-                    from voyager_index._internal.inference.quantization.rroq158 import (
-                        Rroq158Config,
-                        encode_rroq158,
-                    )
+                from voyager_index._internal.inference.quantization.rroq158 import (
+                    Rroq158Config,
+                    choose_effective_rroq158_k,
+                    encode_rroq158,
+                )
 
+                gs = int(cfg.rroq158_group_size)
+                n_tok = int(all_vecs.shape[0])
+                if n_tok < gs:
+                    # Data-shape fallback (NOT a codec error): a corpus with
+                    # fewer tokens than a single ternary group cannot be
+                    # quantized at all (one popcount word == one group). Drop
+                    # to FP16 and log loudly so the operator sees the auto-
+                    # downgrade. The "no silent fallback" rule covers codec
+                    # failures (which would silently 12× index size); this
+                    # path applies to corpora that physically cannot host
+                    # any ternary codebook.
+                    logger.warning(
+                        "RROQ158 requested but corpus has only %d tokens "
+                        "(< group_size=%d). Falling back to FP16 — rroq158 "
+                        "needs at least one ternary group of tokens to "
+                        "encode. Pass compression=FP16 explicitly to silence.",
+                        n_tok, gs,
+                    )
+                    effective_compression = Compression.FP16
+                else:
+                    # Auto-shrink K when the corpus has fewer tokens than
+                    # the requested codebook size (typical only in tests /
+                    # demos / very small shards). This keeps the user's
+                    # explicit choice of the rroq158 codec — only the
+                    # centroid count adapts — so we don't silently flip the
+                    # codec back to fp16.
+                    effective_k = choose_effective_rroq158_k(
+                        n_tokens=n_tok,
+                        requested_k=int(cfg.rroq158_k),
+                        group_size=gs,
+                    )
                     logger.info(
                         "Training RROQ158 (Riemannian 1.58-bit) quantizer "
                         "(K=%d, group_size=%d, seed=%d) ...",
-                        int(cfg.rroq158_k),
-                        int(cfg.rroq158_group_size),
-                        int(cfg.rroq158_seed),
+                        effective_k, gs, int(cfg.rroq158_seed),
                     )
                     rroq_cfg = Rroq158Config(
-                        K=int(cfg.rroq158_k),
-                        group_size=int(cfg.rroq158_group_size),
+                        K=effective_k,
+                        group_size=gs,
                         seed=int(cfg.rroq158_seed),
+                        fit_sample_cap=max(100_000, effective_k),
                     )
                     rroq158_payload = encode_rroq158(
                         np.asarray(all_vecs, dtype=np.float32), rroq_cfg
@@ -203,20 +233,18 @@ class ShardSegmentManagerLifecycleMixin:
                     np.savez(
                         self._path / "rroq158_meta.npz",
                         centroids=rroq158_payload.centroids,
-                        fwht_seed=np.array(rroq158_payload.fwht_seed, dtype=np.int64),
+                        fwht_seed=np.array(
+                            rroq158_payload.fwht_seed, dtype=np.int64
+                        ),
                         dim=np.array(rroq158_payload.dim, dtype=np.int32),
-                        group_size=np.array(rroq158_payload.group_size, dtype=np.int32),
+                        group_size=np.array(
+                            rroq158_payload.group_size, dtype=np.int32
+                        ),
                     )
                     logger.info(
                         "RROQ158 encoding done for %d docs (%d tokens, K=%d)",
-                        n_docs, all_vecs.shape[0], rroq_cfg.K,
+                        n_docs, n_tok, effective_k,
                     )
-                except (ImportError, Exception) as exc:
-                    logger.warning(
-                        "RROQ158 quantizer unavailable (%s), falling back to FP16", exc
-                    )
-                    effective_compression = Compression.FP16
-                    rroq158_payload = None
 
             store = ShardStore(self._path)
             store.build(
@@ -308,8 +336,8 @@ class ShardSegmentManagerLifecycleMixin:
                 gpu_preloaded = False
                 if doc_index_path.exists() and torch.cuda.is_available() and str(self._device).startswith("cuda"):
                     try:
-                        di = np.load(str(doc_index_path), allow_pickle=True)
-                        actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
+                        with np.load(str(doc_index_path), allow_pickle=True) as di:
+                            actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
                         from ..scorer import PreloadedGpuCorpus
 
                         fits_gpu = PreloadedGpuCorpus.fits_on_gpu(
@@ -671,11 +699,11 @@ class ShardSegmentManagerLifecycleMixin:
             logger.warning("latence_shard_engine not installed — skipping Rust index init")
             return
         try:
-            doc_index = np.load(str(doc_index_path), allow_pickle=True)
-            doc_ids = doc_index["doc_ids"]
-            shard_ids = doc_index["shard_ids"]
-            local_starts = doc_index["local_starts"]
-            local_ends = doc_index["local_ends"]
+            with np.load(str(doc_index_path), allow_pickle=True) as doc_index:
+                doc_ids = doc_index["doc_ids"]
+                shard_ids = doc_index["shard_ids"]
+                local_starts = doc_index["local_starts"]
+                local_ends = doc_index["local_ends"]
 
             shard_dir = self._path / "shards"
             shard_files = sorted(shard_dir.glob("shard_*.safetensors"))
@@ -712,9 +740,9 @@ class ShardSegmentManagerLifecycleMixin:
 
                 codec_meta_path = self._path / "codec_meta.npz"
                 if codec_meta_path.exists():
-                    meta = np.load(str(codec_meta_path))
-                    bw = meta["bucket_weights"].astype(np.float32)
-                    nbits_val = int(meta["nbits"][0])
+                    with np.load(str(codec_meta_path)) as meta:
+                        bw = meta["bucket_weights"].astype(np.float32)
+                        nbits_val = int(meta["nbits"][0])
                     rust_idx.set_codec(bw.tolist(), nbits_val)
                     logger.info(
                         "Residual codec loaded: nbits=%d, %d bucket weights",

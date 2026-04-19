@@ -96,6 +96,54 @@ class Rroq158Config:
             )
 
 
+def choose_effective_rroq158_k(
+    n_tokens: int, requested_k: int, group_size: int = 32
+) -> int:
+    """Pick the largest power-of-two K ≤ requested_k that the corpus can
+    actually train.
+
+    The encoder hard-fails when ``n_tokens < K`` (you can't fit K centroids
+    from < K samples). In production the corpus is millions of tokens so the
+    requested K is always feasible; in tests / demos / tiny shards it can
+    happen that ``n_tokens < requested_k``. Returning a clamped K here lets
+    the build orchestration (``lifecycle.py`` / ``pipeline.py``) keep the
+    user's choice of the rroq158 codec while shrinking the codebook to fit —
+    same score scale, no silent fp16 fallback, just a smaller K.
+
+    Returns the chosen K (always a power of two and ``>= group_size``).
+    Raises ``ValueError`` if even ``group_size`` is too large for the corpus.
+    """
+    if n_tokens <= 0:
+        raise ValueError(f"n_tokens must be > 0, got {n_tokens}")
+    if requested_k <= 0 or (requested_k & (requested_k - 1)) != 0:
+        raise ValueError(
+            f"requested_k must be a positive power of two, got {requested_k}"
+        )
+    if group_size <= 0 or group_size % 32 != 0:
+        raise ValueError(
+            f"group_size must be a positive multiple of 32, got {group_size}"
+        )
+    if n_tokens < group_size:
+        raise ValueError(
+            f"corpus has only {n_tokens} tokens but rroq158 requires at least "
+            f"group_size={group_size} tokens to train a single centroid"
+        )
+    if n_tokens >= requested_k:
+        return requested_k
+    # Largest power of two ≤ n_tokens
+    k = 1 << (int(n_tokens).bit_length() - 1)
+    if k < group_size:
+        k = group_size
+    log.warning(
+        "rroq158: corpus has %d tokens but requested K=%d; clamping K to %d "
+        "(largest power-of-two ≤ n_tokens). For production-grade quality "
+        "feed >= %d tokens or pass compression=Compression.FP16 for tiny "
+        "corpora.",
+        n_tokens, requested_k, k, requested_k,
+    )
+    return k
+
+
 def _fwht_rotator(dim: int, seed: int):
     """Match the FWHT rotation used by ``ternary.TernaryQuantizer`` /
     ``RotationalQuantizer`` so the residual lives in the same rotated frame
@@ -138,6 +186,10 @@ def get_cached_fwht_rotator(dim: int, seed: int):
     tail under GIL contention with an active CUDA context) with a single
     BLAS GEMM. See ``encode_query_for_rroq158`` for the consumer.
     """
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError(
+            f"get_cached_fwht_rotator: dim must be a positive int, got {dim!r}"
+        )
     key = (dim, seed)
     rot = _FWHT_ROTATOR_CACHE.get(key)
     if rot is None:
@@ -272,7 +324,37 @@ def encode_rroq158(
     shard store separately).
     """
     cfg = cfg or Rroq158Config()
+    if tokens.ndim != 2:
+        raise ValueError(
+            f"encode_rroq158 expects a (N, D) token matrix, got shape "
+            f"{tokens.shape}"
+        )
     n, dim = tokens.shape
+    if n == 0:
+        raise ValueError("encode_rroq158 received an empty token matrix")
+    if dim < cfg.group_size:
+        raise ValueError(
+            f"encode_rroq158: dim={dim} is smaller than group_size="
+            f"{cfg.group_size}; reduce Rroq158Config.group_size to a divisor "
+            f"of dim that is a multiple of 32"
+        )
+    if dim % cfg.group_size != 0:
+        raise ValueError(
+            f"encode_rroq158: dim={dim} is not divisible by group_size="
+            f"{cfg.group_size}; pick a group_size that divides dim "
+            "(production dims of 64/96/128/160/256/384/768/1024 all divide by 32)"
+        )
+    if dim % 32 != 0:
+        raise ValueError(
+            f"encode_rroq158: dim={dim} must be a multiple of 32 so the "
+            "ternary planes pack into int32 words for the popcount kernel"
+        )
+    if n < cfg.K:
+        raise ValueError(
+            f"encode_rroq158: only {n} tokens available but K={cfg.K} centroids "
+            f"requested. Either lower Rroq158Config.K (must remain a power of "
+            f"two and >= {cfg.group_size}) or feed more tokens."
+        )
     rng = np.random.default_rng(cfg.seed)
 
     # ---- centroid fit on subsample --------------------------------------
@@ -282,7 +364,10 @@ def encode_rroq158(
     centroids, _ = _spherical_kmeans(
         fit_tokens, k=cfg.K, n_iter=cfg.spherical_kmeans_iter, seed=cfg.seed
     )
-    del fit_tokens; gc.collect()
+    del fit_tokens
+    gc.collect()
+
+    import torch  # local import keeps top-level cold-start light
 
     rotator = get_cached_fwht_rotator(dim=dim, seed=cfg.seed)
     norms_full = np.linalg.norm(tokens, axis=1).astype(np.float32)
@@ -307,11 +392,11 @@ def encode_rroq158(
         c_per_tok = centroids[cid_chunk]
         tangent_amb = _log_map_unit_sphere(c_per_tok, chunk_n)
 
-        import torch
-        tangent_rot = (
-            rotator.forward(torch.from_numpy(tangent_amb.astype(np.float32)))
-            .cpu().numpy()
-        )
+        with torch.no_grad():
+            tangent_rot = (
+                rotator.forward(torch.from_numpy(tangent_amb.astype(np.float32)))
+                .cpu().numpy()
+            )
         # Pad/trim to original dim — FWHT may pad up to next power-of-two.
         if tangent_rot.shape[1] != dim:
             tangent_rot = tangent_rot[:, :dim]
@@ -381,6 +466,13 @@ def encode_query_for_rroq158(
     if queries.ndim != 2:
         raise ValueError(f"expected (S, dim) queries, got {queries.shape}")
     s, dim = queries.shape
+    if s == 0:
+        raise ValueError("encode_query_for_rroq158: zero query tokens")
+    if dim % 32 != 0:
+        raise ValueError(
+            f"encode_query_for_rroq158: dim={dim} must be a multiple of 32 "
+            "to match the index-side popcount packing"
+        )
     if rotator is None:
         rotator = get_cached_fwht_rotator(dim=dim, seed=fwht_seed)
 
@@ -401,7 +493,8 @@ def encode_query_for_rroq158(
         q_rot = (queries_f32 @ dense).astype(np.float32, copy=False)
     else:
         import torch
-        q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
+        with torch.no_grad():
+            q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
         if q_rot.shape[1] != dim:
             q_rot = q_rot[:, :dim]
 
@@ -438,17 +531,31 @@ def pack_doc_codes_to_int32_words(sign_planes_u8: np.ndarray) -> np.ndarray:
     ``(n_tok, dim/8)`` uint8; output is ``(n_tok, dim/32)`` int32.
 
     ``dim`` is required by the encoder to be a multiple of 32 already
-    (``Rroq158Config.group_size`` floor + ``dim % group_size == 0``), so the
-    re-padding branch should never fire on production indexes. The assert
-    catches accidental upstream regressions where a non-multiple-of-32 dim
-    sneaks in.
+    (``Rroq158Config.group_size`` floor + ``dim % group_size == 0``), so a
+    misshaped input here means an upstream contract was violated. We raise
+    rather than assert because Python ``-O`` strips asserts and silently
+    miscompiled int32 reinterpretations would be impossible to debug.
     """
-    n, nb = sign_planes_u8.shape
-    assert nb % 4 == 0, (
-        f"pack_doc_codes_to_int32_words received nb={nb} bytes (dim*8={nb*8} "
-        f"bits); expected a multiple of 4 bytes (dim multiple of 32). This "
-        f"indicates a misconfigured Rroq158Config or upstream encoder bug."
-    )
+    if sign_planes_u8.dtype != np.uint8:
+        raise TypeError(
+            f"pack_doc_codes_to_int32_words expects uint8 planes, got "
+            f"dtype={sign_planes_u8.dtype}"
+        )
+    if sign_planes_u8.ndim != 2:
+        raise ValueError(
+            f"pack_doc_codes_to_int32_words expects a 2-D (n_tok, dim/8) "
+            f"plane, got shape {sign_planes_u8.shape}"
+        )
+    _n, nb = sign_planes_u8.shape
+    if nb % 4 != 0:
+        raise ValueError(
+            f"pack_doc_codes_to_int32_words received nb={nb} bytes "
+            f"(dim={nb*8} bits); expected a multiple of 4 bytes (dim must "
+            "be a multiple of 32). This indicates a misconfigured "
+            "Rroq158Config or upstream encoder bug."
+        )
+    if not sign_planes_u8.flags["C_CONTIGUOUS"]:
+        sign_planes_u8 = np.ascontiguousarray(sign_planes_u8)
     return sign_planes_u8.view(np.int32).copy()
 
 

@@ -44,10 +44,10 @@ These keyword arguments are passed through when `engine="shard"`:
 |---|---|
 | `n_shards` | Number of sealed shards |
 | `k_candidates` | LEMUR candidate budget before exact scoring |
-| `compression` | Stored representation. Default: `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4` |
+| `compression` | Stored representation. Default: `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4`. The `rroq158` codec needs `n_tokens >= rroq158_k` to train the codebook — switch to `fp16` or lower `rroq158_k` for tiny demo corpora |
 | `rroq158_k` | rroq158 spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ `rroq158_group_size` |
 | `rroq158_seed` | rroq158 FWHT rotator + k-means initialisation seed. Default: `42` |
-| `rroq158_group_size` | rroq158 ternary group size. Default: `32`. Must be a multiple of 32 |
+| `rroq158_group_size` | rroq158 ternary group size. Default: `32`. Must be a positive multiple of 32 (so the ternary planes pack into int32 words) |
 | `quantization_mode` | Active scoring mode: `none`, `int8`, `fp8`, `roq4` |
 | `transfer_mode` | CPU->GPU transfer path: `pageable`, `pinned`, `double_buffered` |
 | `router_device` | Device for the LEMUR router, usually `cpu` or `cuda` |

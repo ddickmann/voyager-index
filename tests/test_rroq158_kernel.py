@@ -72,7 +72,6 @@ def _reshape_doc_arrays(enc, n_docs, n_d_tok):
 def _brute_force_maxsim(queries, enc, n_docs, n_d_tok):
     """fp32 reconstruction → MaxSim, the ground truth for parity."""
     centroids = enc.centroids
-    c_per_tok = centroids[enc.centroid_id]
     # Reconstruct r_amb from the stored ternary codes (but in rotated frame:
     # we stored r_rot; need r_amb = FWHT^-1(r_rot)). For parity we just use
     # the stored r_rot frame and rotate the query into it.
@@ -94,7 +93,6 @@ def _brute_force_maxsim(queries, enc, n_docs, n_d_tok):
     # <q, c> via the original ambient query
     qc_full = queries @ centroids.T                                  # (S, K)
     qr_full = q_rot @ r_rot.T                                        # (S, n_total_d)
-    n_total_d = enc.centroid_id.shape[0]
     cos_norm = enc.cos_norm.astype(np.float32)                       # (n_total_d,)
     sin_norm = enc.sin_norm.astype(np.float32)                       # (n_total_d,)
     qc_per_tok = qc_full[:, enc.centroid_id]                         # (S, n_total_d)
@@ -473,7 +471,8 @@ def test_rroq158_microbench():
     p95 = float(np.percentile(times_ms, 95))
     qps = 1000.0 * n_docs / p50  # docs/sec from one batch
 
-    out_dir = Path("reports"); out_dir.mkdir(exist_ok=True)
+    out_dir = Path("reports")
+    out_dir.mkdir(exist_ok=True)
     (out_dir / "kernel_rroq158.json").write_text(json.dumps({
         "n_q_tokens": n_q_tok,
         "n_d_tokens_per_doc": n_d_tok,

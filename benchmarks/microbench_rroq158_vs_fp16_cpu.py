@@ -254,7 +254,7 @@ def main():
     def fmt(d): return f"p50={d['p50_ms']:.2f}ms p95={d['p95_ms']:.2f}ms"
     print()
     print("=" * 80)
-    print(f"REGIME A (1 worker, default rayon)")
+    print("REGIME A (1 worker, default rayon)")
     print(f"  rroq158: {fmt(a_rroq)}")
     print(f"  fp16   : {fmt(a_fp16)}")
     print(f"  p95 ratio rroq158/fp16 = {out['gate']['regimeA_p95_ratio']:.2f}x")
@@ -265,7 +265,7 @@ def main():
     print(f"  p95 ratio rroq158/fp16 = {out['gate']['regimeB_p95_ratio']:.2f}x")
     print(f"  p50 ratio rroq158/fp16 = {out['gate']['regimeB_p50_ratio']:.2f}x")
     print()
-    print(f"GATE THRESHOLD: rroq158 p95 <= 1.5x fp16 p95")
+    print("GATE THRESHOLD: rroq158 p95 <= 1.5x fp16 p95")
     print(f"DECISION:       {out['gate']['decision']}")
     print("=" * 80)
 

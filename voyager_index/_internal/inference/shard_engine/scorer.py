@@ -858,22 +858,44 @@ def _score_rroq158_cpu(
     queries_mask: torch.Tensor = None,
     n_threads: int | None = None,
 ) -> Tuple[List[int], List[float]]:
-    """CPU dispatch for `score_rroq158_topk` via the Rust SIMD kernel."""
+    """CPU dispatch for `score_rroq158_topk` via the Rust SIMD kernel.
+
+    The Rust kernel returns scores for batch dim A as a flat (A*B) vector but
+    the search-time top-k machinery here only consumes the first row, so we
+    require ``A == 1``. Routing a batched query (A>1) through this path
+    would silently drop A-1 result rows. Callers that need batched scoring
+    should iterate over the A axis themselves or call the kernel directly.
+    """
     fn = _get_rroq158_cpu_kernel()
     if fn is None:
         return [], []
 
     import numpy as np
 
-    qp_np = query_planes.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
-    qm_np = query_meta.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-    qc_np = qc_table.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-    cid_np = doc_centroid_id.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
-    cos_np = doc_cos_norm.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-    sin_np = doc_sin_norm.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-    ds_np = doc_sign.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
-    dn_np = doc_nz.detach().cpu().contiguous().numpy().astype(np.int32, copy=False)
-    dsc_np = doc_scales.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
+    A_dim = query_planes.shape[0]
+    if A_dim != 1:
+        raise ValueError(
+            f"_score_rroq158_cpu only supports A==1 (single batch row); "
+            f"got query_planes shape {tuple(query_planes.shape)} (A={A_dim}). "
+            "Iterate over the batch axis explicitly when A>1."
+        )
+
+    def _to_np(t: torch.Tensor, dtype: np.dtype) -> np.ndarray:
+        # Already-CPU tensors `.detach().cpu()` is a no-op; `.numpy()`
+        # returns a view that may be non-contiguous after `.permute` / etc.
+        # Skip the redundant `.contiguous()` because `np.ascontiguousarray`
+        # below makes any final copy a single allocation rather than two.
+        return np.ascontiguousarray(t.detach().cpu().numpy(), dtype=dtype)
+
+    qp_np = _to_np(query_planes, np.int32)
+    qm_np = _to_np(query_meta, np.float32)
+    qc_np = _to_np(qc_table, np.float32)
+    cid_np = _to_np(doc_centroid_id, np.int32)
+    cos_np = _to_np(doc_cos_norm, np.float32)
+    sin_np = _to_np(doc_sin_norm, np.float32)
+    ds_np = _to_np(doc_sign, np.int32)
+    dn_np = _to_np(doc_nz, np.int32)
+    dsc_np = _to_np(doc_scales, np.float32)
 
     A, S, query_bits, n_words = qp_np.shape
     B, T = ds_np.shape[:2]
@@ -882,14 +904,10 @@ def _score_rroq158_cpu(
 
     q_mask_np = None
     if queries_mask is not None:
-        q_mask_np = (
-            queries_mask.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-        ).ravel()
+        q_mask_np = _to_np(queries_mask, np.float32).ravel()
     d_mask_np = None
     if documents_mask is not None:
-        d_mask_np = (
-            documents_mask.detach().cpu().contiguous().numpy().astype(np.float32, copy=False)
-        ).ravel()
+        d_mask_np = _to_np(documents_mask, np.float32).ravel()
 
     n_threads_eff = _resolve_rroq158_n_threads(default=n_threads)
 
@@ -909,6 +927,8 @@ def _score_rroq158_cpu(
         n_threads=n_threads_eff,
     )
     scores = flat.reshape(A, B)[0]
+    if B == 0:
+        return [], []
     final_k = min(k, B)
     top_idx = np.argpartition(-scores, final_k - 1)[:final_k]
     top_idx = top_idx[np.argsort(-scores[top_idx])]

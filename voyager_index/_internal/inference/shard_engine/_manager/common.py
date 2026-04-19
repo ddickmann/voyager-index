@@ -98,6 +98,38 @@ class ShardEngineConfig:
         rroq158_seed: int = 42,
         rroq158_group_size: int = 32,
     ):
+        # Validate mode-specific knobs upfront so misconfiguration surfaces
+        # at config-construction time (in the user's stack frame) instead of
+        # midway through a multi-minute index build.
+        if dim <= 0:
+            raise ValueError(f"ShardEngineConfig.dim must be > 0, got {dim}")
+        if n_shards <= 0:
+            raise ValueError(
+                f"ShardEngineConfig.n_shards must be > 0, got {n_shards}"
+            )
+        if rroq158_k <= 0 or (rroq158_k & (rroq158_k - 1)) != 0:
+            raise ValueError(
+                f"rroq158_k must be a positive power of two, got {rroq158_k}"
+            )
+        if rroq158_group_size <= 0 or rroq158_group_size % 32 != 0:
+            raise ValueError(
+                f"rroq158_group_size must be a positive multiple of 32, "
+                f"got {rroq158_group_size}"
+            )
+        # Coerce string-typed enum args to their canonical enum values so the
+        # public IndexBuilder (`with_shard(compression="rroq158")`) and the
+        # HTTP service hydration path (manifest stores enum.value strings)
+        # both work without surprising the user. Enums are tolerated as-is.
+        if isinstance(compression, str):
+            compression = Compression(compression)
+        if isinstance(layout, str):
+            layout = StorageLayout(layout)
+        if isinstance(router_type, str):
+            router_type = RouterType(router_type)
+        if isinstance(ann_backend, str):
+            ann_backend = AnnBackend(ann_backend)
+        if isinstance(transfer_mode, str):
+            transfer_mode = TransferMode(transfer_mode)
         self.n_shards = n_shards
         self.dim = dim
         self.compression = compression

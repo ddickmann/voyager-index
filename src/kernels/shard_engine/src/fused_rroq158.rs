@@ -338,22 +338,22 @@ fn score_pair_dispatch(
     query_bits: usize,
     big_k: usize,
 ) -> f32 {
-    let backend = select_backend();
     #[cfg(target_arch = "x86_64")]
-    if backend == BACKEND_X86V3 {
-        // SAFETY: BACKEND_X86V3 is only set when popcnt+avx2+bmi2+fma are
-        // all runtime-detected, which is the precondition of
-        // score_pair_x86v3.
-        return unsafe {
-            score_pair_x86v3(
-                q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
-                docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
-                docs_cos_d, docs_sin_d, docs_mask_d,
-                big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
-            )
-        };
+    {
+        if select_backend() == BACKEND_X86V3 {
+            // SAFETY: BACKEND_X86V3 is only set when popcnt+avx2+bmi2+fma are
+            // all runtime-detected, which is the precondition of
+            // score_pair_x86v3.
+            return unsafe {
+                score_pair_x86v3(
+                    q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+                    docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+                    docs_cos_d, docs_sin_d, docs_mask_d,
+                    big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+                )
+            };
+        }
     }
-    let _ = backend;
     score_pair(
         q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
         docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,

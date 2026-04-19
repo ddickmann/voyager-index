@@ -38,9 +38,13 @@ idx = Index(
     engine="shard",
     n_shards=32,
     k_candidates=256,
-    # compression defaults to "rroq158" (Riemannian 1.58-bit, K=8192) on both
-    # GPU (Triton) and CPU (Rust SIMD). Pass compression="fp16" if you need
-    # the legacy fp16 lane (e.g. for parity with an older deployment).
+    # The new production default is `compression="rroq158"` (Riemannian
+    # 1.58-bit, K=8192) on both GPU (Triton) and CPU (Rust SIMD). It needs
+    # at least K tokens (8192 by default) to train the codebook, so the
+    # 64-doc demo here uses fp16. For real corpora drop the `compression`
+    # argument to pick up the default — see `docs/api/python.md` for the
+    # full knob set (`rroq158_k`, `rroq158_group_size`, ...).
+    compression="fp16",
 )
 idx.add(
     docs,

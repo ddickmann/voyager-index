@@ -186,6 +186,46 @@ def test_score_sealed_candidates_rroq158_hardfails_when_no_kernel(
         mgr.close()
 
 
+def test_score_sealed_candidates_auto_derives_rroq158_when_meta_present(
+    tmp_path: Path,
+) -> None:
+    """When the storage codec is rroq158 (meta on disk / cached) and the
+    caller did NOT set ``quantization_mode``, the search path must
+    auto-route to the rroq158 lane. This is what makes the new
+    ``Compression.RROQ158`` default work end-to-end without forcing every
+    caller to also touch ``SearchConfig.quantization_mode``."""
+    mgr = _make_manager(tmp_path)
+    try:
+        scfg = mgr._config.to_search_config()
+        assert scfg.quantization_mode == ""
+
+        mgr._rroq158_meta = {"centroids": np.zeros((4, 4)), "fwht_seed": 0}
+
+        captured = {}
+
+        def fake_rroq_score(*args, **kwargs):
+            captured["called"] = True
+            return ([(31, 0.88)], {"num_docs_scored": 1})
+
+        mgr._score_rroq158_candidates = fake_rroq_score  # type: ignore[method-assign]
+
+        results, exact_ids, exact_path, stats = mgr._score_sealed_candidates(
+            torch.zeros((2, 4), dtype=torch.float32),
+            [31],
+            {0: [31]},
+            1,
+            scfg,
+            torch.device("cpu"),
+        )
+    finally:
+        mgr.close()
+
+    assert captured.get("called") is True
+    assert exact_path == "rroq158_pipeline"
+    assert results == [(31, 0.88)]
+    assert exact_ids == [31]
+
+
 def test_default_compression_is_rroq158() -> None:
     """The library default for newly constructed configs must be RROQ158
     after the Phase 1.5 gate. Existing fp16 indexes on disk are unaffected

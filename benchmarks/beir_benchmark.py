@@ -590,7 +590,11 @@ def _run_rroq158_cpu_mode(
         rt.load()
         routers.append(rt)
 
-    def _worker_search(qi: int, router: LemurRouter) -> Tuple[int, List[int], float]:
+    def _worker_search(
+        qi: int,
+        router: LemurRouter,
+        _payload: dict = payload,  # bind via default arg → ruff-friendly closure
+    ) -> Tuple[int, List[int], float]:
         t0 = time.perf_counter()
         qv = torch.from_numpy(query_vecs[qi]).float()
         routed = router.route(
@@ -601,7 +605,7 @@ def _run_rroq158_cpu_mode(
         if not cand:
             return qi, [], (time.perf_counter() - t0) * 1000
         ids, _scores = _rroq158_score_candidates(
-            query_vecs[qi], payload, cand, doc_ids_to_idx, TOP_K, device,
+            query_vecs[qi], _payload, cand, doc_ids_to_idx, TOP_K, device,
         )
         return qi, ids, (time.perf_counter() - t0) * 1000
 

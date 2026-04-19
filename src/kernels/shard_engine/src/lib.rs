@@ -1185,6 +1185,24 @@ fn rroq158_score_batch<'py>(
     // Shape sanity checks — we treat the inputs as flat row-major buffers
     // and rely on the python caller to pass contiguous arrays in the right
     // logical shape.
+    if n_groups == 0 {
+        return Err(PyValueError::new_err("n_groups must be > 0"));
+    }
+    if n_words == 0 {
+        return Err(PyValueError::new_err("n_words must be > 0"));
+    }
+    if big_a == 0 || big_b == 0 || big_s == 0 || big_t == 0 || big_k == 0 || query_bits == 0 {
+        return Err(PyValueError::new_err(format!(
+            "All shape dims must be > 0 (got A={big_a}, B={big_b}, S={big_s}, \
+             T={big_t}, K={big_k}, query_bits={query_bits})"
+        )));
+    }
+    if query_bits > 8 {
+        return Err(PyValueError::new_err(format!(
+            "query_bits must be <= 8 (got {query_bits}); the inner accumulator \
+             uses (1 << k) which would overflow for k >= 31"
+        )));
+    }
     let group_words = n_words / n_groups;
     if group_words * n_groups != n_words {
         return Err(PyValueError::new_err(format!(

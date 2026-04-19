@@ -135,9 +135,14 @@ class TestShardSegmentManager:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_build_and_search(self, tmp_index_dir):
         vectors, ids, dim = _make_corpus(n_docs=200, dim=128)
+        # The new ShardEngineConfig default is rroq158 K=8192, which needs
+        # >= 8192 tokens to train the codebook. This test uses 200 docs of
+        # ~35 tokens (~7000 tokens) so we explicitly fall back to FP16 — the
+        # codec under test here is the engine plumbing, not the codec.
         config = ShardEngineConfig(
             n_shards=8,
             dim=dim,
+            compression=Compression.FP16,
             lemur_epochs=3,
             k_candidates=200,
         )
@@ -161,6 +166,10 @@ class TestShardSegmentManager:
         config = ShardEngineConfig(
             n_shards=16,
             dim=dim,
+            # 500 docs × ~35 tokens (~17.5k tokens) is borderline for K=8192;
+            # use fp16 here so the recall assertion measures the engine, not
+            # the codec's small-corpus floor.
+            compression=Compression.FP16,
             lemur_epochs=5,
             k_candidates=500,
         )
@@ -187,7 +196,11 @@ class TestShardSegmentManager:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_save_and_reload(self, tmp_index_dir):
         vectors, ids, dim = _make_corpus(n_docs=100, dim=64)
-        config = ShardEngineConfig(n_shards=4, dim=dim, lemur_epochs=2, k_candidates=100)
+        config = ShardEngineConfig(
+            n_shards=4, dim=dim,
+            compression=Compression.FP16,  # tiny corpus; can't train K=8192
+            lemur_epochs=2, k_candidates=100,
+        )
         mgr = ShardSegmentManager(tmp_index_dir, config=config, device="cuda")
         mgr.build(vectors, ids)
 
@@ -205,13 +218,13 @@ class TestShardSegmentManager:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_crud_on_unbuilt_index(self, tmp_index_dir):
         """add_multidense on unbuilt index delegates to build(); empty corpus raises."""
-        config = ShardEngineConfig(dim=64)
+        config = ShardEngineConfig(dim=64, compression=Compression.FP16)
         mgr = ShardSegmentManager(tmp_index_dir, config=config, device="cuda")
         with pytest.raises(ValueError, match="empty corpus"):
             mgr.add_multidense([], [])
         mgr.delete([1])
 
     def test_context_manager(self, tmp_index_dir):
-        config = ShardEngineConfig(dim=64)
+        config = ShardEngineConfig(dim=64, compression=Compression.FP16)
         with ShardSegmentManager(tmp_index_dir, config=config, device="cpu") as mgr:
             assert mgr is not None
