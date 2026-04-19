@@ -64,6 +64,39 @@ How to read these results:
   model serving.
 - Quality metrics are strong while using the same shard / Rust / Triton
   retrieval stack that powers the production API.
+- The table above is the **fp16 baseline**. As of the current release the
+  default codec for newly built indexes is `rroq158` (Riemannian 1.58-bit,
+  K=8192) on both GPU and CPU; see the next subsection for kernel-level
+  performance and the trade-off statement.
+
+### Default codec: RROQ-1.58 (K=8192)
+
+`Compression.RROQ158` is the new default for newly built indexes on both
+GPU (Triton fused kernel) and CPU (Rust SIMD kernel). Per-token storage
+drops to **46 B** (vs 256 B FP16, 64 B ROQ-4 — 5.5× / 1.4× smaller).
+
+Kernel-level CPU microbench at production K=8192 (8 native workers × 16
+threads, which is the production server layout — see
+`benchmarks/microbench_rroq158_vs_fp16_cpu.py`):
+
+| codec   | p50         | p95         | speedup vs fp16 |
+| ------- | ----------: | ----------: | --------------: |
+| fp16    | 199.8 ms    | 498.1 ms    | baseline        |
+| rroq158 | **14.1 ms** | **86.3 ms** | **14.3× p50 / 5.8× p95** |
+
+GPU lane (32×32×512 microbench, A5000): **0.15 ms p50 / 3.4 M docs·s⁻¹**,
+parity ≤ 1e-4 vs the python reference. Existing FP16 indexes load
+unchanged — the manifest carries the build-time codec, so flipping the
+default is non-breaking for deployed clusters.
+
+Quality trade-off on real BEIR with the previous (K=1024) generation
+showed −1 to −4 pt NDCG@10 depending on dataset. The K=8192 default
+closes most of that gap; rerun
+`benchmarks/beir_benchmark.py --compression rroq158` against the table
+above for your own data. Full audit, per-phase verdicts, and rationale in
+[research/low_bit_roq/PROGRESS.md](../research/low_bit_roq/PROGRESS.md)
+(`[2026-04-19] phase-2-to-6-rroq158-default` and
+`[2026-04-19] phase-1.5-cpu-kernel-perf-pass`).
 
 ### Comparison vs next-plaid
 

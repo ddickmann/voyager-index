@@ -120,6 +120,90 @@ def test_score_sealed_candidates_prefers_roq4_pipeline(tmp_path: Path) -> None:
     rust_index.score_candidates_exact.assert_not_called()
 
 
+def test_score_sealed_candidates_prefers_rroq158_pipeline(tmp_path: Path) -> None:
+    """When ``quantization_mode='rroq158'`` is set, the rroq158 lane wins
+    over the fp16 / colbandit / quantized fall-throughs even on CPU
+    (Phase 1.5 gate flipped CPU default to rroq158)."""
+    mgr = _make_manager(tmp_path)
+    try:
+        scfg = mgr._config.to_search_config()
+        scfg.quantization_mode = "rroq158"
+
+        def fake_rroq_score(*args, **kwargs):
+            return ([(31, 0.88)], {"num_docs_scored": 1})
+
+        mgr._score_rroq158_candidates = fake_rroq_score  # type: ignore[method-assign]
+
+        results, exact_ids, exact_path, stats = mgr._score_sealed_candidates(
+            torch.zeros((2, 4), dtype=torch.float32),
+            [31],
+            {0: [31]},
+            1,
+            scfg,
+            torch.device("cpu"),
+        )
+    finally:
+        mgr.close()
+
+    assert results == [(31, 0.88)]
+    assert exact_ids == [31]
+    assert exact_path == "rroq158_pipeline"
+    assert stats["num_docs_scored"] == 1
+
+
+def test_score_sealed_candidates_rroq158_hardfails_when_no_kernel(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the index was built with rroq158 (rroq158_meta exists) but neither
+    the GPU Triton kernel nor the Rust SIMD CPU kernel is reachable, the
+    fallback chain must raise an actionable error rather than silently
+    returning no results."""
+    import voyager_index._internal.inference.shard_engine._manager.search as search_mod
+    import sys
+
+    mgr = _make_manager(tmp_path)
+    try:
+        scfg = mgr._config.to_search_config()
+        scfg.quantization_mode = "rroq158"
+
+        mgr._score_rroq158_candidates = lambda *a, **kw: None  # type: ignore[method-assign]
+        # Fake the meta presence (cache in mgr) so the hard-fail branch fires.
+        mgr._rroq158_meta = {"centroids": np.zeros((4, 4)), "fwht_seed": 0}
+
+        # Hide the Rust kernel from the search.py importer.
+        monkeypatch.setitem(sys.modules, "latence_shard_engine", None)
+
+        with __import__("pytest").raises(RuntimeError, match="rroq158 shards selected"):
+            mgr._score_sealed_candidates(
+                torch.zeros((2, 4), dtype=torch.float32),
+                [42],
+                {0: [42]},
+                1,
+                scfg,
+                torch.device("cpu"),
+            )
+    finally:
+        mgr.close()
+
+
+def test_default_compression_is_rroq158() -> None:
+    """The library default for newly constructed configs must be RROQ158
+    after the Phase 1.5 gate. Existing fp16 indexes on disk are unaffected
+    because the manifest carries the build-time codec."""
+    from voyager_index._internal.inference.shard_engine.serving_config import (
+        BuildConfig,
+        Compression,
+    )
+    from voyager_index._internal.inference.shard_engine._manager.common import (
+        ShardEngineConfig as _SEC,
+    )
+
+    assert BuildConfig().compression == Compression.RROQ158
+    assert _SEC().compression == Compression.RROQ158
+    assert BuildConfig().rroq158_k == 8192
+    assert _SEC().rroq158_k == 8192
+
+
 def test_inspect_query_pipeline_accepts_runtime_override_kwargs(tmp_path: Path) -> None:
     mgr = _make_manager(tmp_path)
     try:

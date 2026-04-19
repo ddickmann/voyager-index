@@ -29,7 +29,7 @@ Query tokens
   → FAISS ANN index → candidate doc IDs
   → GPU gather (from GPU-resident corpus or shard fetch)
   → optional ColBANDIT pruning
-  → Triton / exact / INT8 / FP8 / ROQ4 scoring
+  → Triton (GPU) or Rust SIMD (CPU) scoring: RROQ-1.58 (default) / FP16 / INT8 / FP8 / ROQ4
   → top-K results
 ```
 
@@ -55,9 +55,12 @@ Key properties:
   `D[candidate_ids]` gather followed by a fused MaxSim kernel launch
 - **Disk-backed fallback**: for large corpora, safetensors-backed shards
   are fetched on-demand with pinned-memory pipelining
-- **Quantized serving**: request or collection level selection of exact,
-  `int8`, `fp8`, or `roq4` scoring on the CUDA/Triton path, with truthful
-  fallback behavior when those kernels are unavailable
+- **Quantized serving**: request or collection level selection of `rroq158`
+  (default — Riemannian 1.58-bit, K=8192, fused on both GPU Triton and CPU
+  Rust SIMD), exact, `int8`, `fp8`, or `roq4` scoring, with truthful
+  fallback behavior when those kernels are unavailable. The CPU `rroq158`
+  lane is wired through `latence_shard_engine.rroq158_score_batch`
+  (hardware popcount + AVX2/BMI2/FMA + cached rayon thread pool).
 - **Production ColBANDIT path**: query-time pruning is wired into the real
   shard serving flow instead of being a side experiment
 - **Full CRUD**: insert, delete, upsert via WAL + memtable, identical
@@ -109,7 +112,10 @@ curl -X POST http://localhost:8080/collections/my_col \
     "dimension": 128,
     "kind": "shard",
     "n_shards": 256,
-    "compression": "fp16",
+    "compression": "rroq158",
+    "rroq158_k": 8192,
+    "rroq158_group_size": 32,
+    "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
     "router_device": "cpu",
@@ -156,7 +162,10 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 |-----------|---------|-------------|
 | `n_shards` | 256 | Number of storage shards |
 | `dim` | 128 | Embedding dimension |
-| `compression` | `fp16` | Storage compression (`fp16`, `int8`, `roq4`) |
+| `compression` | `rroq158` | Storage compression. Default is `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4` |
+| `rroq158_k` | 8192 | rroq158 spherical k-means centroid count (must be a power of two ≥ `group_size`) |
+| `rroq158_seed` | 42 | rroq158 FWHT rotator + k-means initialisation seed |
+| `rroq158_group_size` | 32 | rroq158 ternary group size (must be a multiple of 32 to align with the `popcnt` kernel) |
 | `k_candidates` | 2000 | LEMUR candidate count per query |
 | `use_colbandit` | `false` | Enable ColBANDIT query-time pruning |
 | `lemur_epochs` | 10 | LEMUR MLP training epochs |
@@ -180,14 +189,23 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 - **`n_shards`**: should be roughly `sqrt(n_docs / 100)` for balanced
   shard sizes. Default of 256 works well up to ~500K docs.
 - **`compression` vs `quantization_mode`**: compression controls stored shard
-  representation; quantization controls the active scoring kernel.
+  representation; quantization controls the active scoring kernel. The
+  default `rroq158` codec is wired on both lanes (GPU Triton fused kernel,
+  CPU Rust SIMD), so the same collection runs on either device with no
+  per-device override.
 - **`n_full_scores`**: reduce it to trim exact work after proxy pruning; raise it
   only when recall audits show the shortlist is too aggressive.
 - **Pinned transfer knobs**: `pinned_pool_buffers` and
   `pinned_buffer_max_tokens` matter only for CPU->GPU fetch pipelines, not the
   pure CPU exact path.
-- **ROQ 4-bit**: enables strong bandwidth reduction for disk-backed corpora.
-  Set `compression="roq4"` and optionally `quantization_mode="roq4"` on CUDA.
+- **RROQ-1.58 (default)**: ~5.5× smaller storage than fp16 (46 B / token vs
+  256 B / token), strictly faster than fp16 on CPU at production K=8192
+  (5.8× p95 in 8-worker layout). Override with `compression="fp16"` only if
+  you need parity with an older deployment or to disambiguate a
+  quality-regression hypothesis.
+- **ROQ 4-bit**: still available for ~4× compression with the asymmetric
+  Triton kernel. Set `compression="roq4"` and optionally
+  `quantization_mode="roq4"` on CUDA.
 - **ColBANDIT**: enable it when you want pruning in the production shard path;
   disable it when measuring exact latency/quality baselines.
 
@@ -269,8 +287,11 @@ The shard engine automatically detects available GPU memory:
   on-demand with configurable pinned-memory buffering. Suitable for 1M+ docs.
 - **CPU-only host**: when CUDA is unavailable, the same shard collection stays
   searchable with the CPU path and the same routed retrieval / ColBANDIT
-  controls, but Triton quantization modes fall back to full-precision scoring
-  and `roq4` exact scoring remains CUDA-only.
+  controls. The default `rroq158` codec runs natively on CPU via the Rust
+  SIMD kernel (`latence_shard_engine.rroq158_score_batch`) — there is no
+  silent fallback to fp16. Other Triton quantization modes (`int8`, `fp8`)
+  fall back to full-precision scoring on CPU; `roq4` exact scoring remains
+  CUDA-only.
 
 Memory formula for GPU-resident mode:
 ```

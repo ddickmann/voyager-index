@@ -50,7 +50,8 @@ class Rroq158Config:
 
     group_size: int = 32
     """Ternary group size in coords. Must be a multiple of 32 (one popcount word
-    per group). At dim=128 → n_groups=4."""
+    per group) and must divide ``dim``. Allowed values: {32, 64} for production
+    dims (64, 96, 128, 160, 256, 384, 768, 1024)."""
 
     spherical_kmeans_iter: int = 15
     fit_sample_cap: int = 100_000
@@ -60,6 +61,39 @@ class Rroq158Config:
     """Tokens per encode chunk to keep peak RAM in budget."""
 
     seed: int = 42
+
+    def __post_init__(self) -> None:
+        if self.K < self.group_size:
+            raise ValueError(
+                f"Rroq158Config.K ({self.K}) must be >= group_size "
+                f"({self.group_size})"
+            )
+        if (self.K & (self.K - 1)) != 0:
+            raise ValueError(
+                f"Rroq158Config.K must be a power of two, got {self.K}"
+            )
+        if self.group_size < 32 or self.group_size % 32 != 0:
+            raise ValueError(
+                f"Rroq158Config.group_size must be a positive multiple of 32, "
+                f"got {self.group_size}"
+            )
+        if self.fit_sample_cap < self.K:
+            raise ValueError(
+                f"Rroq158Config.fit_sample_cap ({self.fit_sample_cap}) must "
+                f"be >= K ({self.K}) for k-means to converge"
+            )
+        if self.encode_chunk < 1:
+            raise ValueError(
+                f"Rroq158Config.encode_chunk must be positive, got "
+                f"{self.encode_chunk}"
+            )
+        if self.K < 1024:
+            log.debug(
+                "Rroq158Config.K=%d is below the production floor of 1024. "
+                "Quality drops fast for K<1024; production indexes should "
+                "use K >= 8192.",
+                self.K,
+            )
 
 
 def _fwht_rotator(dim: int, seed: int):
@@ -77,8 +111,18 @@ def _fwht_rotator(dim: int, seed: int):
 # Module-level rotator cache. Building the rotator costs ~0.3-0.5 ms (k random
 # perms + sign vectors); caching by (dim, seed) eliminates this from the
 # per-query hot path. Bounded to a handful of entries because we expect at
-# most one (dim, seed) pair per index.
+# most one (dim, seed) pair per index. The bound stops a multi-tenant server
+# that hosts many distinct (dim, seed) indexes from leaking unbounded memory:
+# at the cap, the oldest entry is evicted (FIFO insertion order).
+_FWHT_ROTATOR_CACHE_CAP = 32
 _FWHT_ROTATOR_CACHE: dict[tuple[int, int], object] = {}
+
+
+def clear_fwht_rotator_cache() -> None:
+    """Drop all cached FWHT rotators. Useful for tests and for multi-tenant
+    servers that need to free GPU/CPU memory tied to a tenant being unloaded.
+    """
+    _FWHT_ROTATOR_CACHE.clear()
 
 
 def get_cached_fwht_rotator(dim: int, seed: int):
@@ -98,12 +142,21 @@ def get_cached_fwht_rotator(dim: int, seed: int):
     rot = _FWHT_ROTATOR_CACHE.get(key)
     if rot is None:
         rot = _fwht_rotator(dim, seed)
+        if len(_FWHT_ROTATOR_CACHE) >= _FWHT_ROTATOR_CACHE_CAP:
+            # FIFO eviction: drop the oldest insertion. dict preserves insert
+            # order in CPython 3.7+, so next(iter(...)) gives the oldest key.
+            _FWHT_ROTATOR_CACHE.pop(next(iter(_FWHT_ROTATOR_CACHE)), None)
         _FWHT_ROTATOR_CACHE[key] = rot
     if not hasattr(rot, "_dense_matrix_np"):
         import torch
         with torch.no_grad():
-            padded = int(rot.padded_dim)
-            eye = torch.eye(padded, dtype=torch.float32)
+            # `rot.forward` expects inputs with shape[-1] == rot.dim and pads
+            # internally to padded_dim. Feed an `eye(dim)` so each row is the
+            # operator applied to a one-hot of length `dim`, then slice to
+            # `dim` rotated coords. This is correct for non-power-of-2 dims
+            # (e.g. dim=96 with padded_dim=128) — see
+            # ``test_rroq158_dense_matrix_fwht_path``.
+            eye = torch.eye(int(dim), dtype=torch.float32)
             full = rot.forward(eye).cpu().numpy().astype(np.float32, copy=False)
         rot._dense_matrix_np = np.ascontiguousarray(full[:dim, :dim])
     return rot
@@ -382,10 +435,20 @@ def pack_doc_codes_to_int32_words(sign_planes_u8: np.ndarray) -> np.ndarray:
     """Reinterpret packed-uint8 sign/nonzero planes as int32 words for the
     Triton kernel. The kernel uses 32-bit popcount, so we feed it the
     same bytes viewed as int32. ``sign_planes_u8`` shape is
-    ``(n_tok, dim/8)`` uint8; output is ``(n_tok, dim/32)`` int32."""
+    ``(n_tok, dim/8)`` uint8; output is ``(n_tok, dim/32)`` int32.
+
+    ``dim`` is required by the encoder to be a multiple of 32 already
+    (``Rroq158Config.group_size`` floor + ``dim % group_size == 0``), so the
+    re-padding branch should never fire on production indexes. The assert
+    catches accidental upstream regressions where a non-multiple-of-32 dim
+    sneaks in.
+    """
     n, nb = sign_planes_u8.shape
-    if nb % 4 != 0:
-        sign_planes_u8 = np.pad(sign_planes_u8, ((0, 0), (0, 4 - nb % 4)))
+    assert nb % 4 == 0, (
+        f"pack_doc_codes_to_int32_words received nb={nb} bytes (dim*8={nb*8} "
+        f"bits); expected a multiple of 4 bytes (dim multiple of 32). This "
+        f"indicates a misconfigured Rroq158Config or upstream encoder bug."
+    )
     return sign_planes_u8.view(np.int32).copy()
 
 
@@ -396,4 +459,5 @@ __all__ = [
     "encode_query_for_rroq158",
     "pack_doc_codes_to_int32_words",
     "get_cached_fwht_rotator",
+    "clear_fwht_rotator_cache",
 ]

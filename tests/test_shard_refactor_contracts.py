@@ -35,6 +35,9 @@ def _make_corpus(
 
 
 def _build_manager(path: Path, *, dim: int = 16) -> ShardSegmentManager:
+    # 12-doc fixture is far too small for the new RROQ158 default (K=8192);
+    # explicitly pin to FP16 so this contract test exercises the legacy lane.
+    from voyager_index._internal.inference.shard_engine.config import Compression
     config = ShardEngineConfig(
         n_shards=3,
         dim=dim,
@@ -43,6 +46,7 @@ def _build_manager(path: Path, *, dim: int = 16) -> ShardSegmentManager:
         max_docs_exact=8,
         n_full_scores=8,
         ann_backend=AnnBackend.TORCH_EXACT_IP,
+        compression=Compression.FP16,
     )
     mgr = ShardSegmentManager(path, config=config, device="cpu")
     mgr.build(_make_corpus(dim=dim), list(range(12)))

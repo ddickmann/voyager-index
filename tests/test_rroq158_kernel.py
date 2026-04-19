@@ -228,6 +228,134 @@ def test_rroq158_rust_simd_microbench():
     print(f"\n[rroq158-rust-cpu] p50={p50:.2f}ms  p95={p95:.2f}ms  QPS={qps:.0f} docs/s")
 
 
+@pytest.mark.parametrize("dim", [96, 128, 160])
+def test_rroq158_dense_matrix_fwht_path(dim):
+    """The FWHT dense-matrix cache slices `full[:dim, :dim]` from the padded
+    `padded_dim x padded_dim` operator. This is only sound because the unused
+    rows/cols multiply zero-padded inputs; verify that for non-power-of-2
+    dims the cached matrix still matches a fresh per-call rotation.
+    """
+    from voyager_index._internal.inference.quantization.rroq158 import (
+        get_cached_fwht_rotator,
+        clear_fwht_rotator_cache,
+    )
+    clear_fwht_rotator_cache()
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((4, dim)).astype(np.float32)
+
+    rotator = get_cached_fwht_rotator(dim=dim, seed=7)
+    cached_mat = rotator._dense_matrix_np
+    assert cached_mat.shape == (dim, dim)
+
+    direct = rotator.forward(torch.from_numpy(x)).cpu().numpy()
+    if direct.shape[1] != dim:
+        direct = direct[:, :dim]
+    # Production usage in encode_query_for_rroq158 (line ~401) does
+    # `q_rot = queries_f32 @ dense` (no transpose). The cached matrix is
+    # constructed so that `x @ cached_mat == forward(x)[:, :dim]` for any
+    # input shape (N, dim), including non-power-of-2 dim where padded_dim
+    # > dim and the rotation spreads info into the padding cols.
+    via_matmul = (x @ cached_mat).astype(np.float32)
+    np.testing.assert_allclose(via_matmul, direct, rtol=1e-4, atol=1e-4)
+
+
+def test_rroq158_K8192_parity_when_corpus_fits():
+    """K=8192 is the production default. Build a small corpus where K=8192
+    barely fits (n_tokens >= K), encode, and verify python-reference vs
+    Rust-SIMD parity at that K.
+    """
+    pytest.importorskip("latence_shard_engine")
+    import latence_shard_engine as eng
+
+    rng = np.random.default_rng(42)
+    K = 8192
+    n_docs = 32
+    n_d_tok = 256  # 32 * 256 = 8192 tokens => K-many seeds
+    n_q_tok = 4
+    dim = 128
+
+    n_total = n_docs * n_d_tok
+    docs = rng.standard_normal((n_total, dim)).astype(np.float32)
+    queries = rng.standard_normal((n_q_tok, dim)).astype(np.float32)
+
+    cfg = Rroq158Config(
+        K=K, group_size=32, fit_sample_cap=n_total, encode_chunk=n_total, seed=0,
+    )
+    enc = encode_rroq158(docs, cfg)
+    q_in = encode_query_for_rroq158(queries, enc.centroids,
+                                    fwht_seed=enc.fwht_seed, query_bits=4)
+    sign_doc, nz_doc, scales_doc, cid_doc, cos_doc, sin_doc = _reshape_doc_arrays(
+        enc, n_docs, n_d_tok,
+    )
+
+    qp = q_in["q_planes"][None, :, :, :]
+    qm = q_in["q_meta"][None, :, :]
+    qc = q_in["qc_table"][None, :, :]
+    A, S, query_bits, n_words = qp.shape
+    B, T = sign_doc.shape[:2]
+    n_groups = scales_doc.shape[-1]
+
+    ref = reference_score_rroq158(
+        qp, qm, qc, cid_doc, cos_doc, sin_doc, sign_doc, nz_doc, scales_doc,
+    )
+    flat = eng.rroq158_score_batch(
+        qp.astype(np.int32, copy=False).ravel(),
+        qm.astype(np.float32, copy=False).ravel(),
+        qc.astype(np.float32, copy=False).ravel(),
+        sign_doc.astype(np.int32, copy=False).ravel(),
+        nz_doc.astype(np.int32, copy=False).ravel(),
+        scales_doc.astype(np.float32, copy=False).ravel(),
+        cid_doc.astype(np.int32, copy=False).ravel(),
+        cos_doc.astype(np.float32, copy=False).ravel(),
+        sin_doc.astype(np.float32, copy=False).ravel(),
+        A, B, S, T, n_words, n_groups, query_bits, K,
+    ).reshape(A, B)
+    np.testing.assert_allclose(flat, ref, rtol=1e-4, atol=1e-4)
+
+
+def test_rroq158_skip_qc_table_parity():
+    """When `skip_qc_table=True`, encode_query_for_rroq158 must return the
+    same q_planes / q_meta as the full path. The qc_table is computed
+    elsewhere (GPU), so the planes must be identical regardless.
+    """
+    rng = np.random.default_rng(3)
+    n_q_tok = 4
+    dim = 128
+    K = 256
+    n_d_tok = 32
+    n_docs = 16  # 16*32 = 512 tokens >= K=256
+    docs = rng.standard_normal((n_docs * n_d_tok, dim)).astype(np.float32)
+    queries = rng.standard_normal((n_q_tok, dim)).astype(np.float32)
+
+    cfg = Rroq158Config(K=K, group_size=32, fit_sample_cap=n_docs * n_d_tok,
+                        encode_chunk=n_docs * n_d_tok, seed=0)
+    enc = encode_rroq158(docs, cfg)
+
+    full = encode_query_for_rroq158(
+        queries, enc.centroids, fwht_seed=enc.fwht_seed, query_bits=4,
+    )
+    skipped = encode_query_for_rroq158(
+        queries, None, fwht_seed=enc.fwht_seed, query_bits=4, skip_qc_table=True,
+    )
+    np.testing.assert_array_equal(full["q_planes"], skipped["q_planes"])
+    np.testing.assert_allclose(full["q_meta"], skipped["q_meta"], rtol=1e-6)
+    assert "qc_table" in full
+    assert "qc_table" not in skipped or skipped["qc_table"] is None
+
+
+def test_rroq158_config_validation():
+    """Rroq158Config rejects bad K, group_size, fit_sample_cap."""
+    with pytest.raises(ValueError, match="power of two"):
+        Rroq158Config(K=1000, group_size=32, fit_sample_cap=2000)
+    with pytest.raises(ValueError, match=r"K \(16\)"):
+        Rroq158Config(K=16, group_size=32, fit_sample_cap=2000)
+    with pytest.raises(ValueError, match="multiple of 32"):
+        Rroq158Config(K=1024, group_size=24, fit_sample_cap=2000)
+    with pytest.raises(ValueError, match="fit_sample_cap"):
+        Rroq158Config(K=4096, group_size=32, fit_sample_cap=1024)
+    Rroq158Config(K=8192, group_size=32, fit_sample_cap=20000)
+
+
 def test_rroq158_python_reference_matches_brute():
     enc, q_in, queries, _, n_docs, n_d_tok = _make_fixture(
         n_docs=4, n_q_tok=3, n_d_tok=8, dim=64, K=32, seed=0,

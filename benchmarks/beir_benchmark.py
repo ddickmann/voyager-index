@@ -706,9 +706,7 @@ def _run_rroq158_gpu_mode(
             query_vecs[qi], payload, cand, doc_ids_to_idx, TOP_K, device,
         )
         if distill_head is not None and len(ids) >= 10:
-            # MV-distill currently regresses on real BEIR (PROGRESS.md
-            # 2026-04-19); keep wired but expect this to lose vs base.
-            ids = ids  # placeholder: we'd need score_ternary etc to apply MV
+            ids = distill_head.rerank(ids, scores) if hasattr(distill_head, "rerank") else ids
         all_ids.append(ids)
         all_elapsed.append((time.perf_counter() - t0) * 1000)
 

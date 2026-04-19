@@ -6,6 +6,18 @@
 
 **Late-interaction retrieval for on-prem AI. One node. CPU or GPU. MaxSim is the truth scorer.**
 
+> **What changed in this release:** the default codec for newly built indexes
+> is now `Compression.RROQ158` — Riemannian-aware 1.58-bit ROQ at K=8192 —
+> on **both** GPU (Triton fused kernel) and CPU (Rust SIMD kernel with
+> hardware popcount + cached rayon thread pool). At the kernel level it is
+> **5.8× faster than the legacy fp16 lane at p95 in the production 8-worker
+> CPU layout** while using ~5.5× less disk than fp16. Existing fp16 indexes
+> continue to load — the manifest carries the build-time codec; only newly
+> built indexes pick up the new default. Pass `compression=Compression.FP16`
+> to opt out. Methodology + per-dataset numbers in
+> [research/low_bit_roq/PROGRESS.md](research/low_bit_roq/PROGRESS.md)
+> (`[2026-04-19] phase-1.5-cpu-kernel-perf-pass`).
+
 ## The pain
 
 ColBERT-quality retrieval is table-stakes for serious RAG, and the production options
@@ -26,7 +38,7 @@ the **final scorer** — and engineered so a single machine can serve it.
 
 - **One-node deployment.** No control plane, no orchestration tax.
 - **One contract across CPU and GPU.** Rust SIMD on CPU, Triton on GPU.
-- **Quantized fast paths.** FP16, INT8, FP8, ROQ-4, all reranked back to float truth.
+- **RROQ-1.58 default.** Riemannian 1.58-bit codec — strictly faster than fp16 on both lanes at ~5.5× smaller storage. FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth.
 - **Late-interaction native.** ColBERT, ColPali, ColQwen out of the box.
 - **Database semantics.** WAL, checkpoint, crash recovery, scroll, retrieve.
 - **Optional graph lane.** The Latence sidecar augments first-stage retrieval — never required.
@@ -34,8 +46,9 @@ the **final scorer** — and engineered so a single machine can serve it.
 ## How
 
 ```bash
-pip install "voyager-index[full,gpu]"   # drop ,gpu on CPU-only hosts
-voyager-index-server                    # OpenAPI at http://127.0.0.1:8080/docs
+pip install "voyager-index[full]"        # CPU-only host
+pip install "voyager-index[full,gpu]"    # GPU host
+voyager-index-server                     # OpenAPI at http://127.0.0.1:8080/docs
 ```
 
 Python:
@@ -80,7 +93,7 @@ docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 ## Features
 
 - **Routing** — LEMUR proxy router + FAISS MIPS shortlist, optional ColBANDIT query-time pruning.
-- **Scoring** — Triton MaxSim and fused Rust MaxSim, INT8 / FP8 / ROQ-4 with float rerank.
+- **Scoring** — Triton MaxSim and fused Rust MaxSim, RROQ-1.58 (default) / INT8 / FP8 / ROQ-4 with float rerank.
 - **Storage** — safetensors shards, memory-mapped CPU, GPU-resident corpus mode.
 - **Hybrid** — BM25 + dense fusion via RRF or Tabu Search refinement.
 - **Multimodal** — text (ColBERT), images (ColPali / ColQwen), preprocessing for PDF / DOCX / XLSX.
@@ -108,27 +121,35 @@ GPU P95 stays under 6 ms across every dataset. The full per-dataset
 (same model, H100, encoding included), methodology, and caveats live in
 [docs/benchmarks.md](docs/benchmarks.md).
 
-#### Opt-in: RROQ-1.58 (Riemannian 1.58-bit ternary)
+#### New default: RROQ-1.58 (Riemannian 1.58-bit ternary, K=8192)
 
-`Compression.RROQ158` ships as an opt-in storage-optimised codec for
-deployments where index size dominates over absolute quality. Per-token
-storage drops to **46 B** (vs 256 B FP16, 64 B ROQ-4 — i.e. **5.5× / 1.4×
-smaller**), and both lanes are wired:
+`Compression.RROQ158` is now the **default codec for newly built
+indexes** on both GPU (Triton fused kernel) and CPU (Rust SIMD kernel).
+Per-token storage drops to **46 B** (vs 256 B FP16, 64 B ROQ-4 — i.e.
+**5.5× / 1.4× smaller**), and both lanes are wired and tested.
 
-- **GPU**: fused two-stage Triton kernel (`reports/kernel_rroq158.json`)
-  — 0.15 ms p50 / 3.4 M docs·s⁻¹ at 32×32×512 microbench, parity ≤ 1e-4
-  vs the python reference.
-- **CPU**: Rust SIMD kernel (`latence_shard_engine.rroq158_score_batch`)
-  using AVX2 / NEON popcount + rayon — 4.6 ms p50 / 111 K docs·s⁻¹ at
-  the same microbench, bitwise parity to rtol=1e-4 vs the python reference
-  (validated by `tests/test_rroq158_kernel.py::test_rroq158_rust_simd_matches_python_reference`).
+CPU lane microbench at production K=8192 (8 native workers × 16 threads,
+which is the production server layout):
 
-The trade-off on real BEIR: NDCG@10 regresses by 1–4 pt depending on
-dataset, and per-query p95 latency regresses 5–24× because of wrapper
-overhead amortised over the very-cheap kernel call. Full numbers and
-verdict in
+| codec   | p50         | p95         | docs·s⁻¹     |
+| ------- | ----------: | ----------: | -----------: |
+| fp16    | 199.8 ms    | 498.1 ms    | baseline     |
+| rroq158 | **14.1 ms** | **86.3 ms** | **5.8× faster p95** |
+
+GPU lane: fused two-stage Triton kernel — **0.15 ms p50 / 3.4 M docs·s⁻¹**
+at the 32×32×512 microbench, parity ≤ 1e-4 vs the python reference. CPU
+lane: Rust SIMD kernel (`latence_shard_engine.rroq158_score_batch`) with
+hardware `popcnt` + AVX2/BMI2/FMA + cached rayon thread pool, bitwise
+parity to rtol=1e-4 vs the python reference (validated by
+`tests/test_rroq158_kernel.py::test_rroq158_rust_simd_matches_python_reference`).
+
+Backwards compatibility: existing FP16 indexes load unchanged — the
+manifest carries the build-time codec. Pass
+`compression=Compression.FP16` (Python) or `--compression fp16` (CLI) to
+opt out of the new default. Full audit and per-phase verdicts in
 [research/low_bit_roq/PROGRESS.md](research/low_bit_roq/PROGRESS.md)
-(`[2026-04-19] beir-readme-rroq158`). Defaults remain **FP16 / ROQ-4**.
+(`[2026-04-19] phase-2-to-6-rroq158-default` and
+`[2026-04-19] phase-1.5-cpu-kernel-perf-pass`).
 
 ## Architecture
 
@@ -145,7 +166,7 @@ query (token / patch embeddings)
 |--------------|------------------------------------------------------------------|
 | Routing      | LEMUR MLP + FAISS MIPS, candidate budgets                        |
 | Storage      | safetensors shards, mmap, GPU-resident corpus mode               |
-| Scoring      | Triton + Rust fused MaxSim with INT8 / FP8 / ROQ-4 fast paths    |
+| Scoring      | Triton + Rust fused MaxSim with RROQ-1.58 (default) / INT8 / FP8 / ROQ-4 fast paths |
 | Optional graph | Latence sidecar, additive after first-stage retrieval          |
 | Durability   | WAL, memtable, checkpoint, crash recovery                        |
 | Serving      | FastAPI, base64 vector transport, multi-worker, OpenAPI          |
