@@ -15,7 +15,7 @@ References:
 - Matryoshka (MRL): arXiv:2405.12497
 
 Author: Latence Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 from .binary import (

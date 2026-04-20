@@ -5,7 +5,7 @@ Graph-based retrieval engine using Neo4j database.
 Leverages graph structure for semantic search and relationship traversal.
 
 Author: ColBERT Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import logging

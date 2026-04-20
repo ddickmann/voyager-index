@@ -1,7 +1,11 @@
 # Third-Party Notices
 
-This repository includes third-party code. All third-party components and their
-licenses are documented below.
+The umbrella `voyager-index` repository is licensed under
+**CC-BY-NC-4.0** (see `LICENSE` and `LICENSING.md`). It additionally bundles
+third-party code that carries its own, separate license. Each such component
+and its license is documented below; those obligations apply independently
+of the repository-level license whenever the third-party files (or
+derivatives of them) are redistributed.
 
 ## Qdrant
 

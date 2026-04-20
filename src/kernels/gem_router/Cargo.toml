@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 authors = ["Latence Team"]
 description = "GEM-inspired set-native multi-vector routing core for ColBERT and ColPali"
-license = "Apache-2.0"
+license = "CC-BY-NC-4.0"
 
 [lib]
 name = "latence_gem_router"

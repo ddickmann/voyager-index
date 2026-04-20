@@ -16,7 +16,7 @@ Strategies:
 - Large (>50K docs): PLAID candidates → Triton reranking
 
 Author: ColBERT Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import json

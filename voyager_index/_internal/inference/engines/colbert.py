@@ -13,7 +13,7 @@ The BALANCED mode uses the Rust-based fast-plaid library for scalable
 multi-vector search with product quantization.
 
 Author: Latence Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import logging
