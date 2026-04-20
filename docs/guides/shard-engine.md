@@ -201,17 +201,29 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 - **Pinned transfer knobs**: `pinned_pool_buffers` and
   `pinned_buffer_max_tokens` matter only for CPU->GPU fetch pipelines, not the
   pure CPU exact path.
-- **RROQ-1.58 (default)**: ~5.5× smaller storage than fp16 (46 B / token vs
-  256 B / token), strictly faster than fp16 on CPU at production K=8192
-  (5.8× p95 in 8-worker layout). Override with `compression="fp16"` only if
-  you need parity with an older deployment or to disambiguate a
-  quality-regression hypothesis.
-- **RROQ-4 Riemannian (safe fallback)**: ~3× smaller than fp16 (~88 B /
-  token), ~0.5% NDCG@10 gap vs fp16, fully wired on both GPU (Triton fused
-  kernel `roq_maxsim_rroq4_riem`) and CPU (Rust SIMD kernel
+- **RROQ-1.58 (default)**: ~5.5× smaller storage than fp16 (~46 B / token
+  vs 256 B / token). On the BEIR 2026-Q2 production sweep: avg −1.43 pt
+  NDCG@10 vs fp16 with avg −0.48 pt R@100, avg GPU p95 1.13× fp16
+  (within the 1.20× retention budget). CPU p95 is currently ~7.9× slower
+  than fp16 at the production batch shape — the storage win is the
+  primary value here. Brute-force codec-fidelity overlap with fp16 on
+  arguana (the worst case for rroq158): top-10 ~82%, R@100 within
+  −1.4 pt (relevant docs are admitted; ~18% of top-10 positions are
+  rank-displaced). Override with `compression="fp16"` only if you need
+  parity with an older deployment or to disambiguate a quality-regression
+  hypothesis. For workloads requiring exact top-10 fidelity, opt into
+  `rroq4_riem` (below) or use rroq158 with an FP16 rerank on the
+  shortlist (`benchmarks/diag_rroq158_rescue.py`).
+- **RROQ-4 Riemannian (no-quality-loss lane)**: ~3× smaller than fp16
+  (~88 B / token), avg ΔNDCG@10 = +0.02 pt vs fp16 (max ±0.05 pt across
+  BEIR-6) — fully wired on both GPU (Triton fused kernel
+  `roq_maxsim_rroq4_riem`) and CPU (Rust SIMD kernel
   `latence_shard_engine.rroq4_riem_score_batch`, AVX2/FMA + cached rayon
-  pool). Set `compression="rroq4_riem"` for workloads that reject any
-  quality regression while still wanting low-bit ROQ disk + latency wins.
+  pool). Currently slower than fp16 in absolute latency on the BEIR
+  sweep (avg 5.0× on GPU, avg 12.7× on CPU at the production batch
+  shape); the win is **storage with zero quality regression**, not
+  throughput. Set `compression="rroq4_riem"` for workloads that reject
+  any quality regression on hard datasets.
 - **ROQ 4-bit**: still available for ~4× compression with the asymmetric
   Triton kernel. Set `compression="roq4"` and optionally
   `quantization_mode="roq4"` on CUDA.

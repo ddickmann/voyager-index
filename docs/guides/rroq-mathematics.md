@@ -427,18 +427,77 @@ python benchmarks/beir_2026q2_full_sweep.py \
     --output reports/beir_2026q2/sweep.jsonl
 ```
 
-The headline default-decision rule (§G in the production validation
-plan): keep `Compression.RROQ158` as the default if and only if
+The headline default-decision rule (Phase F1 in the production
+validation plan) tries to **promote `rroq4_riem` to default** as the
+no-quality-loss lane. It passes if and only if all four conditions
+hold across the 6-dataset sweep:
 
-- the average NDCG@10 drop vs FP16 across the 6 datasets is **≥ −1.5
-  points**, and
-- the average GPU p95 ratio is **≤ 1.2× FP16**.
+1. avg NDCG@10 drop vs FP16 ≥ **−0.5 pt**
+2. avg R@100 drop vs FP16 ≥ **−0.3 pt**
+3. GPU p95 ≤ FP16 GPU p95 on **every** cell (no per-cell regression)
+4. CPU p95 ≤ FP16 CPU p95 on **every** cell (no per-cell regression)
 
-If the sweep numbers fail either bound, `Compression.RROQ158` is
-demoted to opt-in and `Compression.FP16` becomes the documented default
-again. The JSONL produced by the harness is the single source of truth
-for that decision; the README table is regenerated from it by
-`scripts/format_beir_2026q2_table.py`.
+The JSONL produced by the harness is the single source of truth for
+that decision; the verdict block is rendered by
+`scripts/format_beir_2026q2_table.py --format summary`.
+
+**Production verdict from the BEIR 2026-Q2 sweep:** the rroq4_riem
+quality conditions (1, 2) **pass** — measured avg ΔNDCG@10 = +0.02 pt
+vs FP16 (max ±0.05 pt), avg ΔR@100 = +0.23 pt. The latency conditions
+(3, 4) **fail decisively**: 6 of 6 datasets exceed the per-cell GPU p95
+budget (worst: arguana at 9.00× FP16 GPU p95) and 6 of 6 datasets
+exceed the per-cell CPU p95 budget (worst: arguana at 14.30× FP16 CPU
+p95). Every doc-token score now requires a 4-bit dequantize + per-group
+`(min, delta)` FMA on top of the centroid lookup, on top of an FP16
+baseline that is itself extremely bandwidth-friendly. So **the default
+reverts to `Compression.RROQ158`** and rroq4_riem ships as the opt-in
+no-quality-loss lane.
+
+The fallback rule (Option 2) keeps rroq158 as the default when the
+quality cost is bounded:
+
+- avg NDCG@10 drop vs FP16 ≥ **−1.5 pt** (rroq158 measured: −1.43 pt)
+- avg GPU p95 ratio vs FP16 ≤ **1.2×** (rroq158 measured: 1.13×)
+
+Both conditions hold on the production sweep. CPU p95 is the one
+honest weakness: the Rust SIMD rroq158 kernel is currently slower than
+the FP16 CPU baseline by **~7.9× avg** in absolute QPS at the production
+batch shape (2000 doc candidates per query, ~30 query tokens). The
+codec is correct (parity-tested against the GPU Triton kernel) — the
+gap is that the FP16 AVX2 MaxSim path is hard to beat on this shape and
+the rroq158 path's per-query Python-to-Rust tensor copies dominate the
+popcount kernel itself. We document the gap honestly in the README;
+closing it is on the post-Phase-7 backlog (per-query Python-to-Rust
+tensor copy elision + AVX-512 nibble pack are the two highest-ROI
+items).
+
+### Rescue experiment: a tiny FP16 rerank closes the rroq158 NDCG@10 gap
+
+For workloads that need both rroq158's storage and FP16's top-10
+ranking (e.g. arguana-style hard datasets where rroq158 loses ~2.5
+NDCG@10 points), the diagnostic in
+[`benchmarks/diag_rroq158_rescue.py`](../../benchmarks/diag_rroq158_rescue.py)
+shows that a **two-stage rerank** fully closes the gap on every hard
+dataset we tested:
+
+1. Score the full candidate set (e.g. 2000 docs) with rroq158 — fast,
+   storage-cheap.
+2. Re-score the top **N = 32–64** with FP16 MaxSim — slow, but only on
+   a tiny shortlist.
+3. Concatenate the FP16 ranking for the top-N with the original
+   rroq158 ranking for the tail (preserving R@100).
+
+On arguana the gap closes from −2.6 → ~0 pt at N = 64; scifact and
+scidocs behave the same. The cost: an extra ~5 ms per query for the
+FP16 rerank, plus the storage of FP16 doc tokens for the indexed
+shortlist (which is still a fraction of a full FP16 index because
+the shortlist is bounded by `max_docs_exact`).
+
+This is wired but **not** the build-time default — it requires shipping
+both the rroq158 codes and an FP16 sidecar of the candidate-region
+tokens. Users who need it opt in via `SearchConfig.distill_rerank` /
+custom rerank lanes; the BEIR sweep numbers in this document do **not**
+include it, so the rroq158 row reflects honest single-codec behavior.
 
 ---
 
