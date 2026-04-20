@@ -1,6 +1,6 @@
 [package]
 name = "latence-shard-engine"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["Latence Team"]
 description = "Lock-free shard engine for multi-vector retrieval — ArcSwap snapshots, WAL, mmap shards, GPU scoring callbacks"

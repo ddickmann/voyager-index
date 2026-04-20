@@ -1,6 +1,6 @@
 [package]
 name = "latence-solver"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["Latence Team"]
 description = "CPU-reference-first Tabu Search Quadratic Knapsack solver with optional experimental accelerators"
