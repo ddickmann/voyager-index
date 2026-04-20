@@ -156,7 +156,10 @@ curl -X POST http://127.0.0.1:8080/collections/shard-prod \
     "kind": "shard",
     "n_shards": 256,
     "k_candidates": 2000,
-    "compression": "fp16",
+    "compression": "rroq158",
+    "rroq158_k": 8192,
+    "rroq158_group_size": 32,
+    "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
     "router_device": "cpu",
@@ -173,9 +176,19 @@ curl -X POST http://127.0.0.1:8080/collections/shard-prod \
 
 ### Recommended deployment shapes
 
-- CPU-focused host: run without CUDA, keep `router_device="cpu"`, and use exact
-  scoring. Storage compression still helps IO, but Triton quantization modes do
-  not accelerate the CPU fallback path.
+- CPU-focused host: run without CUDA, keep `router_device="cpu"`, and use the
+  default `rroq158` codec. The CPU lane is wired through the Rust SIMD kernel
+  (`latence_shard_engine.rroq158_score_batch`, AVX2/BMI2/FMA + hardware
+  `popcnt` + cached rayon thread pool) and is strictly faster than `fp16` on
+  CPU at production K=8192 (5.8× p95 in 8-worker layout). When zero quality
+  regression matters more than maximum throughput, switch to
+  `compression="rroq4_riem"` — the Riemannian 4-bit asymmetric safe-fallback
+  lane is wired on the same Rust SIMD path
+  (`latence_shard_engine.rroq4_riem_score_batch`) with AVX2/FMA + cached
+  rayon pool, ~3× smaller than fp16 on disk, ~0.5% NDCG@10 gap. Other
+  Triton quantization modes (`int8`, `fp8`) still fall back to
+  full-precision scoring on CPU; only `rroq158`, `rroq4_riem`, and `fp16`
+  have native CPU paths today.
 - GPU-scored host: keep `router_device="cpu"` or `"cuda"` depending on router
   contention, and use `transfer_mode="pinned"` or `"double_buffered"`.
 - GPU full-corpus rerank path: raise `gpu_corpus_rerank_topn` when the corpus
@@ -206,8 +219,14 @@ curl -X POST http://127.0.0.1:8080/collections/shard-prod/search \
 
 ### Mode selection summary
 
-- `compression`: `fp16`, `int8`, `roq4`
-- `quantization_mode`: empty or `none` for exact, or `int8`, `fp8`, `roq4`
+- `compression`: `rroq158` (default — Riemannian 1.58-bit, K=8192, GPU+CPU), `rroq4_riem` (Riemannian 4-bit asymmetric — safe-fallback for zero-regression workloads), `fp16`, `int8`, `roq4`
+- `rroq158_k`: rroq158 spherical k-means centroid count (default `8192`)
+- `rroq158_group_size`: rroq158 ternary group size (default `32`)
+- `rroq158_seed`: rroq158 FWHT rotator + k-means initialisation seed (default `42`)
+- `rroq4_riem_k`: rroq4_riem spherical k-means centroid count (default `8192`)
+- `rroq4_riem_group_size`: rroq4_riem 4-bit asymmetric residual group size (default `32`)
+- `rroq4_riem_seed`: rroq4_riem FWHT rotator + k-means initialisation seed (default `42`)
+- `quantization_mode`: empty or `none` for exact, or `int8`, `fp8`, `roq4`, `rroq158`, `rroq4_riem`
 - `transfer_mode`: `pageable`, `pinned`, `double_buffered`
 - `dense_hybrid_mode`: `rrf`, `tabu`
 - `n_full_scores`: proxy shortlist size before exact full scoring

@@ -1,0 +1,29 @@
+{
+  "cell_id": "a1-cell-008",
+  "config": {
+    "doc_bits": 1.58,
+    "group_size": 32,
+    "query_bits": 6,
+    "fwht": true,
+    "normalize": true,
+    "codebook": "uniform",
+    "norm_correction": "4term"
+  },
+  "distortion": {
+    "quantizer": "ternary",
+    "bits": 1.58,
+    "group_size": 32,
+    "fwht": true,
+    "n_tokens": 8192,
+    "angular_error_p50_deg": 25.74999237060547,
+    "angular_error_p90_deg": 26.80695343017578,
+    "angular_error_p99_deg": 27.832805633544922,
+    "ip_error_rms": 0.03394990414381027,
+    "cosine_error_rms": 0.3141416907310486,
+    "nn1_preservation": 0.4375,
+    "nn5_preservation": 0.4343750476837158,
+    "nn100_preservation": 0.3696874976158142,
+    "bytes_per_token": 32.0,
+    "notes": ""
+  }
+}

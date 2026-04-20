@@ -1,0 +1,417 @@
+{
+  "total_cells": 20,
+  "top_per_bit": {
+    "1.00": [
+      {
+        "cell_id": "a1-cell-000",
+        "config": {
+          "doc_bits": 1.0,
+          "group_size": null,
+          "query_bits": 6,
+          "fwht": true,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq1",
+          "bits": 1.0,
+          "group_size": null,
+          "fwht": true,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 29.305953979492188,
+          "angular_error_p90_deg": 30.777198791503906,
+          "angular_error_p99_deg": 31.902589797973633,
+          "ip_error_rms": 10.286513328552246,
+          "cosine_error_rms": 0.3577209711074829,
+          "nn1_preservation": 1.0,
+          "nn5_preservation": 0.4140625,
+          "nn100_preservation": 0.30851560831069946,
+          "bytes_per_token": 16.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-001",
+        "config": {
+          "doc_bits": 1.0,
+          "group_size": null,
+          "query_bits": 6,
+          "fwht": true,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq1",
+          "bits": 1.0,
+          "group_size": null,
+          "fwht": true,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 29.305953979492188,
+          "angular_error_p90_deg": 30.777198791503906,
+          "angular_error_p99_deg": 31.902576446533203,
+          "ip_error_rms": 10.286498069763184,
+          "cosine_error_rms": 0.3577209711074829,
+          "nn1_preservation": 1.0,
+          "nn5_preservation": 0.4156249761581421,
+          "nn100_preservation": 0.3089062571525574,
+          "bytes_per_token": 16.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-002",
+        "config": {
+          "doc_bits": 1.0,
+          "group_size": null,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq1",
+          "bits": 1.0,
+          "group_size": null,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 34.276222229003906,
+          "angular_error_p90_deg": 35.87374496459961,
+          "angular_error_p99_deg": 37.56412124633789,
+          "ip_error_rms": 7.678187370300293,
+          "cosine_error_rms": 0.4181431233882904,
+          "nn1_preservation": 0.9609375,
+          "nn5_preservation": 0.3109374940395355,
+          "nn100_preservation": 0.16117188334465027,
+          "bytes_per_token": 16.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-003",
+        "config": {
+          "doc_bits": 1.0,
+          "group_size": null,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq1",
+          "bits": 1.0,
+          "group_size": null,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 34.276214599609375,
+          "angular_error_p90_deg": 35.873748779296875,
+          "angular_error_p99_deg": 37.56412124633789,
+          "ip_error_rms": 7.6781768798828125,
+          "cosine_error_rms": 0.4181431233882904,
+          "nn1_preservation": 0.9609375,
+          "nn5_preservation": 0.3125,
+          "nn100_preservation": 0.16124999523162842,
+          "bytes_per_token": 16.0,
+          "notes": ""
+        }
+      }
+    ],
+    "1.58": [
+      {
+        "cell_id": "a1-cell-010",
+        "config": {
+          "doc_bits": 1.58,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "ternary",
+          "bits": 1.58,
+          "group_size": 32,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 23.738285064697266,
+          "angular_error_p90_deg": 25.2655029296875,
+          "angular_error_p99_deg": 26.636783599853516,
+          "ip_error_rms": 0.1424843817949295,
+          "cosine_error_rms": 0.2925112545490265,
+          "nn1_preservation": 0.6328125,
+          "nn5_preservation": 0.24531251192092896,
+          "nn100_preservation": 0.1590624898672104,
+          "bytes_per_token": 32.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-011",
+        "config": {
+          "doc_bits": 1.58,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "ternary",
+          "bits": 1.58,
+          "group_size": 32,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 23.738292694091797,
+          "angular_error_p90_deg": 25.26548957824707,
+          "angular_error_p99_deg": 26.636775970458984,
+          "ip_error_rms": 0.14248406887054443,
+          "cosine_error_rms": 0.2925112247467041,
+          "nn1_preservation": 0.6328125,
+          "nn5_preservation": 0.24531251192092896,
+          "nn100_preservation": 0.15882813930511475,
+          "bytes_per_token": 32.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-006",
+        "config": {
+          "doc_bits": 1.58,
+          "group_size": 64,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "ternary",
+          "bits": 1.58,
+          "group_size": 64,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 23.865703582763672,
+          "angular_error_p90_deg": 25.45233726501465,
+          "angular_error_p99_deg": 26.879003524780273,
+          "ip_error_rms": 0.14326684176921844,
+          "cosine_error_rms": 0.2941829562187195,
+          "nn1_preservation": 0.609375,
+          "nn5_preservation": 0.23906251788139343,
+          "nn100_preservation": 0.16164062917232513,
+          "bytes_per_token": 32.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-007",
+        "config": {
+          "doc_bits": 1.58,
+          "group_size": 64,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "ternary",
+          "bits": 1.58,
+          "group_size": 64,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 23.865694046020508,
+          "angular_error_p90_deg": 25.45233726501465,
+          "angular_error_p99_deg": 26.87900733947754,
+          "ip_error_rms": 0.14326654374599457,
+          "cosine_error_rms": 0.2941829264163971,
+          "nn1_preservation": 0.609375,
+          "nn5_preservation": 0.23906251788139343,
+          "nn100_preservation": 0.16148437559604645,
+          "bytes_per_token": 32.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-008",
+        "config": {
+          "doc_bits": 1.58,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": true,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "ternary",
+          "bits": 1.58,
+          "group_size": 32,
+          "fwht": true,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 25.74999237060547,
+          "angular_error_p90_deg": 26.80695343017578,
+          "angular_error_p99_deg": 27.832805633544922,
+          "ip_error_rms": 0.03394990414381027,
+          "cosine_error_rms": 0.3141416907310486,
+          "nn1_preservation": 0.4375,
+          "nn5_preservation": 0.4343750476837158,
+          "nn100_preservation": 0.3696874976158142,
+          "bytes_per_token": 32.0,
+          "notes": ""
+        }
+      }
+    ],
+    "2.00": [
+      {
+        "cell_id": "a1-cell-018",
+        "config": {
+          "doc_bits": 2.0,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq2",
+          "bits": 2.0,
+          "group_size": 32,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 21.321752548217773,
+          "angular_error_p90_deg": 22.7686767578125,
+          "angular_error_p99_deg": 24.070070266723633,
+          "ip_error_rms": 0.0309740137308836,
+          "cosine_error_rms": 0.2612334191799164,
+          "nn1_preservation": 0.2421875,
+          "nn5_preservation": 0.09531250596046448,
+          "nn100_preservation": 0.06398437917232513,
+          "bytes_per_token": 64.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-019",
+        "config": {
+          "doc_bits": 2.0,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq2",
+          "bits": 2.0,
+          "group_size": 32,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 21.32059097290039,
+          "angular_error_p90_deg": 22.7686767578125,
+          "angular_error_p99_deg": 24.070070266723633,
+          "ip_error_rms": 0.03096659667789936,
+          "cosine_error_rms": 0.2612276077270508,
+          "nn1_preservation": 0.2421875,
+          "nn5_preservation": 0.09531250596046448,
+          "nn100_preservation": 0.06398437917232513,
+          "bytes_per_token": 64.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-016",
+        "config": {
+          "doc_bits": 2.0,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": true,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq2",
+          "bits": 2.0,
+          "group_size": 32,
+          "fwht": true,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 20.40410614013672,
+          "angular_error_p90_deg": 22.013710021972656,
+          "angular_error_p99_deg": 23.501781463623047,
+          "ip_error_rms": 0.032689936459064484,
+          "cosine_error_rms": 0.2517933249473572,
+          "nn1_preservation": 0.234375,
+          "nn5_preservation": 0.10468749701976776,
+          "nn100_preservation": 0.06671874225139618,
+          "bytes_per_token": 64.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-017",
+        "config": {
+          "doc_bits": 2.0,
+          "group_size": 32,
+          "query_bits": 6,
+          "fwht": true,
+          "normalize": false,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq2",
+          "bits": 2.0,
+          "group_size": 32,
+          "fwht": true,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 20.40408706665039,
+          "angular_error_p90_deg": 22.01373291015625,
+          "angular_error_p99_deg": 23.501768112182617,
+          "ip_error_rms": 0.03268986940383911,
+          "cosine_error_rms": 0.2517933249473572,
+          "nn1_preservation": 0.234375,
+          "nn5_preservation": 0.10468749701976776,
+          "nn100_preservation": 0.06656249612569809,
+          "bytes_per_token": 64.0,
+          "notes": ""
+        }
+      },
+      {
+        "cell_id": "a1-cell-014",
+        "config": {
+          "doc_bits": 2.0,
+          "group_size": 64,
+          "query_bits": 6,
+          "fwht": false,
+          "normalize": true,
+          "codebook": "uniform",
+          "norm_correction": "4term"
+        },
+        "distortion": {
+          "quantizer": "roq2",
+          "bits": 2.0,
+          "group_size": 64,
+          "fwht": false,
+          "n_tokens": 8192,
+          "angular_error_p50_deg": 24.047935485839844,
+          "angular_error_p90_deg": 25.811063766479492,
+          "angular_error_p99_deg": 27.229707717895508,
+          "ip_error_rms": 0.041117068380117416,
+          "cosine_error_rms": 0.29338210821151733,
+          "nn1_preservation": 0.171875,
+          "nn5_preservation": 0.08281250298023224,
+          "nn100_preservation": 0.048671871423721313,
+          "bytes_per_token": 48.0,
+          "notes": ""
+        }
+      }
+    ]
+  }
+}

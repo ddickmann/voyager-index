@@ -1,0 +1,46 @@
+{
+  "config": {
+    "n_queries": 16,
+    "n_docs": 64,
+    "n_q_tokens": 32,
+    "n_d_tokens": 64,
+    "dim": 128,
+    "query_bits": 6,
+    "group_size": 32,
+    "n_iters": 15,
+    "seed": 0,
+    "out": "research/low_bit_roq/reports/a2_kernels.json"
+  },
+  "rows": [
+    {
+      "name": "roq2_asym",
+      "n_queries": 16,
+      "n_docs": 64,
+      "n_q_tokens": 32,
+      "n_d_tokens": 64,
+      "dim": 128,
+      "query_bits": 6,
+      "group_size": 32,
+      "triton_ms_p50": 0.2900194376707077,
+      "triton_ms_p95": 0.2983672544360161,
+      "parity_max_abs_err": 0.0,
+      "parity_max_rel_err": NaN,
+      "qps": 55168.716029877396
+    },
+    {
+      "name": "roq158_ternary",
+      "n_queries": 16,
+      "n_docs": 64,
+      "n_q_tokens": 32,
+      "n_d_tokens": 64,
+      "dim": 128,
+      "query_bits": 6,
+      "group_size": 32,
+      "triton_ms_p50": 0.25906041264533997,
+      "triton_ms_p95": 0.2681056037545204,
+      "parity_max_abs_err": 2.288818359375e-05,
+      "parity_max_rel_err": 3.388227014511358e-07,
+      "qps": 61761.65565637538
+    }
+  ]
+}

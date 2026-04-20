@@ -24,6 +24,13 @@ _EXPORTS = {
     "FusionConfig": ("voyager_index.config", "FusionConfig"),
     "IndexConfig": ("voyager_index.config", "IndexConfig"),
     "Neo4jConfig": ("voyager_index.config", "Neo4jConfig"),
+    # Re-export the shard-engine `Compression` enum so the documented form
+    # `from voyager_index import Compression; ...compression=Compression.RROQ158`
+    # works without users reaching into the `_internal` namespace.
+    "Compression": (
+        "voyager_index._internal.inference.shard_engine.serving_config",
+        "Compression",
+    ),
     "TRITON_AVAILABLE": ("voyager_index.kernels", "TRITON_AVAILABLE"),
     "fast_colbert_scores": ("voyager_index.kernels", "fast_colbert_scores"),
     "roq_maxsim_1bit": ("voyager_index.kernels", "roq_maxsim_1bit"),
@@ -70,6 +77,7 @@ __all__ = [
     "ScrollPage",
     "IndexStats",
     "BM25Config",
+    "Compression",
     "FusionConfig",
     "IndexConfig",
     "Neo4jConfig",

@@ -355,9 +355,33 @@ curl -X POST http://127.0.0.1:8080/collections/shard-guide \
     "dimension": 128,
     "kind": "shard",
     "n_shards": 256,
-    "compression": "fp16",
+    "compression": "rroq158",
+    "rroq158_k": 8192,
+    "rroq158_group_size": 32,
+    "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
+    "router_device": "cpu",
+    "use_colbandit": true
+  }'
+```
+
+For the no-degradation safe-fallback lane, swap `compression` to
+`"rroq4_riem"` and the related knobs to `rroq4_riem_k` /
+`rroq4_riem_group_size` / `rroq4_riem_seed`:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/shard-safe-fallback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dimension": 128,
+    "kind": "shard",
+    "n_shards": 256,
+    "compression": "rroq4_riem",
+    "rroq4_riem_k": 8192,
+    "rroq4_riem_group_size": 32,
+    "rroq4_riem_seed": 42,
+    "quantization_mode": "rroq4_riem",
     "router_device": "cpu",
     "use_colbandit": true
   }'
@@ -623,8 +647,12 @@ When the solver *does* make sense:
 
 ## Step 9. Precision Profiles And Quantization
 
-Public OSS guidance currently exposes four multimodal precision profiles:
+Public OSS guidance currently exposes five multimodal precision profiles:
 
+- `Default`: RROQ-1.58 (Riemannian 1.58-bit ternary, K=8192). Fused Triton
+  on GPU + Rust SIMD on CPU. ~5.5× smaller storage than FP16 and strictly
+  faster than FP16 on CPU at production K=8192 (5.8× p95 in 8-worker
+  layout). New default for newly built indexes.
 - `Exact`: FP16 Triton MaxSim
 - `Fast`: INT8 Triton MaxSim where available
 - `Experimental`: FP8

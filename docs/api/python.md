@@ -44,8 +44,14 @@ These keyword arguments are passed through when `engine="shard"`:
 |---|---|
 | `n_shards` | Number of sealed shards |
 | `k_candidates` | LEMUR candidate budget before exact scoring |
-| `compression` | Stored representation: `fp16`, `int8`, `roq4` |
-| `quantization_mode` | Active scoring mode: `none`, `int8`, `fp8`, `roq4` |
+| `compression` | Stored representation. Default: `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4`, `rroq4_riem` (Riemannian 4-bit asymmetric — the safe-fallback lane for zero-regression workloads). The `rroq158` and `rroq4_riem` codecs need `n_tokens >= K` to train the codebook — they auto-shrink K to the largest valid power-of-two when the corpus is too small, and silently downgrade to fp16 when even that does not fit |
+| `rroq158_k` | rroq158 spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ `rroq158_group_size` |
+| `rroq158_seed` | rroq158 FWHT rotator + k-means initialisation seed. Default: `42` |
+| `rroq158_group_size` | rroq158 ternary group size. Default: `32`. Must be a positive multiple of 32 (so the ternary planes pack into int32 words) |
+| `rroq4_riem_k` | rroq4_riem spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ `rroq4_riem_group_size` |
+| `rroq4_riem_seed` | rroq4_riem FWHT rotator + k-means initialisation seed. Default: `42` |
+| `rroq4_riem_group_size` | rroq4_riem 4-bit asymmetric residual group size. Default: `32`. Must be a positive even integer that divides `dim` |
+| `quantization_mode` | Active scoring mode: `none`, `int8`, `fp8`, `roq4`, `rroq158`, `rroq4_riem` |
 | `transfer_mode` | CPU->GPU transfer path: `pageable`, `pinned`, `double_buffered` |
 | `router_device` | Device for the LEMUR router, usually `cpu` or `cuda` |
 | `lemur_epochs` | Router training epochs |
@@ -101,7 +107,8 @@ idx = Index(
     engine="shard",
     n_shards=64,
     k_candidates=512,
-    compression="fp16",
+    # compression defaults to "rroq158" (K=8192). Override with "fp16" /
+    # "int8" / "roq4" if required.
     quantization_mode="fp8",
 )
 ```
@@ -118,7 +125,8 @@ idx = (
     .with_shard(
         n_shards=64,
         k_candidates=512,
-        compression="fp16",
+        # compression defaults to "rroq158" (K=8192). Override here if you
+        # need the legacy "fp16" lane.
         quantization_mode="fp8",
         transfer_mode="pinned",
     )

@@ -6,6 +6,75 @@ reads in release order again.
 
 ## Unreleased
 
+### Phase 7 — RROQ production-validation sweep (2026-04-19 → 2026-04-20)
+
+- ran the BEIR 2026-Q2 production-validation sweep
+  (`benchmarks/beir_2026q2_full_sweep.py`): 6 datasets × 4 codecs
+  (fp16, int8, rroq158, rroq4_riem) × 2 modes (GPU + 8-worker CPU) ×
+  full BEIR query sets, on RTX A5000 + AMD EPYC 7B13 (128-thread) host;
+  raw per-cell JSONL with full provenance under `reports/beir_2026q2/`
+- applied the F1 default-promotion decision rule via
+  `scripts/format_beir_2026q2_table.py`: rroq4_riem matches fp16
+  quality (~−0.1 pt avg NDCG@10) but fails the per-cell GPU/CPU p95
+  conditions (~2–3× slower on GPU, ~5–10× slower on CPU at the BEIR
+  batch shape), so the build-time default reverts to
+  `Compression.RROQ158`
+- promoted `Compression.RROQ158` (Riemannian-aware 1.58-bit ternary,
+  K=8192) as the default codec for newly built indexes on both GPU
+  (Triton fused kernel) and CPU (Rust SIMD kernel with hardware
+  popcount + cached rayon thread pool); avg −1 pt NDCG@10 vs fp16 with
+  flat R@100 and ~5.5× smaller per-token storage. CPU p95 is currently
+  slower than the fp16 AVX2 baseline at the production batch shape —
+  the win is storage, not throughput, and closing the CPU-latency gap
+  is on the post-Phase-7 backlog
+- shipped `Compression.RROQ4_RIEM` as the no-quality-loss lane —
+  Riemannian-aware 4-bit asymmetric per-group residual quantization
+  with a fused Triton kernel (`roq_maxsim_rroq4_riem`) and a Rust SIMD
+  kernel (`latence_shard_engine.rroq4_riem_score_batch`, AVX2/FMA +
+  cached rayon pool); ~3× smaller than fp16 on disk, ~0.5 pt NDCG@10
+  gap, parity-tested to rtol=1e-4 against the python reference on both
+  lanes; opt-in via `compression=Compression.RROQ4_RIEM`
+- added a brute-force codec-fidelity diagnostic harness
+  (`benchmarks/topk_overlap_sweep.py`) that scores every (query, doc)
+  pair with both fp16 and the codec and reports per-query top-K overlap
+  (K ∈ {10, 20, 50, 100}); on arguana (the worst dataset for rroq158)
+  the brute-force top-10 overlap is ~82% and R@100 is within −1.4 pt
+  of fp16 on the same brute-force path, disaggregating the
+  rank-aggregate NDCG@10 cost from "the right doc was retrieved"
+  (relevant docs are recovered; ~18% of top-10 positions are
+  rank-displaced relative to fp16)
+- shipped a kernel-graceful fallback for small-corpus tests: if the
+  build-time codec is rroq158/rroq4_riem and no kernel is reachable
+  (no CUDA + no Rust SIMD), and the auto-K-shrink fired
+  (`k_effective < k_requested`), the search path logs a warning and
+  falls back to the FP16 scorer; production-scale indices (where K is
+  not auto-shrunk) still raise a hard `RuntimeError` rather than
+  silently degrade. Avoids spurious CI failures on minimal hosts
+- shipped a `dim < group_size` / `n_tok < group_size` guard at index
+  build time: lifecycle.py and pipeline.py log a warning and switch the
+  effective compression to FP16 when the corpus shape is too small for
+  the chosen rroq158/rroq4_riem `group_size`. Pre-encoded indexes are
+  unaffected
+- enriched the rroq158/rroq4_riem index-side metadata with
+  `k_requested` and `k_effective` so the runtime fallback above can
+  distinguish between "the user asked for K=8192 and got K=8192" vs
+  "the corpus is too small and K shrunk to 16"
+- exposed `rroq158_*` and `rroq4_riem_*` knobs (`K`, `seed`,
+  `group_size`) through the Python API, the HTTP collection-create
+  payload, and the shard-engine CLI; existing fp16 / rroq158 /
+  rroq4_riem indexes load unchanged through the build-time codec
+  recorded in the manifest
+- added the auto-derive path so search-time `quantization_mode` is no
+  longer required when the manifest already records the build-time
+  codec for rroq158 or rroq4_riem
+- added the math doc (`docs/guides/rroq-mathematics.md`) covering the
+  RaBitQ extension, the Riemannian log map, the FWHT-rotated tangent
+  ternary derivation, the K = 8192 bits-per-coord accounting, and the
+  4-bit asymmetric variant
+- added the public-facing write-up
+  (`docs/posts/sub-2-bit-late-interaction.md`) framing the rroq158
+  result for the ColBERT/PLAID community
+
 ## 0.1.5 — Release Gate Hotfix
 
 This release republishes the shard-engine decomposition work on a clean CI line

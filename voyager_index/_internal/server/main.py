@@ -11,7 +11,7 @@ Usage:
     uvicorn voyager_index.server:app --host 127.0.0.1 --port 8080
 
 Author: Latence Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import logging

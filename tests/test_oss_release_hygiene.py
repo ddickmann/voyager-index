@@ -157,8 +157,8 @@ def test_native_crate_licenses_are_consistent() -> None:
             license_text = data.get("project", {}).get("license", {})
             if isinstance(license_text, dict):
                 license_text = license_text.get("text", "")
-            assert "MIT" not in str(license_text), (
-                f"{crate_dir}/pyproject.toml license should be Apache-2.0, got {license_text}"
+            assert str(license_text) == "CC-BY-NC-4.0", (
+                f"{crate_dir}/pyproject.toml license should be CC-BY-NC-4.0, got {license_text}"
             )
 
 

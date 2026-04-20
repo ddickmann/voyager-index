@@ -26,7 +26,7 @@ Usage:
     visual_results = colpali_engine.search(query_visual_emb)
 
 Author: Latence Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import heapq

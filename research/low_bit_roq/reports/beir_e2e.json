@@ -1,0 +1,71 @@
+{
+  "dataset": "nfcorpus",
+  "n_eval_queries": 123,
+  "rows": [
+    {
+      "method": "fp16-bruteforce",
+      "bits_per_coord": 16.0,
+      "bytes_per_token": 256,
+      "extra_bytes_per_token": 0,
+      "recall_at_10": 0.344679958704349,
+      "recall_at_100": 0.37730876471416225,
+      "ndcg_at_10": 0.38829275167164123,
+      "map_at_10": 0.27932862304813527,
+      "mrr_at_10": 0.5880049038585623,
+      "avg_score_ms": 194.86834617649637,
+      "notes": "reference ceiling (matches 0.340 published Recall@10 if all 323 queries used)"
+    },
+    {
+      "method": "roq4",
+      "bits_per_coord": 4.0,
+      "bytes_per_token": 64.0,
+      "extra_bytes_per_token": 0,
+      "recall_at_10": 0.3479319912246741,
+      "recall_at_100": 0.3700316606280529,
+      "ndcg_at_10": 0.384541227336905,
+      "map_at_10": 0.2749626295866134,
+      "mrr_at_10": 0.576158213963092,
+      "avg_score_ms": 184.18948773324973,
+      "notes": "current production-grade quantization"
+    },
+    {
+      "method": "ternary",
+      "bits_per_coord": 1.58,
+      "bytes_per_token": 25.28,
+      "extra_bytes_per_token": 0,
+      "recall_at_10": 0.3066298877274487,
+      "recall_at_100": 0.32842748130002114,
+      "ndcg_at_10": 0.3448098085764599,
+      "map_at_10": 0.23399810421006703,
+      "mrr_at_10": 0.5586107884888373,
+      "avg_score_ms": 178.65415523207284,
+      "notes": "A2.5 candidate (1.58-bit asymmetric kernel)"
+    },
+    {
+      "method": "rroq158-K1024",
+      "bits_per_coord": 1.58,
+      "bytes_per_token": 25.28,
+      "extra_bytes_per_token": 1.25,
+      "recall_at_10": 0.34560588463027486,
+      "recall_at_100": 0.36879399018598125,
+      "ndcg_at_10": 0.3849535461654989,
+      "map_at_10": 0.2740420999022915,
+      "mrr_at_10": 0.5884823848238482,
+      "avg_score_ms": 179.4255014084946,
+      "notes": "K=1024 centroid + tangent residual; +1.25 B/tok"
+    },
+    {
+      "method": "rroq158-K1024+ternary+MV-distill",
+      "bits_per_coord": 1.58,
+      "bytes_per_token": 25.28,
+      "extra_bytes_per_token": 1.25,
+      "recall_at_10": 0.11599561233707575,
+      "recall_at_100": 0.36879399018598125,
+      "ndcg_at_10": 0.11283899964036644,
+      "map_at_10": 0.052381758936636984,
+      "mrr_at_10": 0.21561491805394245,
+      "avg_score_ms": 354.0722442321419,
+      "notes": "top-200 from rroq158, MV MLP rerank trained on qrels"
+    }
+  ]
+}

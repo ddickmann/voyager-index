@@ -1,0 +1,123 @@
+{
+  "config": {
+    "sample_path": "research/low_bit_roq/tests/fixtures/token_sample_1m.npy",
+    "n_tokens": 8192,
+    "n_queries": 128,
+    "dim": 128,
+    "group_size": 32,
+    "seed": 0,
+    "etas": [
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "out": "research/low_bit_roq/reports/a3_anisotropic.json"
+  },
+  "rows": [
+    {
+      "quantizer": "ternary",
+      "method": "tau_frac",
+      "eta": 1.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 23.738292694091797,
+      "angular_p90_deg": 25.26548957824707,
+      "ip_error_rms": 0.142072856426239,
+      "ip_error_parallel_rms": 0.14864176511764526,
+      "ip_error_perp_rms": 0.015336715616285801
+    },
+    {
+      "quantizer": "ternary",
+      "method": "anisotropic",
+      "eta": 2.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 23.444347381591797,
+      "angular_p90_deg": 24.973939895629883,
+      "ip_error_rms": 0.1403074413537979,
+      "ip_error_parallel_rms": 0.14510467648506165,
+      "ip_error_perp_rms": 0.014451459981501102
+    },
+    {
+      "quantizer": "ternary",
+      "method": "anisotropic",
+      "eta": 4.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 23.444347381591797,
+      "angular_p90_deg": 24.973939895629883,
+      "ip_error_rms": 0.1403074413537979,
+      "ip_error_parallel_rms": 0.14510467648506165,
+      "ip_error_perp_rms": 0.014451459981501102
+    },
+    {
+      "quantizer": "ternary",
+      "method": "anisotropic",
+      "eta": 8.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 23.444347381591797,
+      "angular_p90_deg": 24.973939895629883,
+      "ip_error_rms": 0.1403074413537979,
+      "ip_error_parallel_rms": 0.14510467648506165,
+      "ip_error_perp_rms": 0.014451459981501102
+    },
+    {
+      "quantizer": "roq2",
+      "method": "uniform",
+      "eta": 1.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 21.32059097290039,
+      "angular_p90_deg": 22.7686767578125,
+      "ip_error_rms": 0.03141401708126068,
+      "ip_error_parallel_rms": 0.027491725981235504,
+      "ip_error_perp_rms": 0.014531214721500874
+    },
+    {
+      "quantizer": "roq2",
+      "method": "anisotropic",
+      "eta": 2.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 20.750185012817383,
+      "angular_p90_deg": 22.40953826904297,
+      "ip_error_rms": 0.045249249786138535,
+      "ip_error_parallel_rms": 0.0429234579205513,
+      "ip_error_perp_rms": 0.013374146074056625
+    },
+    {
+      "quantizer": "roq2",
+      "method": "anisotropic",
+      "eta": 4.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 21.534500122070312,
+      "angular_p90_deg": 24.039852142333984,
+      "ip_error_rms": 0.03967024385929108,
+      "ip_error_parallel_rms": 0.03704167157411575,
+      "ip_error_perp_rms": 0.014338111504912376
+    },
+    {
+      "quantizer": "roq2",
+      "method": "anisotropic",
+      "eta": 8.0,
+      "n_tokens": 8192,
+      "dim": 128,
+      "group_size": 32,
+      "angular_p50_deg": 26.913068771362305,
+      "angular_p90_deg": 36.5299072265625,
+      "ip_error_rms": 0.09315402060747147,
+      "ip_error_parallel_rms": 0.09142369031906128,
+      "ip_error_perp_rms": 0.020965097472071648
+    }
+  ]
+}

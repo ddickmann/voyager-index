@@ -1,0 +1,71 @@
+{
+  "config": {
+    "sample_path": "research/low_bit_roq/tests/fixtures/token_sample_1m.npy",
+    "n_tokens": 8192,
+    "n_queries": 128,
+    "n_docs": 80,
+    "min_tokens_per_doc": 4,
+    "rates": [
+      0.0,
+      0.1,
+      0.2,
+      0.3,
+      0.5
+    ],
+    "signal": "norm",
+    "seed": 0,
+    "out": "research/low_bit_roq/reports/a4_salience.json"
+  },
+  "rows": [
+    {
+      "signal": "norm",
+      "prune_rate": 0.0,
+      "kept_tokens": 8192,
+      "n_docs": 80,
+      "disk_fraction": 1.0,
+      "token_recall_at_1": 1.0,
+      "token_recall_at_5": 1.0,
+      "token_recall_at_50": 1.0
+    },
+    {
+      "signal": "norm",
+      "prune_rate": 0.1,
+      "kept_tokens": 7369,
+      "n_docs": 80,
+      "disk_fraction": 0.8995361328125,
+      "token_recall_at_1": 0.890625,
+      "token_recall_at_5": 0.9125,
+      "token_recall_at_50": 0.9090625
+    },
+    {
+      "signal": "norm",
+      "prune_rate": 0.2,
+      "kept_tokens": 6549,
+      "n_docs": 80,
+      "disk_fraction": 0.7994384765625,
+      "token_recall_at_1": 0.7890625,
+      "token_recall_at_5": 0.8140625,
+      "token_recall_at_50": 0.805
+    },
+    {
+      "signal": "norm",
+      "prune_rate": 0.3,
+      "kept_tokens": 5732,
+      "n_docs": 80,
+      "disk_fraction": 0.69970703125,
+      "token_recall_at_1": 0.65625,
+      "token_recall_at_5": 0.728125,
+      "token_recall_at_50": 0.7071875
+    },
+    {
+      "signal": "norm",
+      "prune_rate": 0.5,
+      "kept_tokens": 4093,
+      "n_docs": 80,
+      "disk_fraction": 0.4996337890625,
+      "token_recall_at_1": 0.5,
+      "token_recall_at_5": 0.528125,
+      "token_recall_at_50": 0.5134375
+    }
+  ]
+}

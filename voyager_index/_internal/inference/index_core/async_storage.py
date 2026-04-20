@@ -13,7 +13,7 @@ Features:
 - Scales to millions of documents
 
 Author: ColBERT Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import json

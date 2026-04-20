@@ -296,9 +296,32 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-shard \
     "dimension": 128,
     "kind": "shard",
     "n_shards": 256,
-    "compression": "fp16",
+    "compression": "rroq158",
+    "rroq158_k": 8192,
+    "rroq158_group_size": 32,
+    "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
+    "router_device": "cpu",
+    "use_colbandit": true
+  }'
+```
+
+For the no-degradation safe-fallback lane (Riemannian 4-bit asymmetric),
+swap to `compression="rroq4_riem"` and the related `rroq4_riem_*` knobs:
+
+```bash
+curl -X POST http://127.0.0.1:8080/collections/tutorial-shard-safe \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dimension": 128,
+    "kind": "shard",
+    "n_shards": 256,
+    "compression": "rroq4_riem",
+    "rroq4_riem_k": 8192,
+    "rroq4_riem_group_size": 32,
+    "rroq4_riem_seed": 42,
+    "quantization_mode": "rroq4_riem",
     "router_device": "cpu",
     "use_colbandit": true
   }'

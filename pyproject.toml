@@ -8,7 +8,7 @@ version = "0.1.5"
 description = "Shard-first late-interaction retrieval for ColBERT and ColPali style workloads with CPU/GPU modes, Triton MaxSim, BM25 hybrid search, durable CRUD/WAL, multimodal preprocessing, and base64-ready reference APIs."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+license = "CC-BY-NC-4.0"
 license-files = [
   "LICENSE",
   "LICENSING.md",

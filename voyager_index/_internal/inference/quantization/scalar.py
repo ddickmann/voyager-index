@@ -5,7 +5,7 @@ Simple per-dimension quantization to INT8 or INT4.
 Provides good balance of compression and accuracy.
 
 Author: Latence Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 import logging

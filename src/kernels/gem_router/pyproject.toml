@@ -7,7 +7,7 @@ name = "latence-gem-router"
 version = "0.1.1"
 description = "GEM-inspired set-native multi-vector routing core for ColBERT and ColPali"
 authors = [{name = "Latence AI", email = "dev@latence.ai"}]
-license = { text = "Apache-2.0" }
+license = { text = "CC-BY-NC-4.0" }
 requires-python = ">=3.10"
 dependencies = ["numpy"]
 

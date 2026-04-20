@@ -48,6 +48,17 @@ class ShardSegmentManagerLifecycleMixin:
         self._native_backend_reason: str = "not_probed"
         self._colbandit_reranker: Optional[RerankerProtocol] = None
         self._roq_quantizer = None
+        self._rroq158_meta = None  # lazy: dict{centroids, fwht_seed, dim, group_size} or False
+        self._rroq4_riem_meta = None  # lazy: dict{centroids, fwht_seed, dim, group_size} or False
+        # Per-shard numpy view cache for ROQ4 / RROQ158 / RROQ4_RIEM
+        # scoring. Caches the `.cpu().numpy()` materialization of the
+        # per-shard tensors so the inner per-query loop does not
+        # re-materialize them every call. Keyed by shard_id; values are
+        # dicts of numpy arrays. See `_score_roq4_candidates` /
+        # `_score_rroq158_candidates` / `_score_rroq4_riem_candidates`.
+        self._roq4_shard_view_cache: Dict[int, Dict[str, Any]] = {}
+        self._rroq158_shard_view_cache: Dict[int, Dict[str, Any]] = {}
+        self._rroq4_riem_shard_view_cache: Dict[int, Dict[str, Any]] = {}
         self._last_exact_path: Optional[str] = None
         self._last_prune_path: Optional[str] = None
         self._checkpoint_mgr = ShardCheckpointManager(self._path)
@@ -144,6 +155,8 @@ class ShardSegmentManagerLifecycleMixin:
 
             roq_doc_codes = None
             roq_doc_meta = None
+            rroq158_payload = None
+            rroq4_riem_payload = None
             effective_compression = cfg.compression
             if cfg.compression == Compression.ROQ4:
                 try:
@@ -169,6 +182,181 @@ class ShardSegmentManagerLifecycleMixin:
                 except (ImportError, Exception) as exc:
                     logger.warning("ROQ quantizer unavailable (%s), falling back to FP16", exc)
                     effective_compression = Compression.FP16
+            elif cfg.compression == Compression.RROQ158:
+                from voyager_index._internal.inference.quantization.rroq158 import (
+                    Rroq158Config,
+                    choose_effective_rroq158_k,
+                    encode_rroq158,
+                )
+
+                gs = int(cfg.rroq158_group_size)
+                n_tok = int(all_vecs.shape[0])
+                token_dim = int(all_vecs.shape[1])
+                if token_dim < gs:
+                    # Embedding dim smaller than one ternary group → no
+                    # quantization is possible (one popcount word per group
+                    # requires at least group_size coords per token). This
+                    # is the synthetic-test / demo path (e.g. dim=16 with
+                    # the default group_size=32). Drop to FP16 with a loud
+                    # warning so the operator can either bump dim or
+                    # explicitly request FP16. Production embeddings live
+                    # in dim=128/256/768 → never trips this branch.
+                    logger.warning(
+                        "RROQ158 requested but token dim=%d is smaller than "
+                        "group_size=%d. Falling back to FP16 — rroq158 needs "
+                        "at least group_size coordinates per token to pack a "
+                        "ternary group. Pass compression=FP16 explicitly to "
+                        "silence, or use a group_size that divides %d.",
+                        token_dim, gs, token_dim,
+                    )
+                    effective_compression = Compression.FP16
+                elif n_tok < gs:
+                    # Data-shape fallback (NOT a codec error): a corpus with
+                    # fewer tokens than a single ternary group cannot be
+                    # quantized at all (one popcount word == one group). Drop
+                    # to FP16 and log loudly so the operator sees the auto-
+                    # downgrade. The "no silent fallback" rule covers codec
+                    # failures (which would silently 12× index size); this
+                    # path applies to corpora that physically cannot host
+                    # any ternary codebook.
+                    logger.warning(
+                        "RROQ158 requested but corpus has only %d tokens "
+                        "(< group_size=%d). Falling back to FP16 — rroq158 "
+                        "needs at least one ternary group of tokens to "
+                        "encode. Pass compression=FP16 explicitly to silence.",
+                        n_tok, gs,
+                    )
+                    effective_compression = Compression.FP16
+                else:
+                    # Auto-shrink K when the corpus has fewer tokens than
+                    # the requested codebook size (typical only in tests /
+                    # demos / very small shards). This keeps the user's
+                    # explicit choice of the rroq158 codec — only the
+                    # centroid count adapts — so we don't silently flip the
+                    # codec back to fp16.
+                    effective_k = choose_effective_rroq158_k(
+                        n_tokens=n_tok,
+                        requested_k=int(cfg.rroq158_k),
+                        group_size=gs,
+                    )
+                    logger.info(
+                        "Training RROQ158 (Riemannian 1.58-bit) quantizer "
+                        "(K=%d, group_size=%d, seed=%d) ...",
+                        effective_k, gs, int(cfg.rroq158_seed),
+                    )
+                    rroq_cfg = Rroq158Config(
+                        K=effective_k,
+                        group_size=gs,
+                        seed=int(cfg.rroq158_seed),
+                        fit_sample_cap=max(100_000, effective_k),
+                    )
+                    rroq158_payload = encode_rroq158(
+                        np.asarray(all_vecs, dtype=np.float32), rroq_cfg
+                    )
+                    np.savez(
+                        self._path / "rroq158_meta.npz",
+                        centroids=rroq158_payload.centroids,
+                        fwht_seed=np.array(
+                            rroq158_payload.fwht_seed, dtype=np.int64
+                        ),
+                        dim=np.array(rroq158_payload.dim, dtype=np.int32),
+                        group_size=np.array(
+                            rroq158_payload.group_size, dtype=np.int32
+                        ),
+                        k_requested=np.array(
+                            int(cfg.rroq158_k), dtype=np.int32
+                        ),
+                        k_effective=np.array(effective_k, dtype=np.int32),
+                    )
+                    logger.info(
+                        "RROQ158 encoding done for %d docs (%d tokens, K=%d)",
+                        n_docs, n_tok, effective_k,
+                    )
+            elif cfg.compression == Compression.RROQ4_RIEM:
+                from voyager_index._internal.inference.quantization.rroq4_riem import (
+                    Rroq4RiemConfig,
+                    choose_effective_rroq4_riem_k,
+                    encode_rroq4_riem,
+                )
+
+                gs = int(cfg.rroq4_riem_group_size)
+                n_tok = int(all_vecs.shape[0])
+                token_dim = int(all_vecs.shape[1])
+                if token_dim < gs:
+                    # Embedding dim smaller than one 4-bit group → no
+                    # quantization possible. Same policy as RROQ158:
+                    # drop to FP16 with a loud warning. Production
+                    # embeddings (dim >= 128) never trip this branch.
+                    logger.warning(
+                        "RROQ4_RIEM requested but token dim=%d is smaller "
+                        "than group_size=%d. Falling back to FP16 — "
+                        "rroq4_riem needs at least group_size coordinates "
+                        "per token. Pass compression=FP16 explicitly to "
+                        "silence, or use a group_size that divides %d.",
+                        token_dim, gs, token_dim,
+                    )
+                    effective_compression = Compression.FP16
+                elif n_tok < gs:
+                    # Same data-shape fallback story as RROQ158: a corpus
+                    # with fewer tokens than a single 4-bit group cannot be
+                    # quantized at all. Drop to FP16 with a loud warning so
+                    # the operator notices the auto-downgrade. The "no
+                    # silent FP16 fallback" rule covers codec failures
+                    # (which would silently 8x index size); this path
+                    # applies to corpora that physically cannot host any
+                    # asymmetric codebook.
+                    logger.warning(
+                        "RROQ4_RIEM requested but corpus has only %d tokens "
+                        "(< group_size=%d). Falling back to FP16 — rroq4_riem "
+                        "needs at least one 4-bit group of tokens to encode. "
+                        "Pass compression=FP16 explicitly to silence.",
+                        n_tok, gs,
+                    )
+                    effective_compression = Compression.FP16
+                else:
+                    # Auto-shrink K when the corpus has fewer tokens than the
+                    # requested codebook size (typical only in tests / demos /
+                    # very small shards). Same policy as RROQ158: keep the
+                    # user's explicit choice of the rroq4_riem codec — only
+                    # the centroid count adapts.
+                    effective_k = choose_effective_rroq4_riem_k(
+                        n_tokens=n_tok,
+                        requested_k=int(cfg.rroq4_riem_k),
+                        group_size=gs,
+                    )
+                    logger.info(
+                        "Training RROQ4_RIEM (Riemannian 4-bit asymmetric) "
+                        "quantizer (K=%d, group_size=%d, seed=%d) ...",
+                        effective_k, gs, int(cfg.rroq4_riem_seed),
+                    )
+                    r4r_cfg = Rroq4RiemConfig(
+                        K=effective_k,
+                        group_size=gs,
+                        seed=int(cfg.rroq4_riem_seed),
+                        fit_sample_cap=max(100_000, effective_k),
+                    )
+                    rroq4_riem_payload = encode_rroq4_riem(
+                        np.asarray(all_vecs, dtype=np.float32), r4r_cfg
+                    )
+                    np.savez(
+                        self._path / "rroq4_riem_meta.npz",
+                        centroids=rroq4_riem_payload.centroids,
+                        fwht_seed=np.array(
+                            rroq4_riem_payload.fwht_seed, dtype=np.int64
+                        ),
+                        dim=np.array(rroq4_riem_payload.dim, dtype=np.int32),
+                        group_size=np.array(
+                            rroq4_riem_payload.group_size, dtype=np.int32
+                        ),
+                        k_requested=np.array(
+                            int(cfg.rroq4_riem_k), dtype=np.int32
+                        ),
+                        k_effective=np.array(effective_k, dtype=np.int32),
+                    )
+                    logger.info(
+                        "RROQ4_RIEM encoding done for %d docs (%d tokens, K=%d)",
+                        n_docs, n_tok, effective_k,
+                    )
 
             store = ShardStore(self._path)
             store.build(
@@ -182,6 +370,8 @@ class ShardSegmentManagerLifecycleMixin:
                 uniform_shard_tokens=cfg.uniform_shard_tokens,
                 roq_doc_codes=roq_doc_codes,
                 roq_doc_meta=roq_doc_meta,
+                rroq158_payload=rroq158_payload,
+                rroq4_riem_payload=rroq4_riem_payload,
             )
 
             meta = {
@@ -192,6 +382,14 @@ class ShardSegmentManagerLifecycleMixin:
                 "layout": cfg.layout.value,
                 "router_type": cfg.router_type.value,
             }
+            if effective_compression == Compression.RROQ158:
+                meta["rroq158_k"] = int(cfg.rroq158_k)
+                meta["rroq158_seed"] = int(cfg.rroq158_seed)
+                meta["rroq158_group_size"] = int(cfg.rroq158_group_size)
+            elif effective_compression == Compression.RROQ4_RIEM:
+                meta["rroq4_riem_k"] = int(cfg.rroq4_riem_k)
+                meta["rroq4_riem_seed"] = int(cfg.rroq4_riem_seed)
+                meta["rroq4_riem_group_size"] = int(cfg.rroq4_riem_group_size)
             atomic_json_write(self._path / "engine_meta.json", meta)
 
             payload_dict = {}
@@ -255,8 +453,8 @@ class ShardSegmentManagerLifecycleMixin:
                 gpu_preloaded = False
                 if doc_index_path.exists() and torch.cuda.is_available() and str(self._device).startswith("cuda"):
                     try:
-                        di = np.load(str(doc_index_path), allow_pickle=True)
-                        actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
+                        with np.load(str(doc_index_path), allow_pickle=True) as di:
+                            actual_max_tok = int(np.max(di["local_ends"] - di["local_starts"]))
                         from ..scorer import PreloadedGpuCorpus
 
                         fits_gpu = PreloadedGpuCorpus.fits_on_gpu(
@@ -618,11 +816,11 @@ class ShardSegmentManagerLifecycleMixin:
             logger.warning("latence_shard_engine not installed — skipping Rust index init")
             return
         try:
-            doc_index = np.load(str(doc_index_path), allow_pickle=True)
-            doc_ids = doc_index["doc_ids"]
-            shard_ids = doc_index["shard_ids"]
-            local_starts = doc_index["local_starts"]
-            local_ends = doc_index["local_ends"]
+            with np.load(str(doc_index_path), allow_pickle=True) as doc_index:
+                doc_ids = doc_index["doc_ids"]
+                shard_ids = doc_index["shard_ids"]
+                local_starts = doc_index["local_starts"]
+                local_ends = doc_index["local_ends"]
 
             shard_dir = self._path / "shards"
             shard_files = sorted(shard_dir.glob("shard_*.safetensors"))
@@ -659,9 +857,9 @@ class ShardSegmentManagerLifecycleMixin:
 
                 codec_meta_path = self._path / "codec_meta.npz"
                 if codec_meta_path.exists():
-                    meta = np.load(str(codec_meta_path))
-                    bw = meta["bucket_weights"].astype(np.float32)
-                    nbits_val = int(meta["nbits"][0])
+                    with np.load(str(codec_meta_path)) as meta:
+                        bw = meta["bucket_weights"].astype(np.float32)
+                        nbits_val = int(meta["nbits"][0])
                     rust_idx.set_codec(bw.tolist(), nbits_val)
                     logger.info(
                         "Residual codec loaded: nbits=%d, %d bucket weights",

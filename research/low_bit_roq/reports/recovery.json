@@ -1,0 +1,163 @@
+{
+  "config": {
+    "sample_path": "research/low_bit_roq/tests/fixtures/token_sample_1m.npy",
+    "n_tokens": 8192,
+    "n_queries_train": 192,
+    "n_queries_eval": 64,
+    "group_size": 32,
+    "K_list": [
+      256,
+      1024
+    ],
+    "lam_list": [
+      0.0,
+      0.05,
+      0.1,
+      0.25
+    ],
+    "seed": 0,
+    "out": "research/low_bit_roq/reports/recovery.json"
+  },
+  "rows": [
+    {
+      "name": "fp16",
+      "bits": 16.0,
+      "centroids_K": 0,
+      "rank_corr_top100": 1.0,
+      "nn5_excl_self": 1.0,
+      "nn50_excl_self": 1.0,
+      "extra_bytes_per_token": 0.0,
+      "notes": "ceiling"
+    },
+    {
+      "name": "roq4",
+      "bits": 4.0,
+      "centroids_K": 0,
+      "rank_corr_top100": 0.6203255653381348,
+      "nn5_excl_self": 0.6625000238418579,
+      "nn50_excl_self": 0.6343749761581421,
+      "extra_bytes_per_token": 0.0,
+      "notes": "current production-quality reference"
+    },
+    {
+      "name": "ternary",
+      "bits": 1.58,
+      "centroids_K": 0,
+      "rank_corr_top100": 0.25263482332229614,
+      "nn5_excl_self": 0.24062500894069672,
+      "nn50_excl_self": 0.21937498450279236,
+      "extra_bytes_per_token": 0.0,
+      "notes": "A2.5 baseline candidate"
+    },
+    {
+      "name": "ternary+B0-tangent-lam0.05",
+      "bits": 1.58,
+      "centroids_K": 0,
+      "rank_corr_top100": 0.25263482332229614,
+      "nn5_excl_self": 0.24062500894069672,
+      "nn50_excl_self": 0.21937498450279236,
+      "extra_bytes_per_token": 0.0,
+      "notes": "per-pair s = <q,d> - 0.05\u00b7theta^2; cheap, no doc rebuild"
+    },
+    {
+      "name": "ternary+B0-tangent-lam0.1",
+      "bits": 1.58,
+      "centroids_K": 0,
+      "rank_corr_top100": 0.25263482332229614,
+      "nn5_excl_self": 0.24062500894069672,
+      "nn50_excl_self": 0.21937498450279236,
+      "extra_bytes_per_token": 0.0,
+      "notes": "per-pair s = <q,d> - 0.1\u00b7theta^2; cheap, no doc rebuild"
+    },
+    {
+      "name": "ternary+B0-tangent-lam0.25",
+      "bits": 1.58,
+      "centroids_K": 0,
+      "rank_corr_top100": 0.25263482332229614,
+      "nn5_excl_self": 0.24062500894069672,
+      "nn50_excl_self": 0.21937498450279236,
+      "extra_bytes_per_token": 0.0,
+      "notes": "per-pair s = <q,d> - 0.25\u00b7theta^2; cheap, no doc rebuild"
+    },
+    {
+      "name": "rroq2-K256",
+      "bits": 2.0,
+      "centroids_K": 256,
+      "rank_corr_top100": 0.34821444749832153,
+      "nn5_excl_self": 0.375,
+      "nn50_excl_self": 0.3787499964237213,
+      "extra_bytes_per_token": 1.0,
+      "notes": "K=256 centroid + tangent residual; +8b/tok"
+    },
+    {
+      "name": "rroq2-K1024",
+      "bits": 2.0,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.37316662073135376,
+      "nn5_excl_self": 0.3968750238418579,
+      "nn50_excl_self": 0.4000000059604645,
+      "extra_bytes_per_token": 1.25,
+      "notes": "K=1024 centroid + tangent residual; +10b/tok"
+    },
+    {
+      "name": "rroq158-K1024",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.3648340106010437,
+      "nn5_excl_self": 0.3812499940395355,
+      "nn50_excl_self": 0.34843748807907104,
+      "extra_bytes_per_token": 1.25,
+      "notes": "ternary residual; K=1024 centroid + tangent encoding"
+    },
+    {
+      "name": "rroq158-K1024+X1-MLP",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.26389479637145996,
+      "nn5_excl_self": 0.359375,
+      "nn50_excl_self": 0.3946874737739563,
+      "extra_bytes_per_token": 1.25,
+      "notes": "3-layer MLP, ~1.2K params, pairwise hinge on 5 rroq158 features"
+    },
+    {
+      "name": "rroq158-K1024+X1-bias",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": -0.12483873218297958,
+      "nn5_excl_self": 0.02500000037252903,
+      "nn50_excl_self": 0.07999999821186066,
+      "extra_bytes_per_token": 1.25,
+      "notes": "K scalar biases (~1KB total), score' = score + bias[c_d]"
+    },
+    {
+      "name": "rroq158-K1024+ternary+X1-MV",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.29735785722732544,
+      "nn5_excl_self": 0.390625,
+      "nn50_excl_self": 0.4271875023841858,
+      "extra_bytes_per_token": 1.25,
+      "notes": "MLP on rroq158 features + ternary score (independent noise sources)"
+    },
+    {
+      "name": "rroq158-K1024+X1-residMLP",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.20656484365463257,
+      "nn5_excl_self": 0.2875000238418579,
+      "nn50_excl_self": 0.3371874988079071,
+      "extra_bytes_per_token": 1.25,
+      "notes": "final = base + 0.3\u00b7tanh(MLP(features)) \u2014 residual head, stable"
+    },
+    {
+      "name": "rroq158-K1024+X1-MLP+emb",
+      "bits": 1.58,
+      "centroids_K": 1024,
+      "rank_corr_top100": 0.2425808161497116,
+      "nn5_excl_self": 0.32499998807907104,
+      "nn50_excl_self": 0.3803125321865082,
+      "extra_bytes_per_token": 1.25,
+      "notes": "MLP + 8-d centroid embedding (9392 params)"
+    }
+  ]
+}

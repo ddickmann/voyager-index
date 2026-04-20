@@ -495,7 +495,7 @@ class SearchService:
             shard_cfg = ShardEngineConfig(
                 dim=int(meta["dimension"]),
                 n_shards=int(meta.get("n_shards", 256)),
-                compression=Compression(str(meta.get("compression", Compression.FP16.value))),
+                compression=Compression(str(meta.get("compression", Compression.RROQ158.value))),
                 k_candidates=int(meta.get("k_candidates", 2000)),
                 max_docs_exact=int(meta.get("max_docs_exact", 10_000)),
                 n_full_scores=int(meta.get("n_full_scores", 4096)),
@@ -511,6 +511,12 @@ class SearchService:
                 gpu_corpus_rerank_topn=int(meta.get("gpu_corpus_rerank_topn", 16)),
                 n_centroid_approx=int(meta.get("n_centroid_approx", 0)),
                 router_device=str(meta.get("router_device", "cpu") or "cpu"),
+                rroq158_k=int(meta.get("rroq158_k", 8192)),
+                rroq158_seed=int(meta.get("rroq158_seed", 42)),
+                rroq158_group_size=int(meta.get("rroq158_group_size", 32)),
+                rroq4_riem_k=int(meta.get("rroq4_riem_k", 8192)),
+                rroq4_riem_seed=int(meta.get("rroq4_riem_seed", 42)),
+                rroq4_riem_group_size=int(meta.get("rroq4_riem_group_size", 32)),
             )
             engine = ShardSegmentManager(
                 path=collection_dir / "shard",
@@ -933,7 +939,7 @@ class SearchService:
                     meta["n_shards"] = request.n_shards or 256
                     meta["k_candidates"] = request.k_candidates or 2000
                     meta["use_colbandit"] = request.use_colbandit
-                    meta["compression"] = str(request.compression or Compression.FP16.value)
+                    meta["compression"] = str(request.compression or Compression.RROQ158.value)
                     meta["quantization_mode"] = self._normalize_quantization_mode(request.quantization_mode)
                     meta["transfer_mode"] = str(request.transfer_mode or TransferMode.PINNED.value)
                     meta["pinned_pool_buffers"] = int(request.pinned_pool_buffers or 3)
@@ -947,6 +953,12 @@ class SearchService:
                     meta["gpu_corpus_rerank_topn"] = int(request.gpu_corpus_rerank_topn or 16)
                     meta["n_centroid_approx"] = int(request.n_centroid_approx or 0)
                     meta["variable_length_strategy"] = str(request.variable_length_strategy or "bucketed")
+                    meta["rroq158_k"] = int(getattr(request, "rroq158_k", None) or 8192)
+                    meta["rroq158_seed"] = int(getattr(request, "rroq158_seed", None) or 42)
+                    meta["rroq158_group_size"] = int(getattr(request, "rroq158_group_size", None) or 32)
+                    meta["rroq4_riem_k"] = int(getattr(request, "rroq4_riem_k", None) or 8192)
+                    meta["rroq4_riem_seed"] = int(getattr(request, "rroq4_riem_seed", None) or 42)
+                    meta["rroq4_riem_group_size"] = int(getattr(request, "rroq4_riem_group_size", None) or 32)
                 try:
                     runtime = CollectionRuntime(
                         name=safe_name,

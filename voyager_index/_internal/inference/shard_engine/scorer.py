@@ -752,6 +752,515 @@ def score_roq4_topk(
 
 
 # ------------------------------------------------------------------
+# RROQ158 (Riemannian 1.58-bit) scoring
+# ------------------------------------------------------------------
+
+_rroq158_fn = None
+
+
+def _get_rroq158_maxsim():
+    global _rroq158_fn
+    if _rroq158_fn is not None:
+        return _rroq158_fn
+    try:
+        from voyager_index._internal.kernels.triton_roq_rroq158 import (
+            roq_maxsim_rroq158,
+        )
+
+        _rroq158_fn = roq_maxsim_rroq158
+        logger.info("Using voyager-index RROQ158 (1.58-bit) MaxSim kernel")
+    except ImportError:
+        _rroq158_fn = None
+        logger.warning("RROQ158 MaxSim kernel unavailable")
+    return _rroq158_fn
+
+
+_rroq158_cpu_fn = None
+
+
+def _get_rroq158_cpu_kernel():
+    """Lazy-load the Rust SIMD CPU kernel from `latence_shard_engine`.
+
+    Returns ``None`` if the wheel is unavailable, in which case
+    ``score_rroq158_topk`` on CPU falls back to an empty result and the
+    caller should reroute to a CPU FP16 path.
+    """
+    global _rroq158_cpu_fn
+    if _rroq158_cpu_fn is not None:
+        return _rroq158_cpu_fn
+    try:
+        import latence_shard_engine as _eng
+
+        _rroq158_cpu_fn = getattr(_eng, "rroq158_score_batch", None)
+        if _rroq158_cpu_fn is not None:
+            logger.info("Using latence_shard_engine RROQ158 CPU SIMD kernel")
+        else:
+            logger.warning(
+                "latence_shard_engine missing rroq158_score_batch; rebuild the "
+                "Rust wheel from src/kernels/shard_engine to enable CPU rroq158"
+            )
+    except ImportError:
+        _rroq158_cpu_fn = None
+        logger.warning("latence_shard_engine unavailable; CPU rroq158 disabled")
+    return _rroq158_cpu_fn
+
+
+def _resolve_rroq158_n_threads(default: int | None = None) -> int | None:
+    """Return ``n_threads`` argument for the Rust kernel, or None to use the
+    rayon global pool.
+
+    Heuristic:
+
+    - ``VOYAGER_RROQ158_N_THREADS`` env var wins if set (``0`` or empty
+      string disables — use the global pool).
+    - Otherwise, if the python side runs the kernel from N parallel
+      ``ThreadPoolExecutor`` workers (set via ``VOYAGER_RROQ158_N_WORKERS``),
+      cap rayon to ``cpu_count() // n_workers`` so the total kernel
+      thread count never exceeds physical cores. This avoids the
+      1024-way over-subscription scenario (8 python workers × 128 default
+      rayon threads on a 128-core box).
+    - Default: leave rayon's global pool alone (``None``). The default
+      pool is one thread per logical core, which is fine when the kernel
+      is the sole consumer.
+    """
+    import os
+    raw = os.environ.get("VOYAGER_RROQ158_N_THREADS")
+    if raw is not None:
+        try:
+            n = int(raw)
+            return n if n > 0 else None
+        except ValueError:
+            pass
+    workers_raw = os.environ.get("VOYAGER_RROQ158_N_WORKERS")
+    if workers_raw is not None:
+        try:
+            n_workers = max(1, int(workers_raw))
+            cpu = os.cpu_count() or 1
+            return max(1, cpu // n_workers)
+        except ValueError:
+            pass
+    return default
+
+
+def _score_rroq158_cpu(
+    query_planes: torch.Tensor,
+    query_meta: torch.Tensor,
+    qc_table: torch.Tensor,
+    doc_centroid_id: torch.Tensor,
+    doc_cos_norm: torch.Tensor,
+    doc_sin_norm: torch.Tensor,
+    doc_sign: torch.Tensor,
+    doc_nz: torch.Tensor,
+    doc_scales: torch.Tensor,
+    doc_ids: List[int],
+    k: int,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+    n_threads: int | None = None,
+) -> Tuple[List[int], List[float]]:
+    """CPU dispatch for `score_rroq158_topk` via the Rust SIMD kernel.
+
+    The Rust kernel returns scores for batch dim A as a flat (A*B) vector but
+    the search-time top-k machinery here only consumes the first row, so we
+    require ``A == 1``. Routing a batched query (A>1) through this path
+    would silently drop A-1 result rows. Callers that need batched scoring
+    should iterate over the A axis themselves or call the kernel directly.
+    """
+    fn = _get_rroq158_cpu_kernel()
+    if fn is None:
+        return [], []
+
+    import numpy as np
+
+    A_dim = query_planes.shape[0]
+    if A_dim != 1:
+        raise ValueError(
+            f"_score_rroq158_cpu only supports A==1 (single batch row); "
+            f"got query_planes shape {tuple(query_planes.shape)} (A={A_dim}). "
+            "Iterate over the batch axis explicitly when A>1."
+        )
+
+    def _to_np(t: torch.Tensor, dtype: np.dtype) -> np.ndarray:
+        # Already-CPU tensors `.detach().cpu()` is a no-op; `.numpy()`
+        # returns a view that may be non-contiguous after `.permute` / etc.
+        # Skip the redundant `.contiguous()` because `np.ascontiguousarray`
+        # below makes any final copy a single allocation rather than two.
+        return np.ascontiguousarray(t.detach().cpu().numpy(), dtype=dtype)
+
+    qp_np = _to_np(query_planes, np.int32)
+    qm_np = _to_np(query_meta, np.float32)
+    qc_np = _to_np(qc_table, np.float32)
+    cid_np = _to_np(doc_centroid_id, np.int32)
+    cos_np = _to_np(doc_cos_norm, np.float32)
+    sin_np = _to_np(doc_sin_norm, np.float32)
+    ds_np = _to_np(doc_sign, np.int32)
+    dn_np = _to_np(doc_nz, np.int32)
+    dsc_np = _to_np(doc_scales, np.float32)
+
+    A, S, query_bits, n_words = qp_np.shape
+    B, T = ds_np.shape[:2]
+    n_groups = dsc_np.shape[-1]
+    K = qc_np.shape[-1]
+
+    q_mask_np = None
+    if queries_mask is not None:
+        q_mask_np = _to_np(queries_mask, np.float32).ravel()
+    d_mask_np = None
+    if documents_mask is not None:
+        d_mask_np = _to_np(documents_mask, np.float32).ravel()
+
+    n_threads_eff = _resolve_rroq158_n_threads(default=n_threads)
+
+    flat = fn(
+        qp_np.ravel(),
+        qm_np.ravel(),
+        qc_np.ravel(),
+        ds_np.ravel(),
+        dn_np.ravel(),
+        dsc_np.ravel(),
+        cid_np.ravel(),
+        cos_np.ravel(),
+        sin_np.ravel(),
+        A, B, S, T, n_words, n_groups, query_bits, K,
+        q_mask_np,
+        d_mask_np,
+        n_threads=n_threads_eff,
+    )
+    scores = flat.reshape(A, B)[0]
+    if B == 0:
+        return [], []
+    final_k = min(k, B)
+    top_idx = np.argpartition(-scores, final_k - 1)[:final_k]
+    top_idx = top_idx[np.argsort(-scores[top_idx])]
+    return [doc_ids[i] for i in top_idx.tolist()], scores[top_idx].tolist()
+
+
+def score_rroq158_topk(
+    query_planes: torch.Tensor,         # (1, S, query_bits, n_words) int32
+    query_meta: torch.Tensor,           # (1, S, 2) float32
+    qc_table: torch.Tensor,             # (1, S, K) float32
+    doc_centroid_id: torch.Tensor,      # (B, T) int32
+    doc_cos_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_sin_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_sign: torch.Tensor,             # (B, T, n_words) int32
+    doc_nz: torch.Tensor,               # (B, T, n_words) int32
+    doc_scales: torch.Tensor,           # (B, T, n_groups) float32
+    doc_ids: List[int],
+    k: int = 10,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+    device: torch.device = None,
+) -> Tuple[List[int], List[float]]:
+    """Score documents using the RROQ158 fused Triton kernel.
+
+    All tensors are dtype-converted to what the kernel expects (int32 / fp32)
+    on the target device. ``doc_cos_norm`` / ``doc_sin_norm`` are stored as
+    fp16 on disk to halve their footprint; the kernel reads them as fp32.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    n_docs = doc_sign.shape[0]
+    if n_docs == 0:
+        return [], []
+
+    if device.type == "cpu":
+        # CPU lane uses the Rust SIMD kernel (latence_shard_engine.
+        # rroq158_score_batch). Same math as the Triton GPU kernel; parity
+        # validated to rtol=1e-4 in tests/test_rroq158_kernel.py.
+        return _score_rroq158_cpu(
+            query_planes, query_meta, qc_table,
+            doc_centroid_id, doc_cos_norm, doc_sin_norm,
+            doc_sign, doc_nz, doc_scales,
+            doc_ids, k, documents_mask, queries_mask,
+        )
+
+    rroq = _get_rroq158_maxsim()
+    if rroq is None:
+        return [], []
+
+    qp = query_planes.to(device=device, dtype=torch.int32)
+    qm = query_meta.to(device=device, dtype=torch.float32)
+    qct = qc_table.to(device=device, dtype=torch.float32)
+    cid = doc_centroid_id.to(device=device, dtype=torch.int32)
+    cos_n = doc_cos_norm.to(device=device, dtype=torch.float32)
+    sin_n = doc_sin_norm.to(device=device, dtype=torch.float32)
+    ds = doc_sign.to(device=device, dtype=torch.int32)
+    dn = doc_nz.to(device=device, dtype=torch.int32)
+    dsc = doc_scales.to(device=device, dtype=torch.float32)
+
+    kwargs = {}
+    if documents_mask is not None:
+        kwargs["documents_mask"] = documents_mask.to(device)
+    if queries_mask is not None:
+        kwargs["queries_mask"] = queries_mask.to(device)
+
+    scores = rroq(
+        queries_planes=qp,
+        queries_meta=qm,
+        qc_table=qct,
+        docs_centroid_id=cid,
+        docs_cos_norm=cos_n,
+        docs_sin_norm=sin_n,
+        docs_sign=ds,
+        docs_nz=dn,
+        docs_scales=dsc,
+        **kwargs,
+    ).squeeze(0)
+    final_k = min(k, n_docs)
+    top_sc, top_idx = scores.topk(final_k)
+    idx_list = top_idx.cpu().tolist()
+    return [doc_ids[i] for i in idx_list], top_sc.cpu().tolist()
+
+
+# ------------------------------------------------------------------
+# RROQ4_RIEM (Riemannian 4-bit asymmetric) scoring
+# ------------------------------------------------------------------
+
+_rroq4_riem_fn = None
+
+
+def _get_rroq4_riem_maxsim():
+    global _rroq4_riem_fn
+    if _rroq4_riem_fn is not None:
+        return _rroq4_riem_fn
+    try:
+        from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+            roq_maxsim_rroq4_riem,
+        )
+
+        _rroq4_riem_fn = roq_maxsim_rroq4_riem
+        logger.info(
+            "Using voyager-index RROQ4_RIEM (4-bit asymmetric) MaxSim kernel"
+        )
+    except ImportError:
+        _rroq4_riem_fn = None
+        logger.warning("RROQ4_RIEM MaxSim kernel unavailable")
+    return _rroq4_riem_fn
+
+
+_rroq4_riem_cpu_fn = None
+
+
+def _get_rroq4_riem_cpu_kernel():
+    """Lazy-load the Rust SIMD CPU kernel from `latence_shard_engine`.
+
+    Returns ``None`` if the wheel is unavailable / older than the
+    rroq4_riem release.
+    """
+    global _rroq4_riem_cpu_fn
+    if _rroq4_riem_cpu_fn is not None:
+        return _rroq4_riem_cpu_fn
+    try:
+        import latence_shard_engine as _eng
+
+        _rroq4_riem_cpu_fn = getattr(_eng, "rroq4_riem_score_batch", None)
+        if _rroq4_riem_cpu_fn is not None:
+            logger.info("Using latence_shard_engine RROQ4_RIEM CPU SIMD kernel")
+        else:
+            logger.warning(
+                "latence_shard_engine missing rroq4_riem_score_batch; rebuild the "
+                "Rust wheel from src/kernels/shard_engine to enable CPU rroq4_riem"
+            )
+    except ImportError:
+        _rroq4_riem_cpu_fn = None
+        logger.warning("latence_shard_engine unavailable; CPU rroq4_riem disabled")
+    return _rroq4_riem_cpu_fn
+
+
+def _resolve_rroq4_riem_n_threads(default: int | None = None) -> int | None:
+    """Threading heuristic for the Rust rroq4_riem kernel.
+
+    Mirrors :func:`_resolve_rroq158_n_threads` but with a separate set of
+    env vars so operators can tune the two codecs independently. Same
+    rationale: cap rayon when the python side already runs the kernel
+    from N parallel workers.
+    """
+    import os
+    raw = os.environ.get("VOYAGER_RROQ4_RIEM_N_THREADS")
+    if raw is not None:
+        try:
+            n = int(raw)
+            return n if n > 0 else None
+        except ValueError:
+            pass
+    workers_raw = os.environ.get("VOYAGER_RROQ4_RIEM_N_WORKERS")
+    if workers_raw is not None:
+        try:
+            n_workers = max(1, int(workers_raw))
+            cpu = os.cpu_count() or 1
+            return max(1, cpu // n_workers)
+        except ValueError:
+            pass
+    return default
+
+
+def _score_rroq4_riem_cpu(
+    q_rot: torch.Tensor,
+    q_group_sums: torch.Tensor,
+    qc_table: torch.Tensor,
+    doc_centroid_id: torch.Tensor,
+    doc_cos_norm: torch.Tensor,
+    doc_sin_norm: torch.Tensor,
+    doc_codes: torch.Tensor,
+    doc_mins: torch.Tensor,
+    doc_deltas: torch.Tensor,
+    doc_ids: List[int],
+    k: int,
+    group_size: int,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+    n_threads: int | None = None,
+) -> Tuple[List[int], List[float]]:
+    """CPU dispatch for `score_rroq4_riem_topk` via the Rust SIMD kernel.
+
+    Same A==1 constraint as :func:`_score_rroq158_cpu` — top-k routing
+    only consumes the first row downstream.
+    """
+    fn = _get_rroq4_riem_cpu_kernel()
+    if fn is None:
+        return [], []
+
+    import numpy as np
+
+    A_dim = q_rot.shape[0]
+    if A_dim != 1:
+        raise ValueError(
+            f"_score_rroq4_riem_cpu only supports A==1 (single batch row); "
+            f"got q_rot shape {tuple(q_rot.shape)} (A={A_dim}). "
+            "Iterate over the batch axis explicitly when A>1."
+        )
+
+    def _to_np(t: torch.Tensor, dtype) -> np.ndarray:
+        return np.ascontiguousarray(t.detach().cpu().numpy(), dtype=dtype)
+
+    qrot_np = _to_np(q_rot, np.float32)
+    qgs_np = _to_np(q_group_sums, np.float32)
+    qc_np = _to_np(qc_table, np.float32)
+    cid_np = _to_np(doc_centroid_id, np.int32)
+    cos_np = _to_np(doc_cos_norm, np.float32)
+    sin_np = _to_np(doc_sin_norm, np.float32)
+    codes_np = _to_np(doc_codes, np.uint8)
+    mins_np = _to_np(doc_mins, np.float32)
+    dlts_np = _to_np(doc_deltas, np.float32)
+
+    A, S, dim = qrot_np.shape
+    B, T = codes_np.shape[:2]
+    n_groups = qgs_np.shape[-1]
+    K = qc_np.shape[-1]
+
+    q_mask_np = None
+    if queries_mask is not None:
+        q_mask_np = _to_np(queries_mask, np.float32).ravel()
+    d_mask_np = None
+    if documents_mask is not None:
+        d_mask_np = _to_np(documents_mask, np.float32).ravel()
+
+    n_threads_eff = _resolve_rroq4_riem_n_threads(default=n_threads)
+
+    flat = fn(
+        qrot_np.ravel(),
+        qgs_np.ravel(),
+        qc_np.ravel(),
+        codes_np.ravel(),
+        mins_np.ravel(),
+        dlts_np.ravel(),
+        cid_np.ravel(),
+        cos_np.ravel(),
+        sin_np.ravel(),
+        A, B, S, T, dim, n_groups, group_size, K,
+        q_mask_np,
+        d_mask_np,
+        n_threads=n_threads_eff,
+    )
+    scores = flat.reshape(A, B)[0]
+    if B == 0:
+        return [], []
+    final_k = min(k, B)
+    top_idx = np.argpartition(-scores, final_k - 1)[:final_k]
+    top_idx = top_idx[np.argsort(-scores[top_idx])]
+    return [doc_ids[i] for i in top_idx.tolist()], scores[top_idx].tolist()
+
+
+def score_rroq4_riem_topk(
+    q_rot: torch.Tensor,                # (1, S, dim) float32
+    q_group_sums: torch.Tensor,         # (1, S, n_groups) float32
+    qc_table: torch.Tensor,             # (1, S, K) float32
+    doc_centroid_id: torch.Tensor,      # (B, T) int32
+    doc_cos_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_sin_norm: torch.Tensor,         # (B, T) float32 (or fp16 → cast)
+    doc_codes: torch.Tensor,            # (B, T, dim/2) uint8
+    doc_mins: torch.Tensor,             # (B, T, n_groups) float32 (or fp16)
+    doc_deltas: torch.Tensor,           # (B, T, n_groups) float32 (or fp16)
+    doc_ids: List[int],
+    k: int = 10,
+    group_size: int = 32,
+    documents_mask: torch.Tensor = None,
+    queries_mask: torch.Tensor = None,
+    device: torch.device = None,
+) -> Tuple[List[int], List[float]]:
+    """Score documents using the RROQ4_RIEM fused MaxSim kernel.
+
+    Routes to the Triton GPU kernel on CUDA and the Rust SIMD CPU kernel
+    on host. Both return identical scores up to fp32 rounding (parity
+    validated to rtol=1e-4 in tests/test_rroq4_riem_kernel.py).
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    n_docs = doc_codes.shape[0]
+    if n_docs == 0:
+        return [], []
+
+    if device.type == "cpu":
+        return _score_rroq4_riem_cpu(
+            q_rot, q_group_sums, qc_table,
+            doc_centroid_id, doc_cos_norm, doc_sin_norm,
+            doc_codes, doc_mins, doc_deltas,
+            doc_ids, k, group_size, documents_mask, queries_mask,
+        )
+
+    rroq = _get_rroq4_riem_maxsim()
+    if rroq is None:
+        return [], []
+
+    qrot = q_rot.to(device=device, dtype=torch.float32)
+    qgs = q_group_sums.to(device=device, dtype=torch.float32)
+    qct = qc_table.to(device=device, dtype=torch.float32)
+    cid = doc_centroid_id.to(device=device, dtype=torch.int32)
+    cos_n = doc_cos_norm.to(device=device, dtype=torch.float32)
+    sin_n = doc_sin_norm.to(device=device, dtype=torch.float32)
+    if doc_codes.dtype != torch.uint8:
+        doc_codes = doc_codes.to(torch.uint8)
+    codes = doc_codes.to(device=device)
+    mins = doc_mins.to(device=device, dtype=torch.float32)
+    dlts = doc_deltas.to(device=device, dtype=torch.float32)
+
+    kwargs = {"group_size": group_size}
+    if documents_mask is not None:
+        kwargs["documents_mask"] = documents_mask.to(device)
+    if queries_mask is not None:
+        kwargs["queries_mask"] = queries_mask.to(device)
+
+    scores = rroq(
+        queries_rot=qrot,
+        queries_group_sums=qgs,
+        qc_table=qct,
+        docs_centroid_id=cid,
+        docs_cos_norm=cos_n,
+        docs_sin_norm=sin_n,
+        docs_codes_packed=codes,
+        docs_mins=mins,
+        docs_deltas=dlts,
+        **kwargs,
+    ).squeeze(0)
+    final_k = min(k, n_docs)
+    top_sc, top_idx = scores.topk(final_k)
+    idx_list = top_idx.cpu().tolist()
+    return [doc_ids[i] for i in idx_list], top_sc.cpu().tolist()
+
+
+# ------------------------------------------------------------------
 # Per-shard scoring (legacy, kept for backward compat)
 # ------------------------------------------------------------------
 

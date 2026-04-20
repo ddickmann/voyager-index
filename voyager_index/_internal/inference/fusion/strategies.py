@@ -10,7 +10,7 @@ Supported strategies:
 - Borda Count: Rank-based voting
 
 Author: ColBERT Team
-License: Apache-2.0
+License: CC-BY-NC-4.0
 """
 
 from collections import defaultdict

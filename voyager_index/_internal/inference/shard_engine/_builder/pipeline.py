@@ -131,6 +131,134 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
     roq_quantizer = None
     roq_doc_codes = None
     roq_doc_meta = None
+    rroq158_payload = None
+    rroq4_riem_payload = None
+    if cfg.compression == Compression.RROQ158:
+        # Hard-fail on actual codec errors (silently writing a 12× larger
+        # FP16 index that scores in a different range would be a debugging
+        # nightmare) — but auto-shrink K and auto-fall-back to FP16 when
+        # the corpus is physically too small to host the codec, with a
+        # loud log. Mirrors
+        # ``voyager_index/_internal/inference/shard_engine/_manager/lifecycle.py``.
+        from voyager_index._internal.inference.quantization.rroq158 import (
+            Rroq158Config,
+            choose_effective_rroq158_k,
+            encode_rroq158,
+        )
+        active_arr = np.asarray(active_vectors)
+        n_tokens = int(active_arr.shape[0])
+        token_dim = int(active_arr.shape[1]) if active_arr.ndim >= 2 else 0
+        gs = int(cfg.rroq158_group_size)
+        if token_dim and token_dim < gs:
+            log.warning(
+                "RROQ158 requested but token dim=%d is smaller than "
+                "group_size=%d. Falling back to FP16 — rroq158 needs at "
+                "least group_size coordinates per token.",
+                token_dim, gs,
+            )
+            cfg.compression = Compression.FP16
+        elif n_tokens < gs:
+            log.warning(
+                "RROQ158 requested but corpus has only %d tokens "
+                "(< group_size=%d). Falling back to FP16 — rroq158 needs "
+                "at least one ternary group of tokens to encode.",
+                n_tokens, gs,
+            )
+            cfg.compression = Compression.FP16
+        else:
+            effective_k = choose_effective_rroq158_k(
+                n_tokens=n_tokens,
+                requested_k=int(cfg.rroq158_k),
+                group_size=gs,
+            )
+            log.info(
+                "Training RROQ158 (Riemannian 1.58-bit) quantizer "
+                "(K=%d, group_size=%d, seed=%d) ...",
+                effective_k, gs, int(cfg.rroq158_seed),
+            )
+            t_rroq = time.time()
+            rroq158_payload = encode_rroq158(
+                np.asarray(active_vectors, dtype=np.float32),
+                Rroq158Config(
+                    K=effective_k,
+                    group_size=gs,
+                    seed=int(cfg.rroq158_seed),
+                    fit_sample_cap=max(100_000, effective_k),
+                ),
+            )
+            np.savez(
+                index_dir / "rroq158_meta.npz",
+                centroids=rroq158_payload.centroids,
+                fwht_seed=np.array(rroq158_payload.fwht_seed, dtype=np.int64),
+                dim=np.array(rroq158_payload.dim, dtype=np.int32),
+                group_size=np.array(rroq158_payload.group_size, dtype=np.int32),
+                k_requested=np.array(int(cfg.rroq158_k), dtype=np.int32),
+                k_effective=np.array(effective_k, dtype=np.int32),
+            )
+            log.info(
+                "RROQ158 encoding done in %.1fs (%d tokens, K=%d)",
+                time.time() - t_rroq, n_tokens, effective_k,
+            )
+    if cfg.compression == Compression.RROQ4_RIEM:
+        from voyager_index._internal.inference.quantization.rroq4_riem import (
+            Rroq4RiemConfig,
+            choose_effective_rroq4_riem_k,
+            encode_rroq4_riem,
+        )
+        active_arr = np.asarray(active_vectors)
+        n_tokens = int(active_arr.shape[0])
+        token_dim = int(active_arr.shape[1]) if active_arr.ndim >= 2 else 0
+        gs = int(cfg.rroq4_riem_group_size)
+        if token_dim and token_dim < gs:
+            log.warning(
+                "RROQ4_RIEM requested but token dim=%d is smaller than "
+                "group_size=%d. Falling back to FP16 — rroq4_riem needs at "
+                "least group_size coordinates per token.",
+                token_dim, gs,
+            )
+            cfg.compression = Compression.FP16
+        elif n_tokens < gs:
+            log.warning(
+                "RROQ4_RIEM requested but corpus has only %d tokens "
+                "(< group_size=%d). Falling back to FP16 — rroq4_riem needs "
+                "at least one 4-bit group of tokens to encode.",
+                n_tokens, gs,
+            )
+            cfg.compression = Compression.FP16
+        else:
+            effective_k = choose_effective_rroq4_riem_k(
+                n_tokens=n_tokens,
+                requested_k=int(cfg.rroq4_riem_k),
+                group_size=gs,
+            )
+            log.info(
+                "Training RROQ4_RIEM (Riemannian 4-bit asymmetric) quantizer "
+                "(K=%d, group_size=%d, seed=%d) ...",
+                effective_k, gs, int(cfg.rroq4_riem_seed),
+            )
+            t_r4r = time.time()
+            rroq4_riem_payload = encode_rroq4_riem(
+                np.asarray(active_vectors, dtype=np.float32),
+                Rroq4RiemConfig(
+                    K=effective_k,
+                    group_size=gs,
+                    seed=int(cfg.rroq4_riem_seed),
+                    fit_sample_cap=max(100_000, effective_k),
+                ),
+            )
+            np.savez(
+                index_dir / "rroq4_riem_meta.npz",
+                centroids=rroq4_riem_payload.centroids,
+                fwht_seed=np.array(rroq4_riem_payload.fwht_seed, dtype=np.int64),
+                dim=np.array(rroq4_riem_payload.dim, dtype=np.int32),
+                group_size=np.array(rroq4_riem_payload.group_size, dtype=np.int32),
+                k_requested=np.array(int(cfg.rroq4_riem_k), dtype=np.int32),
+                k_effective=np.array(effective_k, dtype=np.int32),
+            )
+            log.info(
+                "RROQ4_RIEM encoding done in %.1fs (%d tokens, K=%d)",
+                time.time() - t_r4r, n_tokens, effective_k,
+            )
     if cfg.compression == Compression.ROQ4:
         try:
             from voyager_index._internal.inference.quantization.rotational import (
@@ -173,6 +301,8 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
         uniform_shard_tokens=cfg.uniform_shard_tokens,
         roq_doc_codes=roq_doc_codes,
         roq_doc_meta=roq_doc_meta,
+        rroq158_payload=rroq158_payload,
+        rroq4_riem_payload=rroq4_riem_payload,
     )
     build_s = time.time() - t0
     log.info("Shard store built in %.1fs", build_s)
@@ -182,22 +312,31 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
         router.save(index_dir / "router")
         log.info("Router saved to %s", index_dir / "router")
 
+    build_meta = {
+        "corpus_size": cfg.corpus_size,
+        "dim": dim,
+        "n_centroids": cfg.n_centroids,
+        "n_shards": cfg.n_shards,
+        "compression": cfg.compression.value,
+        "layout": cfg.layout.value,
+        "router_type": cfg.router_type.value,
+        "pooling_enabled": cfg.pooling.enabled,
+        "pool_factor": cfg.pooling.pool_factor,
+        "train_time_s": train_s,
+        "build_time_s": build_s,
+        "total_tokens": int(np.asarray(active_vectors).shape[0]),
+        "avg_tokens_per_doc": float(np.mean([e - s for s, e in active_offsets])),
+    }
+    if cfg.compression == Compression.RROQ158:
+        build_meta["rroq158_k"] = int(cfg.rroq158_k)
+        build_meta["rroq158_seed"] = int(cfg.rroq158_seed)
+        build_meta["rroq158_group_size"] = int(cfg.rroq158_group_size)
+    elif cfg.compression == Compression.RROQ4_RIEM:
+        build_meta["rroq4_riem_k"] = int(cfg.rroq4_riem_k)
+        build_meta["rroq4_riem_seed"] = int(cfg.rroq4_riem_seed)
+        build_meta["rroq4_riem_group_size"] = int(cfg.rroq4_riem_group_size)
     with open(index_dir / "build_meta.json", "w") as f:
-        json.dump({
-            "corpus_size": cfg.corpus_size,
-            "dim": dim,
-            "n_centroids": cfg.n_centroids,
-            "n_shards": cfg.n_shards,
-            "compression": cfg.compression.value,
-            "layout": cfg.layout.value,
-            "router_type": cfg.router_type.value,
-            "pooling_enabled": cfg.pooling.enabled,
-            "pool_factor": cfg.pooling.pool_factor,
-            "train_time_s": train_s,
-            "build_time_s": build_s,
-            "total_tokens": int(np.asarray(active_vectors).shape[0]),
-            "avg_tokens_per_doc": float(np.mean([e - s for s, e in active_offsets])),
-        }, f, indent=2)
+        json.dump(build_meta, f, indent=2)
 
     gc.collect()
     log.info("Build complete. Index at %s, RSS=%.1f GB", index_dir, _mem_gb())

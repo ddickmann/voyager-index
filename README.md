@@ -2,9 +2,30 @@
 
 [![CI](https://github.com/ddickmann/voyager-index/actions/workflows/ci.yml/badge.svg)](https://github.com/ddickmann/voyager-index/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/voyager-index)](https://pypi.org/project/voyager-index/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
 
 **Late-interaction retrieval for on-prem AI. One node. CPU or GPU. MaxSim is the truth scorer.**
+
+> **What changed in this release:** the default codec for newly built indexes
+> is now `Compression.RROQ158` — Riemannian-aware 1.58-bit ternary ROQ at
+> K=8192 — wired on **both** GPU (Triton fused kernel) and CPU (Rust SIMD
+> kernel with hardware popcount + cached rayon thread pool). On the BEIR
+> 2026-Q2 production sweep it averages **−1.0 pt NDCG@10** vs FP16 with
+> **flat R@100** at **~5.5× smaller doc-token storage**. For workloads that
+> refuse any quality regression, ship `Compression.RROQ4_RIEM` — the
+> Riemannian-aware 4-bit asymmetric no-quality-loss lane (Triton + Rust
+> SIMD wired, parity-tested, ~3× smaller than FP16, **~0.5 pt NDCG@10
+> gap** — but currently slower than FP16 in absolute latency, see the
+> sweep table below). Existing FP16 / RROQ158 / RROQ4_RIEM indexes
+> continue to load unchanged — the manifest carries the build-time codec;
+> only newly built indexes pick up the new default. Pass
+> `compression=Compression.FP16` to opt out. Full sweep methodology,
+> per-dataset numbers, and the F1 default-decision verdict live under
+> [`reports/beir_2026q2/`](reports/beir_2026q2/); the math behind the
+> codec is in
+> [docs/guides/rroq-mathematics.md](docs/guides/rroq-mathematics.md);
+> a public-facing write-up is in
+> [docs/posts/sub-2-bit-late-interaction.md](docs/posts/sub-2-bit-late-interaction.md).
 
 ## The pain
 
@@ -26,7 +47,7 @@ the **final scorer** — and engineered so a single machine can serve it.
 
 - **One-node deployment.** No control plane, no orchestration tax.
 - **One contract across CPU and GPU.** Rust SIMD on CPU, Triton on GPU.
-- **Quantized fast paths.** FP16, INT8, FP8, ROQ-4, all reranked back to float truth.
+- **RROQ-1.58 default.** Riemannian 1.58-bit codec at ~5.5× smaller doc-token storage than FP16, ~−1 pt NDCG@10 average on BEIR (flat R@100), at FP16-comparable GPU latency on most cells. **RROQ-4 Riemannian** ships as the no-quality-loss lane (~3× smaller than FP16, ~0.5 pt NDCG@10 gap; currently slower than FP16 in absolute latency — the win is storage). FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth.
 - **Late-interaction native.** ColBERT, ColPali, ColQwen out of the box.
 - **Database semantics.** WAL, checkpoint, crash recovery, scroll, retrieve.
 - **Optional graph lane.** The Latence sidecar augments first-stage retrieval — never required.
@@ -34,8 +55,9 @@ the **final scorer** — and engineered so a single machine can serve it.
 ## How
 
 ```bash
-pip install "voyager-index[full,gpu]"   # drop ,gpu on CPU-only hosts
-voyager-index-server                    # OpenAPI at http://127.0.0.1:8080/docs
+pip install "voyager-index[full]"        # CPU-only host
+pip install "voyager-index[full,gpu]"    # GPU host
+voyager-index-server                     # OpenAPI at http://127.0.0.1:8080/docs
 ```
 
 Python:
@@ -80,7 +102,7 @@ docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 ## Features
 
 - **Routing** — LEMUR proxy router + FAISS MIPS shortlist, optional ColBANDIT query-time pruning.
-- **Scoring** — Triton MaxSim and fused Rust MaxSim, INT8 / FP8 / ROQ-4 with float rerank.
+- **Scoring** — Triton MaxSim and fused Rust MaxSim, RROQ-1.58 (default) / RROQ-4 Riemannian (safe fallback) / INT8 / FP8 / ROQ-4 with float rerank.
 - **Storage** — safetensors shards, memory-mapped CPU, GPU-resident corpus mode.
 - **Hybrid** — BM25 + dense fusion via RRF or Tabu Search refinement.
 - **Multimodal** — text (ColBERT), images (ColPali / ColQwen), preprocessing for PDF / DOCX / XLSX.
@@ -90,23 +112,147 @@ docker run -p 8080:8080 -v "$(pwd)/data:/data" voyager-index
 
 ## Benchmarks
 
-### BEIR retrieval — RTX A5000, search-only, full query set
+### BEIR retrieval — RTX A5000 + 8-worker AVX2 CPU, full query set
 
-Encoder: `lightonai/GTE-ModernColBERT-v1`. CPU lane uses 8 native Rust workers.
+Encoder: `lightonai/GTE-ModernColBERT-v1`. Sweep harness:
+[`benchmarks/beir_2026q2_full_sweep.py`](benchmarks/beir_2026q2_full_sweep.py).
+Raw per-cell JSONL with provenance (git SHA, GPU model + driver, CPU
+model + cores, wheel versions): [`reports/beir_2026q2/`](reports/beir_2026q2/).
 
-| Dataset  | Docs   | NDCG@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
-|----------|-------:|--------:|-----------:|--------:|-------------:|--------:|-------------:|
-| arguana  | 8,674  | 0.3679  | 0.9586     | 270.0   | 4.1          | 41.6    | 202.7        |
-| fiqa     | 57,638 | 0.4436  | 0.7297     | 164.8   | 5.0          | 80.2    | 115.7        |
-| nfcorpus | 3,633  | 0.3833  | 0.3348     | 282.6   | 3.8          | 123.3   | 84.4         |
-| quora    | 15,675 | 0.9766  | 0.9993     | 346.8   | 2.6          | 271.7   | 46.9         |
-| scidocs  | 25,657 | 0.1977  | 0.4369     | 246.8   | 4.3          | 83.9    | 111.8        |
-| scifact  | 5,183  | 0.7544  | 0.9567     | 263.4   | 4.0          | 69.1    | 138.4        |
+The full 4-codec × 6-dataset × 2-mode table is rendered to
+[docs/benchmarks.md](docs/benchmarks.md) by
+[`scripts/format_beir_2026q2_table.py`](scripts/format_beir_2026q2_table.py).
+Headline averages (BEIR-6 mean):
 
-GPU P95 stays under 6 ms across every dataset. The full per-dataset
-[head-to-head against `next-plaid`](docs/benchmarks.md#comparison-vs-next-plaid)
-(same model, H100, encoding included), methodology, and caveats live in
-[docs/benchmarks.md](docs/benchmarks.md).
+<!-- BEIR_2026Q2_HEADLINE_TABLE_BEGIN — measured 2026-04-20 from reports/beir_2026q2/sweep.jsonl -->
+
+| Codec       | NDCG@10 (avg) | ΔNDCG@10 vs fp16 | R@100 (avg) | ΔR@100 vs fp16 | Storage vs fp16 | GPU p95 (avg) | CPU p95 (avg) |
+|-------------|--------------:|-----------------:|------------:|---------------:|----------------:|--------------:|--------------:|
+| fp16        |        0.5206 |              0.0 |      0.7360 |            0.0 |          1.00×  |        4.0 ms |       103 ms  |
+| int8        |        0.5200 |       −0.06 pt   |      0.7357 |     −0.03 pt   |          0.50×  |        4.0 ms |   n/a (GPU-only) |
+| **rroq158** |        0.5063 |       **−1.43 pt** |    0.7312 |     −0.48 pt   |        **0.18×** |     4.6 ms (1.13×) |   812 ms (7.88×) |
+| rroq4_riem  |        0.5208 |       +0.02 pt   |      0.7383 |     +0.23 pt   |          0.34×  |   20.1 ms (5.03×) |  1304 ms (12.65×) |
+
+<!-- BEIR_2026Q2_HEADLINE_TABLE_END -->
+
+Detailed per-dataset rows, the F1 default-promotion verdict, and the
+brute-force codec-fidelity overlap (top-10 / 20 / 50 / 100 vs FP16 — the
+rroq158 quality story disaggregated below the rank-aggregate metric)
+live in [docs/benchmarks.md](docs/benchmarks.md).
+
+#### Default: RROQ-1.58 (Riemannian 1.58-bit ternary, K=8192)
+
+`Compression.RROQ158` is the **default codec for newly built indexes**
+on both GPU (Triton fused kernel) and CPU (Rust SIMD kernel). Per-token
+storage drops to **~46 B** (vs 256 B FP16, 64 B ROQ-4 — i.e. **5.5× /
+1.4× smaller**), and both lanes are wired and parity-tested.
+
+The honest sweep verdict from the BEIR 2026-Q2 production sweep
+(`reports/beir_2026q2/sweep.jsonl`, 4 codecs × 6 datasets × 2 modes,
+full BEIR query sets):
+
+- **Quality.** Avg NDCG@10 vs FP16: **−1.43 pt** (worst dataset:
+  arguana at −2.69 pt; best: nfcorpus at −0.39 pt). Avg R@100 vs FP16:
+  **−0.48 pt** (essentially flat in absolute terms). The
+  brute-force codec-fidelity overlap diagnostic
+  (`benchmarks/topk_overlap_sweep.py`) shows that on arguana — the
+  hardest dataset — rroq158 retains **~82% top-10 overlap** with the
+  FP16 brute-force ranking and recovers **R@100 within −1.4 pt**: the
+  displacement is in the tail-of-top-K ordering, not in which docs
+  are admitted. Workloads requiring exact top-10 rank fidelity should
+  opt into `rroq4_riem` (the no-quality-loss lane below) or use
+  rroq158 with an FP16 rerank on the shortlist
+  (`benchmarks/diag_rroq158_rescue.py` shows top-32/64 FP16 rerank
+  closes the gap with no R@100 regression).
+- **Latency.** Avg GPU p95: **4.6 ms vs 4.0 ms FP16 (1.13×)** — within
+  the 1.20× retention budget on every dataset. Avg CPU p95: **812 ms
+  vs 103 ms FP16 (7.88×)** — at the BEIR batch shape (2000 doc candidates
+  × ~30 query tokens), the FP16 CPU MaxSim path is bandwidth-friendly
+  and hard to beat. The current rroq158 CPU lane is wrapper-bound:
+  per-query Python→Rust copies dominate the popcount kernel itself.
+  Closing this gap is the top post-Phase-7 backlog item (zero-copy
+  PyO3 + AVX-512 nibble pack).
+
+GPU lane: fused two-stage Triton kernel
+(`voyager_index._internal.kernels.triton_roq_rroq158`), parity ≤ 1e-4
+vs the python reference. CPU lane: Rust SIMD kernel
+(`latence_shard_engine.rroq158_score_batch`) with hardware `popcnt` +
+AVX2/BMI2/FMA + cached rayon thread pool, bitwise parity to rtol=1e-4
+vs the python reference (validated by
+`tests/test_rroq158_kernel.py::test_rroq158_rust_simd_matches_python_reference`).
+
+Backwards compatibility: existing FP16 / RROQ158 / RROQ4_RIEM indexes
+load unchanged — the manifest carries the build-time codec. Pass
+`compression=Compression.FP16` (Python) or `--compression fp16` (CLI) to
+opt out of the new default. The math (RaBitQ extension + Riemannian
+log map + FWHT-rotated tangent ternary + K = 8192 derivation) is in
+[docs/guides/rroq-mathematics.md](docs/guides/rroq-mathematics.md).
+The public-facing write-up is at
+[docs/posts/sub-2-bit-late-interaction.md](docs/posts/sub-2-bit-late-interaction.md).
+
+#### No-quality-loss lane: RROQ-4 Riemannian (4-bit asymmetric, K=8192)
+
+`Compression.RROQ4_RIEM` is the production option for workloads that
+cannot tolerate any quality regression vs FP16 but still want the
+storage win of low-bit ROQ. It applies the same Riemannian-aware
+spherical-k-means + FWHT pipeline as RROQ-1.58, but encodes the residual
+as **4-bit asymmetric per-group** (default `group_size=32`, mins/deltas
+in fp16) instead of ternary. Both kernels are wired and parity-tested:
+
+- **GPU**: fused Triton kernel `roq_maxsim_rroq4_riem`
+  (`voyager_index._internal.kernels.triton_roq_rroq4_riem`).
+- **CPU**: Rust SIMD kernel `latence_shard_engine.rroq4_riem_score_batch`
+  with AVX2/FMA + cached rayon thread pool — bitwise parity to rtol=1e-4
+  vs the python reference (validated by
+  `tests/test_rroq4_riem_kernel.py`).
+
+Per-token storage: ~88 B (vs 256 B FP16, 46 B RROQ-1.58 — i.e. **~3×
+smaller** than fp16). Measured on the Phase-7 BEIR sweep:
+
+- **Quality** is at FP16 parity: avg ΔNDCG@10 = **+0.02 pt** (max
+  ±0.05 pt across datasets), avg ΔR@100 = +0.23 pt — the
+  no-quality-loss promise holds on every BEIR-6 dataset.
+- **Latency** is the trade-off: avg GPU p95 **20.1 ms vs 4.0 ms FP16
+  (5.03×)**, avg CPU p95 **1304 ms vs 103 ms FP16 (12.65×)**. The 4-bit
+  asymmetric per-group dequant + FMA path adds structural compute over
+  the FP16 GEMM/MaxSim baseline. The win here is **storage with zero
+  quality regression**, not throughput.
+
+Use this when you need the smaller index but cannot accept the rroq158
+NDCG@10 cost on hard datasets; use rroq158 when latency parity with
+FP16 matters more than a 1-point NDCG@10 budget.
+
+Enable it from Python:
+
+```python
+from voyager_index import Index
+from voyager_index._internal.inference.shard_engine.config import Compression
+
+idx = Index("safe-fallback-demo", dim=128, engine="shard", n_shards=32,
+            k_candidates=256, compression=Compression.RROQ4_RIEM)
+```
+
+…or from the CLI:
+
+```bash
+python -m voyager_index._internal.inference.shard_engine._builder.cli \
+    --compression rroq4_riem --rroq4-riem-k 8192 --rroq4-riem-group-size 32 ...
+```
+
+…or over HTTP at collection-create time:
+
+```json
+{
+  "compression": "rroq4_riem",
+  "rroq4_riem_k": 8192,
+  "rroq4_riem_group_size": 32
+}
+```
+
+End-to-end build + search is covered by
+`tests/test_rroq4_riem_e2e.py::test_rroq4_riem_build_and_search_cpu` and
+auto-derive at search time (no `quantization_mode` override required) by
+`tests/test_shard_serving_wiring.py::test_score_sealed_candidates_auto_derives_rroq4_riem_when_meta_present`.
 
 ## Architecture
 
@@ -114,7 +260,8 @@ GPU P95 stays under 6 ms across every dataset. The full per-dataset
 query (token / patch embeddings)
   → LEMUR routing MLP → FAISS ANN → candidate IDs
   → optional BM25 fusion · centroid pruning · ColBANDIT
-  → exact MaxSim   (Rust SIMD CPU  |  Triton FP16/INT8/FP8/ROQ-4 GPU)
+  → exact MaxSim   (Rust SIMD CPU FP16/RROQ-1.58/RROQ-4-Riem  |  Triton FP16/INT8/FP8/ROQ-4/RROQ-1.58/RROQ-4-Riem GPU)
+  → optional FP16 rerank on top-N shortlist (closes the rroq158 NDCG@10 gap)
   → optional Latence graph augmentation
   → top-K (or packed context)
 ```
@@ -123,7 +270,7 @@ query (token / patch embeddings)
 |--------------|------------------------------------------------------------------|
 | Routing      | LEMUR MLP + FAISS MIPS, candidate budgets                        |
 | Storage      | safetensors shards, mmap, GPU-resident corpus mode               |
-| Scoring      | Triton + Rust fused MaxSim with INT8 / FP8 / ROQ-4 fast paths    |
+| Scoring      | Triton + Rust fused MaxSim with RROQ-1.58 (default) / RROQ-4 Riemannian (safe fallback) / INT8 / FP8 / ROQ-4 fast paths |
 | Optional graph | Latence sidecar, additive after first-stage retrieval          |
 | Durability   | WAL, memtable, checkpoint, crash recovery                        |
 | Serving      | FastAPI, base64 vector transport, multi-worker, OpenAPI          |
@@ -151,6 +298,38 @@ Three execution modes share the same collection format and API contract:
 - Release process: [RELEASING.md](RELEASING.md)
 - Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-## License
+## License & Commercial Use
 
-Apache-2.0. See [LICENSE](LICENSE).
+**This project is licensed under [Creative Commons Attribution-NonCommercial 4.0 International](LICENSE) (`CC-BY-NC-4.0`). It is free for non-commercial use only.**
+
+You may use, copy, modify, and redistribute `voyager-index` for:
+
+- research, evaluation, and benchmarking
+- academic work and teaching
+- personal projects and experimentation
+- internal, non-revenue R&D inside an organization
+
+You may **not** use `voyager-index`, in whole or in part, for any commercial
+or revenue-generating purpose without a separate commercial license. This
+explicitly includes:
+
+- selling, sublicensing, or relicensing the code
+- offering it as a hosted, managed, or SaaS product
+- embedding it in any product, service, or integration that you sell,
+  license, or otherwise monetize
+- using it to provide paid consulting deliverables built on top of it
+
+For commercial licensing inquiries, contact **commercial@latence.ai**.
+
+**Carveout — vendored Qdrant subtree.** The directory
+`src/kernels/vendor/qdrant/` is a vendored copy of upstream
+[qdrant/qdrant](https://github.com/qdrant/qdrant) and remains under its
+original **Apache-2.0** license; that license travels with those files into
+any derivative binaries. See [LICENSING.md](LICENSING.md) and
+[internal/contracts/QDRANT_VENDORING.md](internal/contracts/QDRANT_VENDORING.md)
+for the full carveout.
+
+**Prior releases.** Versions of `voyager-index` previously distributed under
+Apache-2.0 remain available under Apache-2.0 to recipients who already
+obtained them. The CC-BY-NC-4.0 license above applies to this source tree
+and to all releases made from it going forward.

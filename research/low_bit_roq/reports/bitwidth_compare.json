@@ -1,0 +1,60 @@
+{
+  "config": {
+    "sample_path": "research/low_bit_roq/tests/fixtures/token_sample_1m.npy",
+    "n_tokens": 8192,
+    "n_queries": 256,
+    "group_size": 32,
+    "seed": 0,
+    "out": "research/low_bit_roq/reports/bitwidth_compare.json"
+  },
+  "rows": [
+    {
+      "quantizer": "roq1",
+      "bits": 1.0,
+      "angular_p50_deg": 29.305953979492188,
+      "angular_p90_deg": 30.777198791503906,
+      "cos_preservation": 0.8597371578216553,
+      "rank_corr_top100": 0.1524682641029358,
+      "nn1_excl_self": 0.12109375,
+      "nn5_excl_self": 0.125,
+      "nn50_excl_self": 0.13374999165534973,
+      "bytes_per_token": 16.0
+    },
+    {
+      "quantizer": "ternary",
+      "bits": 1.58,
+      "angular_p50_deg": 25.749988555908203,
+      "angular_p90_deg": 26.80695152282715,
+      "cos_preservation": 0.8964012861251831,
+      "rank_corr_top100": 0.24247726798057556,
+      "nn1_excl_self": 0.25390625,
+      "nn5_excl_self": 0.22421875596046448,
+      "nn50_excl_self": 0.2175000011920929,
+      "bytes_per_token": 32.0
+    },
+    {
+      "quantizer": "roq2",
+      "bits": 2.0,
+      "angular_p50_deg": 20.40408706665039,
+      "angular_p90_deg": 22.01373291015625,
+      "cos_preservation": 0.9368821382522583,
+      "rank_corr_top100": 0.20815403759479523,
+      "nn1_excl_self": 0.1796875,
+      "nn5_excl_self": 0.19375000894069672,
+      "nn50_excl_self": 0.1639062464237213,
+      "bytes_per_token": 64.0
+    },
+    {
+      "quantizer": "roq4",
+      "bits": 4.0,
+      "angular_p50_deg": 4.370561599731445,
+      "angular_p90_deg": 4.67535400390625,
+      "cos_preservation": 0.9956173300743103,
+      "rank_corr_top100": 0.6195840835571289,
+      "nn1_excl_self": 0.625,
+      "nn5_excl_self": 0.6507812738418579,
+      "nn50_excl_self": 0.6398437023162842,
+      "bytes_per_token": 96.0
+    }
+  ]
+}

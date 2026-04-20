@@ -38,6 +38,12 @@ idx = Index(
     engine="shard",
     n_shards=32,
     k_candidates=256,
+    # The new production default is `compression="rroq158"` (Riemannian
+    # 1.58-bit, K=8192) on both GPU (Triton) and CPU (Rust SIMD). It needs
+    # at least K tokens (8192 by default) to train the codebook, so the
+    # 64-doc demo here uses fp16. For real corpora drop the `compression`
+    # argument to pick up the default — see `docs/api/python.md` for the
+    # full knob set (`rroq158_k`, `rroq158_group_size`, ...).
     compression="fp16",
 )
 idx.add(
@@ -61,7 +67,8 @@ idx = (
     .with_shard(
         n_shards=64,
         k_candidates=512,
-        compression="fp16",
+        # compression defaults to "rroq158" (K=8192). Override with "fp16" /
+        # "int8" / "roq4" if required.
         quantization_mode="fp8",
         transfer_mode="pinned",
     )
@@ -150,7 +157,17 @@ Graph augmentation runs after first-stage retrieval and is merged additively.
 
 - `n_shards`: controls shard granularity
 - `k_candidates`: router frontier before exact scoring
-- `compression`: stored representation such as `fp16`, `int8`, or `roq4`
+- `compression`: stored representation. Default is `rroq158` (Riemannian
+  1.58-bit, K=8192) on both GPU and CPU; opt-outs include `fp16`, `int8`,
+  `roq4`, and `rroq4_riem` (Riemannian 4-bit asymmetric — the safe-fallback
+  lane for zero-regression workloads). Existing indexes load against their
+  build-time codec via the manifest, so flipping the default is
+  non-breaking for deployed clusters.
+- `rroq158_k` / `rroq158_seed` / `rroq158_group_size`: tuning knobs for the
+  default codec. Defaults are `K=8192`, `seed=42`, `group_size=32`.
+- `rroq4_riem_k` / `rroq4_riem_seed` / `rroq4_riem_group_size`: tuning knobs
+  for the safe-fallback codec when `compression="rroq4_riem"`. Defaults are
+  `K=8192`, `seed=42`, `group_size=32`.
 - `quantization_mode`: active GPU scoring mode such as `int8`, `fp8`, or `roq4`
 - `transfer_mode`: CPU->GPU fetch strategy for streamed GPU scoring
 
