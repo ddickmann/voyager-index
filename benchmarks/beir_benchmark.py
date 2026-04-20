@@ -426,11 +426,11 @@ def _build_rroq158_gpu_payload(
     """
     cfg = Rroq158Config(
         K=params.get("rroq158_k", 1024),
-        group_size=32,
+        group_size=int(params.get("rroq158_group_size", 32)),
         seed=int(params.get("rroq158_seed", 42)),
     )
-    log.info("[rroq158] encoding %d tokens (dim=%d, K=%d)",
-             all_vectors.shape[0], dim, cfg.K)
+    log.info("[rroq158] encoding %d tokens (dim=%d, K=%d, group_size=%d)",
+             all_vectors.shape[0], dim, cfg.K, cfg.group_size)
     enc = encode_rroq158(np.asarray(all_vectors, dtype=np.float32), cfg)
 
     n_words = enc.sign_plane.shape[1]
@@ -1381,6 +1381,7 @@ def run_dataset(
     compression: Optional[Compression] = None,
     distill_rerank: bool = False,
     rroq158_k: int = 8192,
+    rroq158_group_size: int = 32,
     rroq158_seed: int = 42,
     rroq4_riem_k: int = 8192,
     rroq4_riem_group_size: int = 32,
@@ -1407,6 +1408,7 @@ def run_dataset(
                 params["compression"] = compression
             params["distill_rerank"] = distill_rerank
             params["rroq158_k"] = rroq158_k
+            params["rroq158_group_size"] = rroq158_group_size
             params["rroq158_seed"] = rroq158_seed
             params["rroq4_riem_k"] = rroq4_riem_k
             params["rroq4_riem_group_size"] = rroq4_riem_group_size
@@ -1440,6 +1442,7 @@ def run_dataset(
                 params["compression"] = compression
             params["distill_rerank"] = distill_rerank
             params["rroq158_k"] = rroq158_k
+            params["rroq158_group_size"] = rroq158_group_size
             params["rroq158_seed"] = rroq158_seed
             params["rroq4_riem_k"] = rroq4_riem_k
             params["rroq4_riem_group_size"] = rroq4_riem_group_size
@@ -1652,6 +1655,15 @@ def main():
         "the production value documented in research/low_bit_roq/PROGRESS.md)",
     )
     parser.add_argument(
+        "--rroq158-group-size",
+        type=int,
+        default=32,
+        help="Per-group block size for the rroq158 residual scales "
+        "(default: 32, must be a multiple of 32 to align with the popcnt "
+        "kernel and divide dim). Used by the Pareto compression probe "
+        "(scripts/rroq158_pareto_probe.py).",
+    )
+    parser.add_argument(
         "--rroq158-seed",
         type=int,
         default=42,
@@ -1690,7 +1702,9 @@ def main():
             ds_results = run_dataset(
                 name, args.modes, n_workers=args.n_workers, n_eval=args.n_eval,
                 compression=compression, distill_rerank=args.distill_rerank,
-                rroq158_k=args.rroq158_k, rroq158_seed=args.rroq158_seed,
+                rroq158_k=args.rroq158_k,
+                rroq158_group_size=args.rroq158_group_size,
+                rroq158_seed=args.rroq158_seed,
                 rroq4_riem_k=args.rroq4_riem_k,
                 rroq4_riem_group_size=args.rroq4_riem_group_size,
                 rroq4_riem_seed=args.rroq4_riem_seed,
