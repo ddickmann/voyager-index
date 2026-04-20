@@ -435,23 +435,39 @@ def encode_query_for_rroq4_riem(
         rotator = get_cached_fwht_rotator(dim=dim, seed=fwht_seed)
 
     queries_f32 = queries.astype(np.float32, copy=False)
-    if skip_qc_table:
-        qc_table = None
-    else:
-        if centroids is None:
-            raise ValueError("centroids required when skip_qc_table is False")
-        qc_table = (queries_f32 @ centroids.T).astype(np.float32, copy=False)
 
-    dense = getattr(rotator, "_dense_matrix_np", None)
-    if dense is not None and dense.shape == (dim, dim):
-        q_rot = (queries_f32 @ dense).astype(np.float32, copy=False)
-    else:
-        import torch
-        with torch.no_grad():
-            q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
-        if q_rot.shape[1] != dim:
-            q_rot = q_rot[:, :dim]
-    q_rot = np.ascontiguousarray(q_rot, dtype=np.float32)
+    # See ``encode_query_for_rroq158`` for the full rationale: cap the
+    # OpenBLAS pool around the tiny query-side GEMMs so it doesn't leave
+    # 64 worker threads spinning on the cores the rayon-parallel
+    # rroq4_riem CPU kernel is about to claim. ~1 ms penalty on the
+    # GEMMs in exchange for ~90 ms saved in the kernel call.
+    try:
+        from threadpoolctl import threadpool_limits
+
+        _blas_cap = threadpool_limits(limits=1, user_api="blas")
+    except ImportError:  # pragma: no cover — best-effort
+        from contextlib import nullcontext
+
+        _blas_cap = nullcontext()
+
+    with _blas_cap:
+        if skip_qc_table:
+            qc_table = None
+        else:
+            if centroids is None:
+                raise ValueError("centroids required when skip_qc_table is False")
+            qc_table = (queries_f32 @ centroids.T).astype(np.float32, copy=False)
+
+        dense = getattr(rotator, "_dense_matrix_np", None)
+        if dense is not None and dense.shape == (dim, dim):
+            q_rot = (queries_f32 @ dense).astype(np.float32, copy=False)
+        else:
+            import torch
+            with torch.no_grad():
+                q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
+            if q_rot.shape[1] != dim:
+                q_rot = q_rot[:, :dim]
+        q_rot = np.ascontiguousarray(q_rot, dtype=np.float32)
 
     # ``q_group_sums[s, g] = Σ_{d ∈ group g} q_rot[s, d]`` is consumed by
     # the rroq4_riem kernel as the contribution of the per-group ``min``

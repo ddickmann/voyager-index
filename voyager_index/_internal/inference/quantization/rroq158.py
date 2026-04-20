@@ -477,26 +477,49 @@ def encode_query_for_rroq158(
         rotator = get_cached_fwht_rotator(dim=dim, seed=fwht_seed)
 
     queries_f32 = queries.astype(np.float32, copy=False)
-    if skip_qc_table:
-        qc_table = None
-    else:
-        if centroids is None:
-            raise ValueError("centroids required when skip_qc_table is False")
-        qc_table = (queries_f32 @ centroids.T).astype(np.float32, copy=False)
 
-    dense = getattr(rotator, "_dense_matrix_np", None)
-    if dense is not None and dense.shape == (dim, dim):
-        # Fast path: precomputed (dim, dim) linear operator. Single numpy
-        # GEMM, ~50 µs for S=32, dim=128 vs the 7-stage PyTorch dispatch
-        # path which has a 30+ ms p95 tail (rroq158 wrapper benchmarking
-        # 2026-04-19).
-        q_rot = (queries_f32 @ dense).astype(np.float32, copy=False)
-    else:
-        import torch
-        with torch.no_grad():
-            q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
-        if q_rot.shape[1] != dim:
-            q_rot = q_rot[:, :dim]
+    # OpenBLAS / MKL spawn ``cpu_count`` worker threads on every GEMM
+    # (default 64 on a 128-core box). The two query-side GEMMs here
+    # (``q @ centroids.T`` and ``q @ dense``) are tiny — a 32x128 row
+    # against an 8192x128 centroid matrix is ~32M ops, ~0.2 ms with the
+    # full pool but ~1.2 ms single-threaded. A 1 ms loss is fine; the
+    # win is that we don't leave 64 OpenBLAS workers spinning on cores
+    # the immediately-following ``rroq158_score_batch`` rayon pool is
+    # about to use. In the rroq158 CPU audit (2026-04-19) the kernel
+    # p50 dropped from 97.7 ms to 6.9 ms once the BLAS pool stopped
+    # fighting rayon for the same 16 cores. ``threadpoolctl`` is
+    # already a transitive dependency via scikit-learn / numpy, so we
+    # try to import it and fall back gracefully.
+    try:
+        from threadpoolctl import threadpool_limits
+
+        _blas_cap = threadpool_limits(limits=1, user_api="blas")
+    except ImportError:  # pragma: no cover — best-effort
+        from contextlib import nullcontext
+
+        _blas_cap = nullcontext()
+
+    with _blas_cap:
+        if skip_qc_table:
+            qc_table = None
+        else:
+            if centroids is None:
+                raise ValueError("centroids required when skip_qc_table is False")
+            qc_table = (queries_f32 @ centroids.T).astype(np.float32, copy=False)
+
+        dense = getattr(rotator, "_dense_matrix_np", None)
+        if dense is not None and dense.shape == (dim, dim):
+            # Fast path: precomputed (dim, dim) linear operator. Single
+            # numpy GEMM, ~50 µs for S=32, dim=128 vs the 7-stage
+            # PyTorch dispatch path which has a 30+ ms p95 tail
+            # (rroq158 wrapper benchmarking 2026-04-19).
+            q_rot = (queries_f32 @ dense).astype(np.float32, copy=False)
+        else:
+            import torch
+            with torch.no_grad():
+                q_rot = rotator.forward(torch.from_numpy(queries_f32)).cpu().numpy()
+            if q_rot.shape[1] != dim:
+                q_rot = q_rot[:, :dim]
 
     # Asymmetric scalar quantization, per-token bit-planes
     if query_bits not in (4, 6, 8):

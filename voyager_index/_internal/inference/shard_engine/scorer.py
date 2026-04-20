@@ -880,11 +880,31 @@ def _score_rroq158_cpu(
             "Iterate over the batch axis explicitly when A>1."
         )
 
-    def _to_np(t: torch.Tensor, dtype: np.dtype) -> np.ndarray:
-        # Already-CPU tensors `.detach().cpu()` is a no-op; `.numpy()`
-        # returns a view that may be non-contiguous after `.permute` / etc.
-        # Skip the redundant `.contiguous()` because `np.ascontiguousarray`
-        # below makes any final copy a single allocation rather than two.
+    _torch_to_np_dtype = {
+        torch.float32: np.float32,
+        torch.int32: np.int32,
+        torch.uint8: np.uint8,
+    }
+
+    def _to_np(t: torch.Tensor, dtype) -> np.ndarray:
+        # Fast-path: torch.Tensor is already on CPU, contiguous, and the
+        # requested dtype. Use ``numpy()`` directly — this returns a view
+        # that shares the tensor's storage with no copy. Falls back to a
+        # full ``np.ascontiguousarray`` copy only when the tensor needs a
+        # device move, dtype cast, or contiguity rewrite. The fast path
+        # is the common case in production: ``_score_rroq158_candidates``
+        # in ``_manager/search.py`` builds the padded numpy block first
+        # and only wraps it in ``torch.from_numpy`` to cross the
+        # ``score_rroq158_topk`` boundary, so the tensors arriving here
+        # are already CPU-contiguous numpy views with the right dtype.
+        # Mirrors the same fast path used by ``_score_rroq4_riem_cpu``
+        # (Phase-7 followup: rust_zero_copy_pyo3).
+        if (
+            t.device.type == "cpu"
+            and t.is_contiguous()
+            and _torch_to_np_dtype.get(t.dtype) is dtype
+        ):
+            return t.numpy()
         return np.ascontiguousarray(t.detach().cpu().numpy(), dtype=dtype)
 
     qp_np = _to_np(query_planes, np.int32)
@@ -911,21 +931,39 @@ def _score_rroq158_cpu(
 
     n_threads_eff = _resolve_rroq158_n_threads(default=n_threads)
 
-    flat = fn(
-        qp_np.ravel(),
-        qm_np.ravel(),
-        qc_np.ravel(),
-        ds_np.ravel(),
-        dn_np.ravel(),
-        dsc_np.ravel(),
-        cid_np.ravel(),
-        cos_np.ravel(),
-        sin_np.ravel(),
-        A, B, S, T, n_words, n_groups, query_bits, K,
-        q_mask_np,
-        d_mask_np,
-        n_threads=n_threads_eff,
-    )
+    # Safety net: even if the caller's encoder didn't already cap the
+    # BLAS pool, hold OpenBLAS to a single thread for the duration of
+    # the kernel call so its lingering worker pool doesn't contend with
+    # rayon for the same CPU cores. The kernel is rayon-parallel
+    # internally and shouldn't need BLAS at all here. See
+    # ``encode_query_for_rroq158`` for the full diagnosis (rroq158 CPU
+    # audit 2026-04-19): kernel p50 dropped from ~98 ms to ~7 ms once
+    # OpenBLAS stopped fighting rayon for the 16 worker cores.
+    try:
+        from threadpoolctl import threadpool_limits
+
+        _blas_cap = threadpool_limits(limits=1, user_api="blas")
+    except ImportError:  # pragma: no cover — best-effort
+        from contextlib import nullcontext
+
+        _blas_cap = nullcontext()
+
+    with _blas_cap:
+        flat = fn(
+            qp_np.ravel(),
+            qm_np.ravel(),
+            qc_np.ravel(),
+            ds_np.ravel(),
+            dn_np.ravel(),
+            dsc_np.ravel(),
+            cid_np.ravel(),
+            cos_np.ravel(),
+            sin_np.ravel(),
+            A, B, S, T, n_words, n_groups, query_bits, K,
+            q_mask_np,
+            d_mask_np,
+            n_threads=n_threads_eff,
+        )
     scores = flat.reshape(A, B)[0]
     if B == 0:
         return [], []
@@ -1131,7 +1169,27 @@ def _score_rroq4_riem_cpu(
             "Iterate over the batch axis explicitly when A>1."
         )
 
+    _torch_to_np_dtype = {
+        torch.float32: np.float32,
+        torch.int32: np.int32,
+        torch.uint8: np.uint8,
+    }
+
     def _to_np(t: torch.Tensor, dtype) -> np.ndarray:
+        # Fast-path: torch.Tensor is already on CPU, contiguous, and the
+        # requested dtype. Use ``numpy()`` directly — this returns a view
+        # that shares the tensor's storage with no copy. Falls back to a
+        # full ``np.ascontiguousarray`` copy only when the tensor needs a
+        # device move, dtype cast, or contiguity rewrite. The fast path
+        # is the common case in production: ``_score_rroq4_riem_candidates``
+        # in ``_manager/search.py`` builds these arrays on CPU in the
+        # right dtype already.
+        if (
+            t.device.type == "cpu"
+            and t.is_contiguous()
+            and _torch_to_np_dtype.get(t.dtype) is dtype
+        ):
+            return t.numpy()
         return np.ascontiguousarray(t.detach().cpu().numpy(), dtype=dtype)
 
     qrot_np = _to_np(q_rot, np.float32)
@@ -1158,21 +1216,33 @@ def _score_rroq4_riem_cpu(
 
     n_threads_eff = _resolve_rroq4_riem_n_threads(default=n_threads)
 
-    flat = fn(
-        qrot_np.ravel(),
-        qgs_np.ravel(),
-        qc_np.ravel(),
-        codes_np.ravel(),
-        mins_np.ravel(),
-        dlts_np.ravel(),
-        cid_np.ravel(),
-        cos_np.ravel(),
-        sin_np.ravel(),
-        A, B, S, T, dim, n_groups, group_size, K,
-        q_mask_np,
-        d_mask_np,
-        n_threads=n_threads_eff,
-    )
+    # Same OpenBLAS-vs-rayon contention guard as ``_score_rroq158_cpu``.
+    # See the audit notes there for the full diagnosis.
+    try:
+        from threadpoolctl import threadpool_limits
+
+        _blas_cap = threadpool_limits(limits=1, user_api="blas")
+    except ImportError:  # pragma: no cover — best-effort
+        from contextlib import nullcontext
+
+        _blas_cap = nullcontext()
+
+    with _blas_cap:
+        flat = fn(
+            qrot_np.ravel(),
+            qgs_np.ravel(),
+            qc_np.ravel(),
+            codes_np.ravel(),
+            mins_np.ravel(),
+            dlts_np.ravel(),
+            cid_np.ravel(),
+            cos_np.ravel(),
+            sin_np.ravel(),
+            A, B, S, T, dim, n_groups, group_size, K,
+            q_mask_np,
+            d_mask_np,
+            n_threads=n_threads_eff,
+        )
     scores = flat.reshape(A, B)[0]
     if B == 0:
         return [], []

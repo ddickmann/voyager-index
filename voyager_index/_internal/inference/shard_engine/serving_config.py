@@ -23,11 +23,20 @@ class Compression(str, Enum):
     pick for callers who cannot accept any quality loss while still
     wanting smaller indexes than fp16.
 
-    Currently slower than fp16 in absolute latency on the BEIR sweep
-    (~2-3x on GPU, ~10x on CPU on small / short-query corpora — see the
-    BEIR 2026-Q2 sweep verdict in ``reports/beir_2026q2/``); the win is
-    storage, not throughput. Use RROQ158 when latency parity with fp16
-    matters more than zero-degradation quality."""
+    Still slower than fp16 in absolute latency on the BEIR sweep
+    (~5.0x on GPU, ~7.2x on CPU avg post-Phase-7-followup, down from
+    ~12.7x pre-fix — see the BEIR 2026-Q2 sweep verdict in
+    ``reports/beir_2026q2/``); the win is storage, not throughput.
+    The CPU lane shipped four optimisations in the Phase-7 followup:
+    (1) zero-copy ``_to_np`` in ``scorer.py``, (2) inner-loop reorder
+    in ``fused_rroq4_riem.rs::score_pair_body`` amortising the 4-bit
+    nibble unpack across query tokens, (3)
+    ``threadpoolctl.threadpool_limits`` cap around the BLAS encode
+    + kernel call to stop OpenBLAS / MKL fighting rayon, and (4) a
+    numpy fancy-indexing fast path in the BEIR harness. The remaining
+    ~7x CPU gap is the structural 4-bit-dequant cost vs FP16's
+    bandwidth-friendly dot product. Use RROQ158 when latency parity
+    with fp16 matters more than zero-degradation quality."""
 
 
 class StorageLayout(str, Enum):
@@ -99,9 +108,21 @@ class BuildConfig:
     Set ``compression=Compression.RROQ4_RIEM`` to opt into the
     no-quality-loss lane: avg ΔNDCG@10 = +0.02 pt vs fp16 (max ±0.05 pt
     across BEIR-6), avg ΔR@100 = +0.23 pt, ~3x smaller than fp16. Note:
-    currently slower than fp16 in absolute latency on the BEIR sweep
-    (~5.0x on GPU, ~12.7x on CPU at the production batch shape); the
-    win is **storage with zero quality regression**, not throughput.
+    still slower than fp16 in absolute latency on the BEIR sweep
+    (~5.0x on GPU, ~7.2x on CPU avg, post-Phase-7-followup; down from
+    ~12.65x on CPU pre-fix). The CPU lane shipped four optimisations
+    in the Phase-7 followup: zero-copy ``_to_np`` in
+    ``scorer.py``, inner-loop reorder in
+    ``fused_rroq4_riem.rs::score_pair_body`` amortising the 4-bit
+    nibble unpack across query tokens, ``threadpoolctl.threadpool_limits``
+    cap around the BLAS encode and kernel call to stop OpenBLAS / MKL
+    fighting rayon, and a numpy fancy-indexing fast path in the BEIR
+    harness. The remaining structural 4-bit-dequant cost vs FP16's
+    bandwidth-friendly dot product means CPU latency does not reach
+    parity at this batch shape. The win is **storage with zero quality
+    regression**, not throughput. See
+    ``benchmarks/diag_rroq4_riem_breakdown.py`` and
+    ``reports/kernel_rroq4_riem_rust.json`` for the kernel-only split.
 
     Set ``compression=Compression.FP16`` to use the legacy
     full-precision lane (no compression, baseline latency).

@@ -1,6 +1,7 @@
-"""Parity tests for the rroq4_riem (Riemannian 4-bit asymmetric) kernels.
+"""Parity + microbench tests for the rroq4_riem (Riemannian 4-bit
+asymmetric) kernels.
 
-Three layers, mirroring tests/test_rroq158_kernel.py:
+Five layers, mirroring tests/test_rroq158_kernel.py:
 
   1. ``test_rroq4_riem_python_reference_matches_brute`` — verifies the
      pure-numpy reference scorer in ``triton_roq_rroq4_riem.py`` matches
@@ -16,12 +17,27 @@ Three layers, mirroring tests/test_rroq158_kernel.py:
      Triton GPU kernel matches the python reference. Skipped if CUDA
      isn't available.
 
-These are the contracts that gate the "no-degradation safe fallback"
-claim — both kernels must be bit-equivalent (to fp32 rounding) to the
-brute-force MaxSim, otherwise the codec drifts silently from the encode
-side.
+  4. ``test_rroq4_riem_microbench`` — drops a microbench JSON into
+     ``reports/kernel_rroq4_riem.json`` (kernel-only Triton p50/p95 at
+     the same shape as the rroq158 microbench, so the Phase-7
+     wrapper-included p95 can be split into kernel vs wrapper).
+
+  5. ``test_rroq4_riem_rust_simd_microbench`` — same idea for the CPU
+     Rust kernel. Drops ``reports/kernel_rroq4_riem_rust.json``.
+
+The first three are the "no-degradation safe fallback" parity
+contracts — both kernels must be bit-equivalent (to fp32 rounding) to
+the brute-force MaxSim. The last two exist so the README's
+"rroq4_riem is still slower than fp16" line can cite measured
+kernel-only ms instead of only wrapper-included BEIR p95 — they also
+gate regressions on the Phase-7-followup loop-reorder in
+``src/kernels/shard_engine/src/fused_rroq4_riem.rs``.
 """
 from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -231,3 +247,204 @@ def test_rroq4_riem_triton_matches_python_reference():
         group_size=enc.group_size,
     ).cpu().numpy()
     np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_rroq4_riem_microbench():
+    """Microbench drop for the Triton GPU kernel — records p50/p95/QPS
+    into ``reports/kernel_rroq4_riem.json``. Same shape as the rroq158
+    microbench (32 q-tok x 32 d-tok x 512 docs, K=1024, dim=128) so the
+    Phase-7 wrapper-included BEIR p95 can be split into kernel-only ms
+    vs wrapper ms."""
+    pytest.importorskip("triton")
+    from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+        roq_maxsim_rroq4_riem,
+    )
+
+    rng = np.random.default_rng(7)
+    n_q_tok = 32
+    n_d_tok = 32
+    dim = 128
+    K = 1024
+    group_size = 32
+    n_docs = 512
+
+    n_total_d = n_docs * n_d_tok
+    docs = rng.standard_normal((n_total_d, dim)).astype(np.float32)
+    queries = rng.standard_normal((n_q_tok, dim)).astype(np.float32)
+
+    cfg = Rroq4RiemConfig(
+        K=K,
+        group_size=group_size,
+        fit_sample_cap=8_000,
+        encode_chunk=8_000,
+        seed=0,
+    )
+    enc = encode_rroq4_riem(docs, cfg)
+    q_in = encode_query_for_rroq4_riem(
+        queries, enc.centroids, fwht_seed=enc.fwht_seed, group_size=enc.group_size,
+    )
+    codes_doc, mins_doc, dlts_doc, cid_doc, cos_doc, sin_doc = _reshape_doc_arrays(
+        enc, n_docs, n_d_tok,
+    )
+
+    dev = torch.device("cuda")
+    qr = torch.from_numpy(q_in["q_rot"][None, :, :]).to(dev)
+    qgs = torch.from_numpy(q_in["q_group_sums"][None, :, :]).to(dev)
+    qc = torch.from_numpy(q_in["qc_table"][None, :, :]).to(dev)
+    cid_t = torch.from_numpy(cid_doc).to(dev)
+    cos_t = torch.from_numpy(cos_doc).to(dev)
+    sin_t = torch.from_numpy(sin_doc).to(dev)
+    codes_t = torch.from_numpy(codes_doc).to(dev)
+    mins_t = torch.from_numpy(mins_doc).to(dev)
+    dlts_t = torch.from_numpy(dlts_doc).to(dev)
+
+    for _ in range(5):
+        roq_maxsim_rroq4_riem(
+            queries_rot=qr,
+            queries_group_sums=qgs,
+            qc_table=qc,
+            docs_centroid_id=cid_t,
+            docs_cos_norm=cos_t,
+            docs_sin_norm=sin_t,
+            docs_codes_packed=codes_t,
+            docs_mins=mins_t,
+            docs_deltas=dlts_t,
+            group_size=enc.group_size,
+        )
+    torch.cuda.synchronize()
+
+    n_iters = 50
+    times_ms = []
+    for _ in range(n_iters):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        roq_maxsim_rroq4_riem(
+            queries_rot=qr,
+            queries_group_sums=qgs,
+            qc_table=qc,
+            docs_centroid_id=cid_t,
+            docs_cos_norm=cos_t,
+            docs_sin_norm=sin_t,
+            docs_codes_packed=codes_t,
+            docs_mins=mins_t,
+            docs_deltas=dlts_t,
+            group_size=enc.group_size,
+        )
+        torch.cuda.synchronize()
+        times_ms.append((time.perf_counter() - t0) * 1000.0)
+    times_ms = np.array(times_ms)
+    p50 = float(np.median(times_ms))
+    p95 = float(np.percentile(times_ms, 95))
+    qps = 1000.0 * n_docs / p50
+
+    out_dir = Path("reports")
+    out_dir.mkdir(exist_ok=True)
+    (out_dir / "kernel_rroq4_riem.json").write_text(json.dumps({
+        "n_q_tokens": n_q_tok,
+        "n_d_tokens_per_doc": n_d_tok,
+        "n_docs_per_batch": n_docs,
+        "K": K,
+        "group_size": group_size,
+        "dim": dim,
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "qps_docs": qps,
+        "iters": n_iters,
+    }, indent=2))
+    print(f"\n[rroq4_riem-triton] p50={p50:.3f}ms  p95={p95:.3f}ms  qps={qps:.0f} docs/s")
+
+
+def test_rroq4_riem_rust_simd_microbench():
+    """Microbench drop for the Rust CPU kernel — records p50/p95/QPS
+    into ``reports/kernel_rroq4_riem_rust.json``. CPU-only, no CUDA
+    needed. Same shape as the rroq158 Rust microbench so kernel-only
+    ms can be compared apples-to-apples."""
+    pytest.importorskip("latence_shard_engine")
+    import latence_shard_engine as eng
+
+    rroq4_fn = getattr(eng, "rroq4_riem_score_batch", None)
+    if rroq4_fn is None:
+        pytest.skip(
+            "latence_shard_engine missing rroq4_riem_score_batch; rebuild "
+            "the Rust wheel from src/kernels/shard_engine"
+        )
+
+    rng = np.random.default_rng(11)
+    n_q_tok = 32
+    n_d_tok = 32
+    dim = 128
+    K = 1024
+    group_size = 32
+    n_docs = 512
+
+    n_total_d = n_docs * n_d_tok
+    docs = rng.standard_normal((n_total_d, dim)).astype(np.float32)
+    queries = rng.standard_normal((n_q_tok, dim)).astype(np.float32)
+
+    cfg = Rroq4RiemConfig(
+        K=K,
+        group_size=group_size,
+        fit_sample_cap=8_000,
+        encode_chunk=8_000,
+        seed=0,
+    )
+    enc = encode_rroq4_riem(docs, cfg)
+    q_in = encode_query_for_rroq4_riem(
+        queries, enc.centroids, fwht_seed=enc.fwht_seed, group_size=enc.group_size,
+    )
+    codes_doc, mins_doc, dlts_doc, cid_doc, cos_doc, sin_doc = _reshape_doc_arrays(
+        enc, n_docs, n_d_tok,
+    )
+
+    qr = q_in["q_rot"][None, :, :]
+    qgs = q_in["q_group_sums"][None, :, :]
+    qc = q_in["qc_table"][None, :, :]
+    A, S, _ = qr.shape
+    B, T = codes_doc.shape[:2]
+    n_groups = mins_doc.shape[-1]
+
+    qr_f = qr.astype(np.float32, copy=False).ravel()
+    qgs_f = qgs.astype(np.float32, copy=False).ravel()
+    qc_f = qc.astype(np.float32, copy=False).ravel()
+    codes_f = codes_doc.astype(np.uint8, copy=False).ravel()
+    mins_f = mins_doc.astype(np.float32, copy=False).ravel()
+    dlts_f = dlts_doc.astype(np.float32, copy=False).ravel()
+    cid_f = cid_doc.astype(np.int32, copy=False).ravel()
+    cos_f = cos_doc.astype(np.float32, copy=False).ravel()
+    sin_f = sin_doc.astype(np.float32, copy=False).ravel()
+
+    for _ in range(5):
+        rroq4_fn(
+            qr_f, qgs_f, qc_f, codes_f, mins_f, dlts_f, cid_f, cos_f, sin_f,
+            A, B, S, T, dim, n_groups, group_size, K,
+        )
+
+    n_iters = 50
+    times = []
+    for _ in range(n_iters):
+        t0 = time.perf_counter()
+        rroq4_fn(
+            qr_f, qgs_f, qc_f, codes_f, mins_f, dlts_f, cid_f, cos_f, sin_f,
+            A, B, S, T, dim, n_groups, group_size, K,
+        )
+        times.append((time.perf_counter() - t0) * 1000.0)
+    times.sort()
+    p50 = times[len(times) // 2]
+    p95 = times[int(len(times) * 0.95)]
+    qps = (n_docs * 1000.0) / p50
+
+    out_dir = Path("reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.joinpath("kernel_rroq4_riem_rust.json").write_text(json.dumps({
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "docs_per_query": n_docs,
+        "qps": qps,
+        "n_q_tok": n_q_tok,
+        "n_d_tok": n_d_tok,
+        "dim": dim,
+        "K": K,
+        "group_size": group_size,
+    }, indent=2))
+    print(f"\n[rroq4_riem-rust-cpu] p50={p50:.2f}ms  p95={p95:.2f}ms  QPS={qps:.0f} docs/s")
