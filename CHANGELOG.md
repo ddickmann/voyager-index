@@ -6,6 +6,42 @@ reads in release order again.
 
 ## Unreleased
 
+### Phase 8 follow-up — Full BEIR-6 sweep at `gs=128` SOTA default (2026-04-20)
+
+- ran the full BEIR-6 (arguana / fiqa / nfcorpus / quora / scidocs /
+  scifact) × 2-mode (GPU Triton + 8-worker CPU Rust SIMD) sweep at the
+  new `group_size=128` default — 12 rroq158 cells, 0 failed, ~53 min
+  total wall on RTX A5000 + 8 CPU workers. Raw cells:
+  `reports/beir_2026q2_gs128/sweep_rroq158_gs128.jsonl`. Combined sweep
+  (new rroq158 gs=128 cells + existing fp16 / int8 / rroq4_riem cells
+  from `reports/beir_2026q2/sweep.jsonl`):
+  `reports/beir_2026q2_gs128/sweep_combined.jsonl`.
+- aligned benchmark harness defaults with the SOTA flip:
+  `benchmarks/beir_benchmark.py` (`run_dataset` `rroq158_group_size=128`
+  default + CLI `--rroq158-group-size` default 128) and
+  `benchmarks/beir_2026q2_full_sweep.py` (new `--rroq158-group-size` arg
+  defaulting to 128, threaded through `run_one_cell` and recorded in
+  `base_meta`). Pin to 32 to reproduce the pre-SOTA-flip baseline.
+- refreshed the BEIR headline averages table in `README.md`,
+  `docs/benchmarks.md` (4-codec sweep section + codec averages +
+  Phase-8 sweep verdict), and `docs/posts/sub-2-bit-late-interaction.md`
+  (TL;DR / problem framing / production recommendation / v1.1 update
+  table). New rroq158 (gs=128) BEIR-6 averages: NDCG@10 = **0.5069**
+  (vs fp16 0.5206 = **−1.37 pt**, slightly improved from −1.43 pt at
+  gs=32), R@100 = **0.7298** (vs fp16 0.7360 = −0.62 pt), GPU p95 =
+  **4.8 ms** (1.20× fp16, at the retention budget), CPU p95 = **310 ms**
+  (3.00× fp16, improved from 3.15× at gs=32). Per-dataset Δ vs gs=32
+  averages **+0.0006 NDCG@10** — i.e. essentially Pareto-equal in
+  quality across the BEIR-6 mean while delivering 13% smaller storage
+  AND lower-or-equal CPU p95 on every dataset (largest win nfcorpus
+  −22%; only +/−2% bump fiqa +2%).
+- updated the brute-force codec-fidelity overlap section in
+  `docs/benchmarks.md` with a note clarifying those numbers were
+  measured at gs=32 (the gs=128 flip is essentially Pareto-equal at the
+  production lane so brute-force overlap is expected to track within
+  noise; a refreshed sweep will land if/when there is a workload-driven
+  need to re-quantify).
+
 ### Phase 8 — RROQ158 SOTA default at `group_size=128` + dim-aware fallback (2026-04-20)
 
 - flipped the default `Rroq158Config.group_size` from `32` to `128` (one

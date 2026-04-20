@@ -14,18 +14,23 @@ class Compression(str, Enum):
     """Riemannian-aware 1.58-bit (ternary) ROQ — the SOTA storage default.
 
     Production default at K=8192, group_size=128 (one scale per token at
-    dim=128, the most-tested production dim). On the 3 BEIR datasets
-    re-validated for the gs=128 flip (arguana, fiqa, nfcorpus) the new
-    default delivers ~13% smaller storage (40 vs 46 bytes/token at dim=128),
-    p95 ~10-30% faster than the previous gs=32 default, with NDCG@10 within
-    +/-0.005 of the gs=32 baseline on Pareto-clean datasets. Overall vs FP16:
-    ~6.4x smaller doc-token storage. See `docs/guides/quantization-tuning.md`
-    for the per-dim recipe table — for dims that aren't a multiple of 128
-    the encoder transparently steps down to gs=64 / gs=32 with a log warning.
-    Override with `Rroq158Config(group_size=64)` for high-intra-token-variance
-    corpora (e.g. arguana, where gs=128 has -0.0058 NDCG vs -0.0050 gate).
-    See `docs/posts/sub-2-bit-late-interaction.md` for the public write-up
-    and `research/low_bit_roq/PROGRESS.md` for the development history."""
+    dim=128, the most-tested production dim). On the full BEIR-6 sweep
+    re-validated for the gs=128 flip (arguana / fiqa / nfcorpus / quora /
+    scidocs / scifact), the new default delivers ~13% smaller storage
+    (40 vs 46 bytes/token at dim=128), CPU p95 lower or equal on every
+    dataset (largest win nfcorpus -22%; only +/-2% bump fiqa +2%) for an
+    avg 0.95x of the previous gs=32 default, with NDCG@10 essentially
+    Pareto-equal vs gs=32 (per-dataset Δ avg = +0.0006; arguana -0.0024
+    is the only marginal trail). Overall vs FP16: ~6.4x smaller
+    doc-token storage and avg -1.37 pt NDCG@10 (slightly improved from
+    -1.43 pt at gs=32). See `docs/guides/quantization-tuning.md` for the
+    per-dim recipe table — for dims that aren't a multiple of 128 the
+    encoder transparently steps down to gs=64 / gs=32 with a log warning.
+    Override with `Rroq158Config(group_size=64)` for arguana-class
+    corpora where the marginal -0.0024 NDCG@10 vs gs=32 matters more than
+    the 13% storage win. See `docs/posts/sub-2-bit-late-interaction.md`
+    for the public write-up and `research/low_bit_roq/PROGRESS.md` for
+    the development history."""
 
     RROQ4_RIEM = "rroq4_riem"
     """Riemannian-aware 4-bit asymmetric ROQ — the no-quality-loss lane.

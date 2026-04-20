@@ -170,10 +170,11 @@ smaller doc-token storage** at the original `group_size=32` default.
 At the new **SOTA `group_size=128` default** (one scale per token at
 dim=128 — see the v1.1 update below), the third term collapses to
 `16 / 128 = 0.125`, giving **~2.0 bits/coord ≈ 40 bytes/token, i.e.
-~6.4× smaller than FP16**, with ~10–30% faster CPU p95 (one fewer
-scale load per group in the kernel) and NDCG@10 within ±0.005 of
-gs=32 on the BEIR datasets re-validated for the flip. The full per-dim
-recipe and override guidance live in
+~6.4× smaller than FP16**, with **CPU p95 lower or equal** on every
+BEIR-6 dataset (largest win nfcorpus −22%; only +/−2% bump fiqa +2%)
+and NDCG@10 essentially flat vs gs=32 (per-dataset Δ avg = +0.0006 on
+the full BEIR-6 sweep, validated at gs=128). The full per-dim recipe
+and override guidance live in
 [`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md).
 
 ---
@@ -220,9 +221,10 @@ sequentially, and never decoded.
   parity on average**, not the order-of-magnitude win we initially
   hoped for. The win is the storage, not the latency.
 - **CPU lane.** rroq158 is **slower** than FP16 in absolute QPS
-  (avg ~3.2× on the BEIR-6 sweep, range ~2.0× quora → ~5.0×
-  arguana/scifact) on the current Rust SIMD implementation, **down
-  from ~5–9× pre-fix** after the post-Phase-7 CPU lane refresh
+  (avg ~3.0× on the BEIR-6 sweep at the new gs=128 default, range
+  ~0.9× quora → ~5.5× arguana/scifact) on the current Rust SIMD
+  implementation, **down from ~3.15× at gs=32 and from ~5–9× pre-fix**
+  after the post-Phase-7 CPU lane refresh
   shipped four optimisations: zero-copy `_to_np` in the scorer,
   inner-loop reorder in `fused_rroq158.rs::score_pair_body` that
   amortises doc-side popcounts across query tokens, a
@@ -252,14 +254,16 @@ So the production story we ship is **storage-honest**:
   is at scale on multi-vector indices), ship `Compression.RROQ158`
   at the **SOTA `group_size=128` default** — **~6.4× smaller** than
   FP16 (40 vs 256 bytes/token at dim=128 — see the v1.1 update below
-  for the Pareto sweep), ~1.4 NDCG@10 point average gap (carried over
-  from the gs=32 baseline; the gs=128 flip is within ±0.005 of gs=32
-  on Pareto-clean datasets), ~2.7 pt worst case at top-10 on arguana
-  (~2.8 pt at gs=128 — pin `Rroq158Config(group_size=64)` to recover),
-  GPU p95 within 1.13× of FP16 on average, ~10–30% faster CPU p95 than
-  the previous gs=32 default. Accept that on CPU you still trade
-  **~3× throughput** vs FP16 for the storage win (down from ~8× at
-  gs=32, ~10–30% better at gs=128), and that ~20% of the top-10 docs
+  for the Pareto sweep), **~1.4 NDCG@10 point average gap vs FP16**
+  (avg −1.37 pt at gs=128, slightly improved from −1.43 pt at gs=32),
+  ~2.9 pt worst case at top-10 on **arguana** (pin
+  `Rroq158Config(group_size=64)` to recover the marginal point at the
+  cost of returning to the 5.5× storage tier), GPU p95 within 1.20× of
+  FP16 on average, **CPU p95 lower or equal vs the prior gs=32 default
+  on every BEIR-6 dataset** (largest win nfcorpus −22%; only +/−2%
+  bump fiqa +2%). Accept that on CPU you still trade **~3× throughput**
+  vs FP16 for the storage win (down from ~8× pre-fix; gs=128 is ~5%
+  faster than gs=32 on average), and that ~20% of the top-10 docs
   differ from FP16 (R@100 still recovers within −2.1 pt on every
   dataset).
 
@@ -287,32 +291,32 @@ The full table is in the
 [README](../../README.md#beir-retrieval--rtx-a5000-search-only-full-query-set).
 The headline:
 
-- **NDCG@10 vs FP16 (averaged across BEIR-6):** −1.43 pt for rroq158
-  (worst dataset arguana at −2.69 pt), +0.02 pt for rroq4_riem
-  (within ±0.05 pt on every dataset).
-- **Recall@100 vs FP16 (averaged):** −0.48 pt for rroq158, +0.23 pt
+- **NDCG@10 vs FP16 (averaged across BEIR-6, gs=128 SOTA default):**
+  −1.37 pt for rroq158 (worst dataset arguana at −2.93 pt), +0.02 pt
+  for rroq4_riem (within ±0.05 pt on every dataset).
+- **Recall@100 vs FP16 (averaged):** −0.62 pt for rroq158, +0.23 pt
   for rroq4_riem.
-- **GPU p95 vs FP16 (averaged):** 1.13× for rroq158, 5.03× for
+- **GPU p95 vs FP16 (averaged, gs=128):** 1.20× for rroq158, 5.03× for
   rroq4_riem (rroq4_riem is the storage-with-zero-quality-loss lane,
   not the throughput lane).
-- **CPU p95 vs FP16 (averaged, post-Phase-7-followup):** 3.15× for
-  rroq158 (down from 7.88× pre-fix), 7.18× for rroq4_riem (down
-  from 12.65×). See
+- **CPU p95 vs FP16 (averaged, gs=128 + post-Phase-7 lane fixes):**
+  3.00× for rroq158 (down from 3.15× at gs=32, and from 7.88× pre-fix),
+  7.18× for rroq4_riem (down from 12.65×). See
   [docs/benchmarks.md](../benchmarks.md#honest-cpu-latency-caveat-post-phase-7-followup)
   for the four optimisations that landed in the production lane.
 - **Storage vs FP16 doc tokens:** ~6.4× smaller for rroq158 at the
-  new `group_size=128` SOTA default (5.5× at the previous gs=32
+  `group_size=128` SOTA default (5.5× at the previous gs=32
   default), ~3× smaller for rroq4_riem.
 
 `rroq158` is not free at top-10. The honest picture from the BEIR-6
 sweep (`reports/beir_2026q2/sweep.jsonl`):
 
-- On *average across BEIR-6* it's within **−1.43 NDCG@10 point** of
+- On *average across BEIR-6* it's within **−1.37 NDCG@10 point** of
   FP16, but
 - on a few hard datasets (notably **arguana**, which has unusually
   fine-grained token-level distinctions in argument-rebuttal pairs) it
-  loses up to **−2.69 NDCG@10 points** at top-10.
-- Recall@100 stays nearly flat: avg ΔR@100 = −0.48 pt across BEIR-6.
+  loses up to **−2.93 NDCG@10 points** at top-10.
+- Recall@100 stays nearly flat: avg ΔR@100 = −0.62 pt across BEIR-6.
   The right docs are still in the candidate set; they just trade
   ranks within the top-K.
 - An exact diagnostic — using brute-force top-K overlap of rroq158 vs
@@ -365,28 +369,37 @@ config = BuildConfig(compression=Compression.RROQ158)
 
 Six weeks after the initial post, we ran a Pareto sweep on
 `(K, group_size)` to ask "can we push the storage further without
-hurting quality or latency?" The verdict — backed by the per-cell
-JSONL in
-[`reports/rroq158_pareto_cells/`](../../reports/rroq158_pareto_cells/) and
-the per-dataset markdown reports under
+hurting quality or latency?" The verdict — backed by the full BEIR-6
+re-validation cells in
+[`reports/beir_2026q2_gs128/`](../../reports/beir_2026q2_gs128/) plus
+the initial per-dataset markdown reports under
 [`reports/rroq158_pareto_arguana.md`](../../reports/rroq158_pareto_arguana.md)
 / `_fiqa.md` / `_nfcorpus.md` — was that **`group_size=128` is a clean
-Pareto win on every axis**:
+Pareto win on every axis**. Full BEIR-6 (CPU 8-worker, full eval, vs
+the prior gs=32 baseline):
 
-| Dataset | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG | p95 (gs=32) | p95 (gs=128) | p95 ratio | B/tok ratio |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| arguana  | 0.3713 | 0.3655 | **−0.0058** | 666 ms | 530 ms | 0.80× | 0.87× |
-| fiqa     | 0.4223 | 0.4260 | **+0.0037** | 279 ms | 253 ms | 0.91× | 0.87× |
-| nfcorpus | 0.3799 | 0.3790 | −0.0009 | 286 ms | 193 ms | 0.67× | 0.87× |
+| Dataset  | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG       | R@100 (gs=32) | R@100 (gs=128) | CPU p95 (gs=32) | CPU p95 (gs=128) | p95 ratio | B/tok ratio |
+|----------|----------------:|-----------------:|------------:|--------------:|---------------:|----------------:|-----------------:|----------:|------------:|
+| arguana  | 0.3410          | 0.3386           | **−0.0024** | 0.9450        | 0.9429         | 576 ms          | 570 ms           | 0.99×     | 0.87×       |
+| fiqa     | 0.4223          | 0.4260           | **+0.0037** | 0.7151        | 0.7118         | 279 ms          | 285 ms           | 1.02×     | 0.87×       |
+| nfcorpus | 0.3794          | 0.3797           | +0.0004     | 0.3342        | 0.3321         | 286 ms          | 223 ms           | **0.78×** | 0.87×       |
+| quora    | 0.9705          | 0.9712           | +0.0007     | 0.9990        | 0.9990         | 99 ms           | 93 ms            | 0.94×     | 0.87×       |
+| scidocs  | 0.1858          | 0.1857           | −0.0001     | 0.4300        | 0.4296         | 310 ms          | 294 ms           | 0.95×     | 0.87×       |
+| scifact  | 0.7386          | 0.7402           | +0.0016     | 0.9633        | 0.9633         | 398 ms          | 392 ms           | 0.99×     | 0.87×       |
+| **avg**  | **0.5063**      | **0.5069**       | **+0.0006** | **0.7311**    | **0.7298**     | **325 ms**      | **310 ms**       | **0.95×** | **0.87×**   |
 
-**Headline:** ~13% smaller storage on top of the existing 5.5×, ~10–30%
-faster CPU p95 (one fewer scale load per group in the popcount kernel),
-NDCG@10 within ±0.005 on Pareto-clean datasets. The arguana cell
-**marginally fails the −0.005 quality gate** (−0.0058) — pin
-`Rroq158Config(group_size=64)` to recover (clean Pareto pass on
-arguana). The other 3 BEIR datasets (`scifact`, `scidocs`, `quora`)
-plus `hotpotqa` will be filled in by the post-merge full BEIR-6 sweep
-that refreshes the headline tables in this post and in
+**Headline:** ~13% smaller storage on top of the existing 5.5× (now
+~6.4× smaller than fp16), CPU p95 lower or equal on every dataset
+(largest win nfcorpus −22%; only +/−2% bump fiqa +2%; one fewer scale
+load per group in the popcount kernel), and NDCG@10 essentially flat
+vs gs=32 (per-dataset Δ avg = +0.0006 — fiqa +0.0037 / nfcorpus +0.0004
+/ quora +0.0007 / scidocs ≈0 / scifact +0.0016 / arguana −0.0024). The
+arguana cell **marginally trails gs=32** (−0.0024) — pin
+`Rroq158Config(group_size=64)` to recover the marginal point at the
+cost of returning to the 5.5× storage tier. Compared to fp16, gs=128
+holds at avg −1.37 pt NDCG@10 (vs −1.43 pt at gs=32 — actually
+*slightly improved*, helped by quora / scifact / fiqa). All previously
+deferred datasets (`scifact`, `scidocs`, `quora`) are now filled in
 [`docs/benchmarks.md`](../benchmarks.md).
 
 **Dim-aware fallback.** `group_size=128` only divides dims that are

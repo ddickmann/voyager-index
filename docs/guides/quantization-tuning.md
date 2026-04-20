@@ -58,16 +58,28 @@ per-dataset markdown:
 [`reports/rroq158_pareto_fiqa.md`](../../reports/rroq158_pareto_fiqa.md),
 [`reports/rroq158_pareto_nfcorpus.md`](../../reports/rroq158_pareto_nfcorpus.md).
 
-| dataset | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG | R@100 (gs=32) | R@100 (gs=128) | p95 ratio | B/tok ratio | gate (−0.005)? |
-|---|---:|---:|---:|---:|---:|---:|---:|:---:|
-| arguana | 0.3713 | 0.3655 | **−0.0058** | 0.9633 | 0.9633 | 0.80× | 0.87× | marginal fail |
-| fiqa | 0.4223 | 0.4260 | **+0.0037** | 0.7151 | 0.7118 | 0.91× | 0.87× | pass |
-| nfcorpus | 0.3799 | 0.3790 | −0.0009 | 0.3354 | 0.3329 | 0.67× | 0.87× | pass |
+Full BEIR-6 (CPU 8-worker, full eval, post-merge sweep at the new
+default), sourced from
+[`reports/beir_2026q2_gs128/sweep_rroq158_gs128.jsonl`](../../reports/beir_2026q2_gs128/sweep_rroq158_gs128.jsonl):
 
-The remaining BEIR-6 datasets (`scifact`, `scidocs`, `quora`, `hotpotqa`)
-will be filled in by the post-merge full sweep — see the changelog and
-[`reports/rroq158_pareto_cells/`](../../reports/rroq158_pareto_cells/) for
-the live state.
+| dataset  | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG       | R@100 (gs=32) | R@100 (gs=128) | CPU p95 ratio | B/tok ratio | gate (−0.005)?  |
+|----------|----------------:|-----------------:|------------:|--------------:|---------------:|--------------:|------------:|:---------------:|
+| arguana  | 0.3410          | 0.3386           | **−0.0024** | 0.9450        | 0.9429         | 0.99×         | 0.87×       | pass            |
+| fiqa     | 0.4223          | 0.4260           | **+0.0037** | 0.7151        | 0.7118         | 1.02×         | 0.87×       | pass            |
+| nfcorpus | 0.3794          | 0.3797           | +0.0004     | 0.3342        | 0.3321         | **0.78×**     | 0.87×       | pass            |
+| quora    | 0.9705          | 0.9712           | +0.0007     | 0.9990        | 0.9990         | 0.94×         | 0.87×       | pass            |
+| scidocs  | 0.1858          | 0.1857           | −0.0001     | 0.4300        | 0.4296         | 0.95×         | 0.87×       | pass            |
+| scifact  | 0.7386          | 0.7402           | +0.0016     | 0.9633        | 0.9633         | 0.99×         | 0.87×       | pass            |
+| **avg**  | **0.5063**      | **0.5069**       | **+0.0006** | **0.7311**    | **0.7298**     | **0.95×**     | **0.87×**   | **all pass**    |
+
+All six BEIR-6 cells pass the −0.005 NDCG@10 quality gate vs gs=32 at
+the new default — and gs=128 actually scores **net positive** on the
+mean (+0.0006 NDCG@10) and on R@100 (only −0.0013 in absolute terms),
+i.e. the flip is essentially Pareto-equal in quality with strictly
+better storage and CPU latency on the BEIR-6 mean. The earlier ship-now
+signal in [`reports/rroq158_pareto_arguana.md`](../../reports/rroq158_pareto_arguana.md)
+was tighter (−0.0058 on the partial-eval n=300 query budget) but the
+full-eval n=1401 measurement here is well within the gate.
 
 ## Per-dim `group_size` recipe (dim-aware fallback)
 

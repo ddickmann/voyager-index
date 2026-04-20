@@ -273,6 +273,7 @@ def run_one_cell(
     n_workers: int,
     n_eval: Optional[int],
     rroq158_k: int,
+    rroq158_group_size: int,
     rroq4_riem_k: int,
     rroq4_riem_group_size: int,
     seed: int,
@@ -312,6 +313,7 @@ def run_one_cell(
         n_eval=n_eval or 0,
         compression=compression,
         rroq158_k=rroq158_k,
+        rroq158_group_size=rroq158_group_size,
         rroq158_seed=seed,
         rroq4_riem_k=rroq4_riem_k,
         rroq4_riem_group_size=rroq4_riem_group_size,
@@ -385,6 +387,14 @@ def main() -> None:
         help="Centroid count for rroq158 (default 8192).",
     )
     parser.add_argument(
+        "--rroq158-group-size", type=int, default=128,
+        help="Per-group block size for rroq158 residual scales "
+        "(default 128 — the SOTA flip from Phase 8; one scale per token at "
+        "dim=128. encode_rroq158 transparently falls back via "
+        "_resolve_group_size for incompatible dims. Pin to 32 to reproduce "
+        "the pre-SOTA-flip baseline.).",
+    )
+    parser.add_argument(
         "--rroq4-riem-k", type=int, default=8192,
         help="Centroid count for rroq4_riem (default 8192).",
     )
@@ -431,6 +441,7 @@ def main() -> None:
         "sweep_id": sweep_id,
         "provenance": provenance,
         "rroq158_k": args.rroq158_k,
+        "rroq158_group_size": args.rroq158_group_size,
         "rroq4_riem_k": args.rroq4_riem_k,
         "rroq4_riem_group_size": args.rroq4_riem_group_size,
         "seed": args.seed,
@@ -448,6 +459,7 @@ def main() -> None:
                 dataset=ds, codec=cc, mode=md,
                 n_workers=args.n_workers, n_eval=args.n_eval,
                 rroq158_k=args.rroq158_k,
+                rroq158_group_size=args.rroq158_group_size,
                 rroq4_riem_k=args.rroq4_riem_k,
                 rroq4_riem_group_size=args.rroq4_riem_group_size,
                 seed=args.seed,

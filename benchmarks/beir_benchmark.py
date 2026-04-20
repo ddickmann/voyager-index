@@ -426,7 +426,7 @@ def _build_rroq158_gpu_payload(
     """
     cfg = Rroq158Config(
         K=params.get("rroq158_k", 1024),
-        group_size=int(params.get("rroq158_group_size", 32)),
+        group_size=int(params.get("rroq158_group_size", 128)),
         seed=int(params.get("rroq158_seed", 42)),
     )
     log.info("[rroq158] encoding %d tokens (dim=%d, K=%d, group_size=%d)",
@@ -1381,7 +1381,7 @@ def run_dataset(
     compression: Optional[Compression] = None,
     distill_rerank: bool = False,
     rroq158_k: int = 8192,
-    rroq158_group_size: int = 32,
+    rroq158_group_size: int = 128,
     rroq158_seed: int = 42,
     rroq4_riem_k: int = 8192,
     rroq4_riem_group_size: int = 32,
@@ -1657,11 +1657,14 @@ def main():
     parser.add_argument(
         "--rroq158-group-size",
         type=int,
-        default=32,
+        default=128,
         help="Per-group block size for the rroq158 residual scales "
-        "(default: 32, must be a multiple of 32 to align with the popcnt "
-        "kernel and divide dim). Used by the Pareto compression probe "
-        "(scripts/rroq158_pareto_probe.py).",
+        "(default: 128 — the SOTA flip from Phase 8; one scale per token "
+        "at dim=128. The kernel still requires the value to divide dim "
+        "and be a multiple of 32; encode_rroq158 transparently falls back "
+        "to gs=64 or gs=32 for incompatible dims via _resolve_group_size. "
+        "Pin --rroq158-group-size 32 to reproduce the pre-SOTA-flip "
+        "baseline.).",
     )
     parser.add_argument(
         "--rroq158-seed",

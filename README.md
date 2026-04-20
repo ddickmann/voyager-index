@@ -136,28 +136,34 @@ The full 4-codec × 6-dataset × 2-mode table is rendered to
 [`scripts/format_beir_2026q2_table.py`](scripts/format_beir_2026q2_table.py).
 Headline averages (BEIR-6 mean):
 
-<!-- BEIR_2026Q2_HEADLINE_TABLE_BEGIN — measured 2026-04-20 from reports/beir_2026q2/sweep.jsonl (CPU rows refreshed post-Phase-7 wrapper + kernel fixes) -->
+<!-- BEIR_2026Q2_HEADLINE_TABLE_BEGIN — measured 2026-04-20 from reports/beir_2026q2_gs128/sweep_combined.jsonl (full BEIR-6 sweep at the new SOTA gs=128 default + post-Phase-7 CPU lane fixes) -->
 
 | Codec       | NDCG@10 (avg) | ΔNDCG@10 vs fp16 | R@100 (avg) | ΔR@100 vs fp16 | Storage vs fp16 | GPU p95 (avg) | CPU p95 (avg) |
 |-------------|--------------:|-----------------:|------------:|---------------:|----------------:|--------------:|--------------:|
 | fp16        |        0.5206 |              0.0 |      0.7360 |            0.0 |          1.00×  |        4.0 ms |       103 ms  |
 | int8        |        0.5200 |       −0.06 pt   |      0.7357 |     −0.03 pt   |          0.50×  |        4.0 ms |   n/a (GPU-only) |
-| **rroq158** |        0.5063 |       **−1.43 pt** |    0.7312 |     −0.48 pt   |        **0.18×** |     4.6 ms (1.13×) |   325 ms (3.15×) |
+| **rroq158** |        0.5069 |       **−1.37 pt** |    0.7298 |     −0.62 pt   |        **0.16×** |     4.8 ms (1.20×) |   310 ms (3.00×) |
 | rroq4_riem  |        0.5208 |       +0.02 pt   |      0.7383 |     +0.23 pt   |          0.34×  |   20.1 ms (5.03×) |   741 ms (7.18×) |
 
 <!-- BEIR_2026Q2_HEADLINE_TABLE_END -->
 
-> **Note (gs=128 SOTA flip).** The `rroq158` row above was measured at the
-> previous `group_size=32` default. The new SOTA default `group_size=128`
-> is **~13% smaller storage** (Storage vs FP16 drops from 0.18× to ~0.16×,
-> i.e. ~6.4× smaller than FP16) and **~10–30% faster CPU p95** at
-> NDCG@10 within ±0.005 on the 3 datasets re-validated for the flip
-> (arguana / fiqa / nfcorpus). The full BEIR-6 sweep at gs=128 lands in a
-> follow-up commit refreshing this table — see
-> [`reports/rroq158_pareto_cells/`](reports/rroq158_pareto_cells/) for
-> the per-cell numbers we have today and
-> [docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md)
-> for the per-dim recipe and override guidance.
+> **Refreshed 2026-04-20 at the new SOTA default `group_size=128`.** Full
+> BEIR-6 (arguana / fiqa / nfcorpus / quora / scidocs / scifact) × 2-mode
+> (GPU Triton + 8-worker CPU Rust SIMD) sweep at the new default — 12
+> rroq158 cells re-measured against the existing fp16 / int8 / rroq4_riem
+> cells. Vs the prior `group_size=32` baseline rroq158 is **13% smaller
+> storage** (40 vs 46 B/tok at dim=128 → 0.16× vs 0.18× of fp16, i.e.
+> **~6.4× smaller than fp16** vs ~5.5× before), with **NDCG@10
+> essentially flat** (avg per-dataset Δ = +0.0006 — fiqa +0.0037 /
+> nfcorpus +0.0004 / quora +0.0007 / scidocs ≈0 / scifact +0.0016 /
+> arguana −0.0024) and **lower or equal CPU p95** on every dataset
+> (largest win: nfcorpus 287 → 223 ms = −22%; fiqa 279 → 285 ms is the
+> only +/−2% bump). Sweep harness:
+> [`benchmarks/beir_2026q2_full_sweep.py`](benchmarks/beir_2026q2_full_sweep.py)
+> (now defaults to `--rroq158-group-size 128`); raw cells:
+> [`reports/beir_2026q2_gs128/`](reports/beir_2026q2_gs128/); per-dim
+> recipe + override guidance:
+> [docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md).
 
 Detailed per-dataset rows, the F1 default-promotion verdict, and the
 brute-force codec-fidelity overlap (top-10 / 20 / 50 / 100 vs FP16 — the
@@ -182,9 +188,13 @@ The honest sweep verdict from the BEIR 2026-Q2 production sweep
 (`reports/beir_2026q2/sweep.jsonl`, 4 codecs × 6 datasets × 2 modes,
 full BEIR query sets):
 
-- **Quality.** Avg NDCG@10 vs FP16: **−1.43 pt** (worst dataset:
-  arguana at −2.69 pt; best: nfcorpus at −0.39 pt). Avg R@100 vs FP16:
-  **−0.48 pt** (essentially flat in absolute terms). The
+- **Quality.** Avg NDCG@10 vs FP16 (gs=128 default): **−1.37 pt**
+  (worst dataset: arguana at −2.93 pt; best: nfcorpus at −0.36 pt).
+  Avg R@100 vs FP16: **−0.62 pt** (essentially flat in absolute
+  terms). Vs the prior gs=32 default the avg per-dataset NDCG@10 is
+  +0.0006 — i.e. essentially Pareto-equal in quality, paying only the
+  arguana −0.0024 marginal cost in exchange for the 13% smaller
+  storage. The
   brute-force codec-fidelity overlap diagnostic
   (`benchmarks/topk_overlap_sweep.py`, `reports/beir_2026q2/topk_overlap.jsonl`)
   measures the per-query top-K overlap of each codec's brute-force
@@ -206,11 +216,16 @@ full BEIR query sets):
   — avg ~96% top-10 overlap) or use rroq158 with an FP16 rerank on
   the shortlist (`benchmarks/diag_rroq158_rescue.py` shows top-32/64
   FP16 rerank closes the gap with no R@100 regression).
-- **Latency.** Avg GPU p95: **4.6 ms vs 4.0 ms FP16 (1.13×)** — within
-  the 1.20× retention budget on every dataset. Avg CPU p95: **325 ms
-  vs 103 ms FP16 (3.15×)** — down from 7.88× pre-fix after the
-  post-Phase-7 CPU lane refresh that productionised four
-  optimisations: (1) zero-copy `_to_np` in
+- **Latency.** Avg GPU p95 (gs=128 default): **4.8 ms vs 4.0 ms FP16
+  (1.20×)** — at the 1.20× retention budget. Avg CPU p95: **310 ms
+  vs 103 ms FP16 (3.00×)** — improved from 3.15× at gs=32 (and from
+  7.88× pre-fix) thanks to one fewer scale load per group in the
+  popcount kernel; per-dataset CPU p95 is lower or equal vs gs=32 on
+  every cell (best: nfcorpus −22%, scidocs −5%, arguana −1%; only
+  bump: fiqa +2%). Avg GPU p95 vs gs=32 is +5% (within noise on the
+  small / medium datasets, +6% on quora). Cumulative CPU p95 win
+  came from four post-Phase-7 lane refresh optimisations: (1)
+  zero-copy `_to_np` in
   [`scorer.py`](voyager_index/_internal/inference/shard_engine/scorer.py)
   that bypasses `np.ascontiguousarray` for already-contiguous
   CPU-resident tensors, (2) inner-loop reorder in
