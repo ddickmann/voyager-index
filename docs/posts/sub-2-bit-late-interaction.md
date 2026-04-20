@@ -208,16 +208,23 @@ sequentially, and never decoded.
   multiplies become a non-trivial fixed cost). It is roughly **at FP16
   parity on average**, not the order-of-magnitude win we initially
   hoped for. The win is the storage, not the latency.
-- **CPU lane.** rroq158 is **slower** than FP16 in absolute QPS (~5–9×)
-  on the current Rust SIMD implementation. The reason is that FP16
-  MaxSim on AVX2 is itself extremely bandwidth-friendly, and the
-  rroq158 path's per-query overhead — query bit-plane encoding,
-  per-doc-token `cos·qc + sin·resi` FMAs, and Python-side tensor
-  copies into the kernel — is currently larger than the win from
-  reading 5.5× fewer doc bytes. The kernel is correct and parity-tested
-  against the Triton GPU version, but on CPU the FP16 baseline is hard
-  to beat. We have an open backlog item to fix this: see
-  [issue tracker](https://github.com/lightonai/voyager-index/issues).
+- **CPU lane.** rroq158 is **slower** than FP16 in absolute QPS
+  (avg ~3.2× on the BEIR-6 sweep, range ~2.0× quora → ~5.0×
+  arguana/scifact) on the current Rust SIMD implementation, **down
+  from ~5–9× pre-fix** after the post-Phase-7 CPU lane refresh
+  shipped four optimisations: zero-copy `_to_np` in the scorer,
+  inner-loop reorder in `fused_rroq158.rs::score_pair_body` that
+  amortises doc-side popcounts across query tokens, a
+  `threadpoolctl.threadpool_limits` cap around the BLAS
+  matrix-multiplications in `rroq158.encode_query` (and around the
+  kernel call) so OpenBLAS / MKL stop fighting rayon for cores, and
+  a numpy fancy-indexing fast path in the BEIR harness. The
+  remaining structural cost is that FP16 MaxSim on AVX2 is itself
+  extremely bandwidth-friendly, and the rroq158 path's per-query
+  overhead — BLAS-bound query bit-plane encoding +
+  per-doc-token `cos·qc + sin·resi` FMAs — is still larger than
+  the win from reading 5.5× fewer doc bytes. The next backlog item
+  is closing the BLAS-bound gap in the encoder.
 
 So the production story we ship is **storage-honest**:
 
@@ -225,16 +232,18 @@ So the production story we ship is **storage-honest**:
   (Riemannian-aware 4-bit asymmetric, ~3× smaller than FP16, FP16
   parity in NDCG@10 to within ±0.05 pt on every BEIR-6 dataset, and
   ~96% top-10 codec-fidelity overlap with FP16). At the production
-  batch shape it is currently ~5× slower than FP16 on GPU and ~13×
-  slower on CPU — it's a **storage with zero quality regression**
+  batch shape it is currently ~5× slower than FP16 on GPU and **~7×
+  slower on CPU** (down from ~13× pre-fix after the post-Phase-7 CPU
+  lane refresh) — it's a **storage with zero quality regression**
   lane, not a throughput lane.
 - If your bottleneck is disk or hot-tier RAM (which it almost always
   is at scale on multi-vector indices), ship `Compression.RROQ158`
   (~5.5× smaller than FP16, ~1.4 NDCG@10 point average gap,
   ~2.7 pt worst case at top-10 on arguana, GPU p95 within 1.13× of
-  FP16 on average). Accept that on CPU you trade ~8× throughput for
-  the storage win, and that ~20% of the top-10 docs differ from FP16
-  (R@100 still recovers within −2.1 pt on every dataset).
+  FP16 on average). Accept that on CPU you trade **~3× throughput**
+  for the storage win (down from ~8× pre-fix), and that ~20% of the
+  top-10 docs differ from FP16 (R@100 still recovers within −2.1 pt
+  on every dataset).
 
 CPU and GPU implementations share the exact same packed payload tensors
 (sign / nonzero / scale / centroid id / cos_norm / sin_norm) and pass a
@@ -268,6 +277,11 @@ The headline:
 - **GPU p95 vs FP16 (averaged):** 1.13× for rroq158, 5.03× for
   rroq4_riem (rroq4_riem is the storage-with-zero-quality-loss lane,
   not the throughput lane).
+- **CPU p95 vs FP16 (averaged, post-Phase-7-followup):** 3.15× for
+  rroq158 (down from 7.88× pre-fix), 7.18× for rroq4_riem (down
+  from 12.65×). See
+  [docs/benchmarks.md](../benchmarks.md#honest-cpu-latency-caveat-post-phase-7-followup)
+  for the four optimisations that landed in the production lane.
 - **Storage vs FP16 doc tokens:** 5.5× smaller for rroq158, ~3×
   smaller for rroq4_riem.
 
@@ -310,10 +324,10 @@ maximum compression with a documented NDCG@10 cost on hard datasets,
 plus an FP16-rerank rescue path for workloads that need top-10
 fidelity. The opt-in `rroq4_riem` is the no-quality-loss lane: it
 matches FP16 quality to within ±0.05 pt NDCG@10 on every BEIR-6
-dataset, but pays for it in latency (~5× slower on GPU and ~13×
-slower on CPU at the production batch shape than the FP16 baseline),
-so it's a "storage with zero quality regression" lane, not a
-throughput lane. Both share the same Riemannian-aware geometry, the
+dataset, but pays for it in latency (~5× slower on GPU and ~7×
+slower on CPU at the production batch shape than the FP16
+baseline, post-Phase-7 CPU lane refresh), so it's a "storage with
+zero quality regression" lane, not a throughput lane. Both share the same Riemannian-aware geometry, the
 same Triton GPU kernel architecture, the same Rust SIMD CPU kernel
 architecture, and the same dispatch / fallback path. Switching is
 one flag:
@@ -375,11 +389,18 @@ Three things, in roughly increasing order of ambition:
    we'd love to see numbers for ColBERTv2, PLAID, ColPali, and JaColBERT
    on the same harness.
 2. **Help us close the CPU latency gap.** The Rust SIMD kernel is
-   correct but currently slower than fp16 in absolute QPS at this
-   batch shape. The biggest gains are likely in (a) avoiding
-   per-query Python-to-Rust tensor copies, (b) AVX-512 / VPSHUFB
-   nibble-level packing, and (c) better cache scheduling for the
-   `qc_table` lookup.
+   correct but still slower than fp16 in absolute QPS at this batch
+   shape. A Phase-7 followup landed a ~22% kernel speedup
+   (production-K microbench: 19.21 → 14.98 ms p50, +28% docs/s) by
+   amortising the byte→fp32 nibble unpack across query tokens — the
+   per-stage diagnostic
+   ([`benchmarks/diag_rroq4_riem_breakdown.py`](https://github.com/lightonai/voyager-index/blob/main/benchmarks/diag_rroq4_riem_breakdown.py))
+   pinned the Rust kernel at ~58% of CPU wall-clock so this is the
+   highest-leverage line. Next-largest gains are likely in (a) AVX-512 /
+   VPSHUFB nibble-level packing, (b) avoiding the remaining per-query
+   `torch.index_select` payload gather (currently dominates the wrapper
+   on tight CPU loops), and (c) better cache scheduling for the
+   `qc_table` lookup at K=8192.
 3. **Push the math further.** The log map is one Riemannian primitive;
    parallel transport, exponential maps for query-side encoding, and
    manifold-aware learned reranking heads are all on the table. Richer

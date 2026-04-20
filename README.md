@@ -15,9 +15,11 @@
 > refuse any quality regression, ship `Compression.RROQ4_RIEM` — the
 > Riemannian-aware 4-bit asymmetric no-quality-loss lane (Triton + Rust
 > SIMD wired, parity-tested, ~3× smaller than FP16, **~0.5 pt NDCG@10
-> gap** — but currently slower than FP16 in absolute latency, see the
-> sweep table below). Existing FP16 / RROQ158 / RROQ4_RIEM indexes
-> continue to load unchanged — the manifest carries the build-time codec;
+> gap** — still slower than FP16 in absolute BEIR latency, but the
+> Phase-7-followup CPU kernel reorder cut the Rust microbench by ~22%
+> at production K=8192/B=2000, see the sweep table below). Existing
+> FP16 / RROQ158 / RROQ4_RIEM indexes continue to load unchanged — the
+> manifest carries the build-time codec;
 > only newly built indexes pick up the new default. Pass
 > `compression=Compression.FP16` to opt out. Full sweep methodology,
 > per-dataset numbers, and the F1 default-decision verdict live under
@@ -47,7 +49,7 @@ the **final scorer** — and engineered so a single machine can serve it.
 
 - **One-node deployment.** No control plane, no orchestration tax.
 - **One contract across CPU and GPU.** Rust SIMD on CPU, Triton on GPU.
-- **RROQ-1.58 default.** Riemannian 1.58-bit codec at ~5.5× smaller doc-token storage than FP16, ~−1 pt NDCG@10 average on BEIR (flat R@100), at FP16-comparable GPU latency on most cells. **RROQ-4 Riemannian** ships as the no-quality-loss lane (~3× smaller than FP16, ~0.5 pt NDCG@10 gap; currently slower than FP16 in absolute latency — the win is storage). FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth.
+- **RROQ-1.58 default.** Riemannian 1.58-bit codec at ~5.5× smaller doc-token storage than FP16, ~−1 pt NDCG@10 average on BEIR (flat R@100), at FP16-comparable GPU latency on most cells. **RROQ-4 Riemannian** ships as the no-quality-loss lane (~3× smaller than FP16, ~0.5 pt NDCG@10 gap; the Phase-7-followup loop-reorder gave the Rust SIMD CPU kernel a ~22% speedup at production K=8192/B=2000, but the codec is still slower than FP16 in absolute latency — the win is storage). FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth.
 - **Late-interaction native.** ColBERT, ColPali, ColQwen out of the box.
 - **Database semantics.** WAL, checkpoint, crash recovery, scroll, retrieve.
 - **Optional graph lane.** The Latence sidecar augments first-stage retrieval — never required.
@@ -124,14 +126,14 @@ The full 4-codec × 6-dataset × 2-mode table is rendered to
 [`scripts/format_beir_2026q2_table.py`](scripts/format_beir_2026q2_table.py).
 Headline averages (BEIR-6 mean):
 
-<!-- BEIR_2026Q2_HEADLINE_TABLE_BEGIN — measured 2026-04-20 from reports/beir_2026q2/sweep.jsonl -->
+<!-- BEIR_2026Q2_HEADLINE_TABLE_BEGIN — measured 2026-04-20 from reports/beir_2026q2/sweep.jsonl (CPU rows refreshed post-Phase-7 wrapper + kernel fixes) -->
 
 | Codec       | NDCG@10 (avg) | ΔNDCG@10 vs fp16 | R@100 (avg) | ΔR@100 vs fp16 | Storage vs fp16 | GPU p95 (avg) | CPU p95 (avg) |
 |-------------|--------------:|-----------------:|------------:|---------------:|----------------:|--------------:|--------------:|
 | fp16        |        0.5206 |              0.0 |      0.7360 |            0.0 |          1.00×  |        4.0 ms |       103 ms  |
 | int8        |        0.5200 |       −0.06 pt   |      0.7357 |     −0.03 pt   |          0.50×  |        4.0 ms |   n/a (GPU-only) |
-| **rroq158** |        0.5063 |       **−1.43 pt** |    0.7312 |     −0.48 pt   |        **0.18×** |     4.6 ms (1.13×) |   812 ms (7.88×) |
-| rroq4_riem  |        0.5208 |       +0.02 pt   |      0.7383 |     +0.23 pt   |          0.34×  |   20.1 ms (5.03×) |  1304 ms (12.65×) |
+| **rroq158** |        0.5063 |       **−1.43 pt** |    0.7312 |     −0.48 pt   |        **0.18×** |     4.6 ms (1.13×) |   325 ms (3.15×) |
+| rroq4_riem  |        0.5208 |       +0.02 pt   |      0.7383 |     +0.23 pt   |          0.34×  |   20.1 ms (5.03×) |   741 ms (7.18×) |
 
 <!-- BEIR_2026Q2_HEADLINE_TABLE_END -->
 
@@ -176,13 +178,27 @@ full BEIR query sets):
   the shortlist (`benchmarks/diag_rroq158_rescue.py` shows top-32/64
   FP16 rerank closes the gap with no R@100 regression).
 - **Latency.** Avg GPU p95: **4.6 ms vs 4.0 ms FP16 (1.13×)** — within
-  the 1.20× retention budget on every dataset. Avg CPU p95: **812 ms
-  vs 103 ms FP16 (7.88×)** — at the BEIR batch shape (2000 doc candidates
-  × ~30 query tokens), the FP16 CPU MaxSim path is bandwidth-friendly
-  and hard to beat. The current rroq158 CPU lane is wrapper-bound:
-  per-query Python→Rust copies dominate the popcount kernel itself.
-  Closing this gap is the top post-Phase-7 backlog item (zero-copy
-  PyO3 + AVX-512 nibble pack).
+  the 1.20× retention budget on every dataset. Avg CPU p95: **325 ms
+  vs 103 ms FP16 (3.15×)** — down from 7.88× pre-fix after the
+  post-Phase-7 CPU lane refresh that productionised four
+  optimisations: (1) zero-copy `_to_np` in
+  [`scorer.py`](voyager_index/_internal/inference/shard_engine/scorer.py)
+  that bypasses `np.ascontiguousarray` for already-contiguous
+  CPU-resident tensors, (2) inner-loop reorder in
+  [`fused_rroq158.rs`](src/kernels/shard_engine/src/fused_rroq158.rs)
+  amortising doc-side popcounts (`s_g`) once per document token,
+  (3) `threadpoolctl.threadpool_limits` cap around the BLAS
+  matrix multiplications in
+  [`rroq158.encode_query`](voyager_index/_internal/inference/quantization/rroq158.py)
+  and around the kernel call to stop OpenBLAS/MKL fighting rayon,
+  and (4) numpy fancy-indexing fast path in the BEIR harness's
+  `_rroq158_score_candidates` to bypass `torch.index_select` on
+  CPU. Per-dataset speed-ups vs the pre-fix CPU lane range from
+  **2.0× (quora) to 5.0× (nfcorpus, scifact)** with quality
+  unchanged (kernel is deterministic). Remaining headroom is in
+  the BLAS-bound query-encoding stage (FWHT rotation + centroid
+  table look-up); shrinking that further is on the post-fix
+  backlog.
 
 GPU lane: fused two-stage Triton kernel
 (`voyager_index._internal.kernels.triton_roq_rroq158`), parity ≤ 1e-4
@@ -224,10 +240,23 @@ smaller** than fp16). Measured on the Phase-7 BEIR sweep:
   ±0.05 pt across datasets), avg ΔR@100 = +0.23 pt — the
   no-quality-loss promise holds on every BEIR-6 dataset.
 - **Latency** is the trade-off: avg GPU p95 **20.1 ms vs 4.0 ms FP16
-  (5.03×)**, avg CPU p95 **1304 ms vs 103 ms FP16 (12.65×)**. The 4-bit
-  asymmetric per-group dequant + FMA path adds structural compute over
-  the FP16 GEMM/MaxSim baseline. The win here is **storage with zero
-  quality regression**, not throughput.
+  (5.03×)**, avg CPU p95 **741 ms vs 103 ms FP16 (7.18×)** — down
+  from 12.65× pre-fix after the same post-Phase-7 CPU lane refresh
+  shipped for rroq158 (zero-copy `_to_np`, BLAS thread cap around
+  query encode in
+  [`rroq4_riem.encode_query`](voyager_index/_internal/inference/quantization/rroq4_riem.py),
+  numpy fancy-indexing path in the BEIR harness, plus the
+  pre-existing nibble-unpack amortisation in
+  [`fused_rroq4_riem.rs::score_pair_body`](src/kernels/shard_engine/src/fused_rroq4_riem.rs)).
+  The 4-bit asymmetric per-group dequant + FMA path still adds
+  structural compute over the FP16 GEMM/MaxSim baseline, so a
+  full-parity CPU lane is not realistic without an AVX-512
+  re-encode of the kernel; the storage-with-zero-quality-loss
+  promise is what this codec sells.
+- The win here is **storage with zero quality regression**, not
+  throughput. RROQ4_RIEM is the lane for workloads that refuse the
+  rroq158 NDCG@10 cost; rroq158 stays the default when GPU-latency
+  parity matters more than the last point of NDCG@10.
 
 Use this when you need the smaller index but cannot accept the rroq158
 NDCG@10 cost on hard datasets; use rroq158 when latency parity with

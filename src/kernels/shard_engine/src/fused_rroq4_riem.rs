@@ -61,6 +61,29 @@ use parking_lot::Mutex;
 // the dispatch into a scalar and an x86-v3 path so LLVM emits the right
 // FMA / AVX2 sequences when target_feature is available. The x86-v3 path
 // is identical math in a target_feature-gated context.
+//
+// Loop ordering:
+//
+//   We **amortize** the nibble-unpack work across query tokens. The naive
+//   `for i in S { for j in T { for grp { unpack & FMA } } }` re-unpacks
+//   each doc token's nibbles S times. We swap to
+//   `for j in T { unpack-once-into-scratch; for i in S { per-group dot } }`
+//   so each doc token's bytes are visited exactly once per (q, d) pair
+//   instead of S times. After the swap the inner FMA loop has the same
+//   per-group accumulator structure as the original (which LLVM
+//   auto-vectorises well under target_feature(avx2,fma)) — only the
+//   byte→fp32 unpack moved out of the inner loop into a dim-sized
+//   scratch that lives in L1 across the per-i sweep. This trims roughly
+//   `S × dim × (mask + convert)` ops per (q, d) call without changing
+//   the floating-point result.
+//
+//   Math identity (the reorder is bit-equivalent to the original):
+//
+//     resi(i,j) = Σ_g delta_g · <q_rot[i,g], code[j,g]> + Σ_g min_g · qgs[i,g]
+//
+//   We pre-decode `scratch[g·group_size + d] := f32(code[j, g, d])` once
+//   per j, then run the original per-group accumulator math against
+//   `scratch` instead of re-computing the nibble for every (i, j).
 
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
@@ -88,68 +111,106 @@ fn score_pair_body(
     debug_assert_eq!(half_group * 2, group_size);
     let n_bytes = dim / 2;
 
-    let mut total: f32 = 0.0;
+    // Per-(q,d) scratch buffers. For the production shape (dim=128, S=32)
+    // this is 512B + 128B — both live in L1 and are reused across the full
+    // T-loop below. One allocation per (q, d) call, no per-pair churn.
+    let mut scratch: Vec<f32> = vec![0.0; dim];
+    let mut max_sim: Vec<f32> = vec![f32::NEG_INFINITY; big_s];
 
-    for i in 0..big_s {
-        if let Some(qm) = q_mask_qa {
-            if qm[i] <= 0.0 {
+    for j in 0..big_t {
+        if let Some(dm) = docs_mask_d {
+            if dm[j] <= 0.0 {
                 continue;
             }
         }
-        let q_rot_i = &q_rot_qa[i * dim..(i + 1) * dim];
-        let q_gsum_i = &q_gsums_qa[i * n_groups..(i + 1) * n_groups];
-        let qc_row = &qc_table_qa[i * big_k..(i + 1) * big_k];
+        let codes_row = &docs_codes_d[j * n_bytes..(j + 1) * n_bytes];
+        let mins_row = &docs_mins_d[j * n_groups..(j + 1) * n_groups];
+        let dlts_row = &docs_dlts_d[j * n_groups..(j + 1) * n_groups];
+        let cid = docs_cid_d[j] as usize;
+        let cos_j = docs_cos_d[j];
+        let sin_j = docs_sin_d[j];
 
-        let mut max_sim = f32::NEG_INFINITY;
-        for j in 0..big_t {
-            if let Some(dm) = docs_mask_d {
-                if dm[j] <= 0.0 {
+        // Step 1: unpack this doc-token's nibbles ONCE into `scratch` as
+        // raw fp32 values in [0, 15]. We deliberately do NOT premultiply
+        // by delta_g here — the per-group accumulator structure below
+        // applies delta_g at the resi level (one mul per group, not
+        // dim-many at decode time), which keeps the ILP that the original
+        // loop relied on for AVX2/FMA throughput.
+        for grp in 0..n_groups {
+            let base_byte = grp * half_group;
+            let base_q = grp * group_size;
+            for b in 0..half_group {
+                // SAFETY: codes_row.len() == n_bytes == n_groups * half_group
+                // and scratch.len() == dim == n_groups * group_size by the
+                // outer debug_assert.
+                let byte_v = unsafe { *codes_row.get_unchecked(base_byte + b) } as u32;
+                let low = (byte_v & 0xF) as f32;
+                let high = ((byte_v >> 4) & 0xF) as f32;
+                unsafe {
+                    *scratch.get_unchecked_mut(base_q + 2 * b) = low;
+                    *scratch.get_unchecked_mut(base_q + 2 * b + 1) = high;
+                }
+            }
+        }
+
+        // Step 2: same per-group accumulator math as the original loop,
+        // but reads dequantised codes from `scratch` instead of unpacking
+        // nibbles in the inner FMA. `inner` stays per-group so LLVM keeps
+        // n_groups independent accumulators (good ILP) — the original
+        // ordering's main vectorisation strength.
+        for i in 0..big_s {
+            if let Some(qm) = q_mask_qa {
+                if unsafe { *qm.get_unchecked(i) } <= 0.0 {
                     continue;
                 }
             }
-            let codes_row = &docs_codes_d[j * n_bytes..(j + 1) * n_bytes];
-            let mins_row = &docs_mins_d[j * n_groups..(j + 1) * n_groups];
-            let dlts_row = &docs_dlts_d[j * n_groups..(j + 1) * n_groups];
-            let cid = docs_cid_d[j] as usize;
+            let q_rot_i = &q_rot_qa[i * dim..(i + 1) * dim];
+            let q_gsum_i = &q_gsums_qa[i * n_groups..(i + 1) * n_groups];
+            let qc_row = &qc_table_qa[i * big_k..(i + 1) * big_k];
 
             let mut resi: f32 = 0.0;
             for grp in 0..n_groups {
-                let delta_g = dlts_row[grp];
-                let min_g = mins_row[grp];
-                let qgs_g = q_gsum_i[grp];
-                let base_byte = grp * half_group;
+                let delta_g = unsafe { *dlts_row.get_unchecked(grp) };
+                let min_g = unsafe { *mins_row.get_unchecked(grp) };
+                let qgs_g = unsafe { *q_gsum_i.get_unchecked(grp) };
                 let base_q = grp * group_size;
 
-                // Inner 4-bit dot against the rotated query slice. LLVM
-                // auto-vectorises this loop into vfmadd(213|231)ps under
-                // target_feature(avx2,fma); each iteration handles 2
-                // dimensions (low + high nibble of one byte).
+                // Length-`group_size` fp32 dot product against the
+                // pre-decoded scratch slice. Auto-vectorised into
+                // vfmadd(213|231)ps over the group_size FMAs.
                 let mut inner: f32 = 0.0;
-                for b in 0..half_group {
-                    // SAFETY: bounds verified by caller — codes_row.len() ==
-                    // n_bytes == dim/2 == n_groups * half_group, and
-                    // q_rot_i.len() == dim == n_groups * group_size. The
-                    // unchecked accesses elide the per-element bounds
-                    // checks that otherwise dominate the inner-loop cost.
-                    let byte_v = unsafe { *codes_row.get_unchecked(base_byte + b) } as i32;
-                    let low = (byte_v & 0xF) as f32;
-                    let high = ((byte_v >> 4) & 0xF) as f32;
-                    let q_lo = unsafe { *q_rot_i.get_unchecked(base_q + 2 * b) };
-                    let q_hi = unsafe { *q_rot_i.get_unchecked(base_q + 2 * b + 1) };
-                    inner = q_lo.mul_add(low, inner);
-                    inner = q_hi.mul_add(high, inner);
+                for d in 0..group_size {
+                    let q = unsafe { *q_rot_i.get_unchecked(base_q + d) };
+                    let s = unsafe { *scratch.get_unchecked(base_q + d) };
+                    inner = q.mul_add(s, inner);
                 }
                 resi = delta_g.mul_add(inner, resi);
                 resi = min_g.mul_add(qgs_g, resi);
             }
-            let qc = qc_row[cid];
-            let est = docs_cos_d[j].mul_add(qc, docs_sin_d[j] * resi);
-            if est > max_sim {
-                max_sim = est;
+
+            let qc = unsafe { *qc_row.get_unchecked(cid) };
+            let est = cos_j.mul_add(qc, sin_j * resi);
+
+            let cur = unsafe { *max_sim.get_unchecked(i) };
+            if est > cur {
+                unsafe {
+                    *max_sim.get_unchecked_mut(i) = est;
+                }
             }
         }
-        if max_sim > f32::NEG_INFINITY {
-            total += max_sim;
+    }
+
+    let mut total: f32 = 0.0;
+    for i in 0..big_s {
+        if let Some(qm) = q_mask_qa {
+            // Skip masked-out query tokens just like the legacy ordering.
+            if qm[i] <= 0.0 {
+                continue;
+            }
+        }
+        let v = unsafe { *max_sim.get_unchecked(i) };
+        if v > f32::NEG_INFINITY {
+            total += v;
         }
     }
     total

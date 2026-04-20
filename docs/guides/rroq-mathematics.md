@@ -461,15 +461,19 @@ quality cost is bounded:
 
 Both conditions hold on the production sweep. CPU p95 is the one
 honest weakness: the Rust SIMD rroq158 kernel is currently slower than
-the FP16 CPU baseline by **~7.9× avg** in absolute QPS at the production
-batch shape (2000 doc candidates per query, ~30 query tokens). The
-codec is correct (parity-tested against the GPU Triton kernel) — the
-gap is that the FP16 AVX2 MaxSim path is hard to beat on this shape and
-the rroq158 path's per-query Python-to-Rust tensor copies dominate the
-popcount kernel itself. We document the gap honestly in the README;
-closing it is on the post-Phase-7 backlog (per-query Python-to-Rust
-tensor copy elision + AVX-512 nibble pack are the two highest-ROI
-items).
+the FP16 CPU baseline by **~3.2× avg** in absolute QPS at the production
+batch shape (2000 doc candidates per query, ~30 query tokens), down
+from ~7.9× pre-fix after the post-Phase-7 CPU lane refresh shipped
+zero-copy `_to_np` in the scorer, an inner-loop reorder in
+`fused_rroq158.rs::score_pair_body` that amortises doc-side popcounts
+across query tokens, a `threadpoolctl.threadpool_limits` cap around
+the BLAS matrix multiplications in `rroq158.encode_query` (and around
+the kernel call) so OpenBLAS / MKL stop fighting rayon for cores, and
+a numpy fancy-indexing fast path in the BEIR harness. The remaining
+structural cost is that FP16 AVX2 MaxSim is itself extremely
+bandwidth-friendly at this batch shape and the rroq158 path's
+BLAS-bound query-encoding stage (FWHT rotation + centroid table
+look-up) is the next item on the backlog.
 
 ### Rescue experiment: a tiny FP16 rerank closes the rroq158 NDCG@10 gap
 

@@ -204,9 +204,11 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 - **RROQ-1.58 (default)**: ~5.5× smaller storage than fp16 (~46 B / token
   vs 256 B / token). On the BEIR 2026-Q2 production sweep: avg −1.43 pt
   NDCG@10 vs fp16 with avg −0.48 pt R@100, avg GPU p95 1.13× fp16
-  (within the 1.20× retention budget). CPU p95 is currently ~7.9× slower
-  than fp16 at the production batch shape — the storage win is the
-  primary value here. Brute-force codec-fidelity overlap with fp16
+  (within the 1.20× retention budget). CPU p95 is currently **~3.2×
+  slower than fp16** at the production batch shape (down from ~7.9×
+  pre-fix after the post-Phase-7 wrapper + kernel refresh; see
+  [docs/benchmarks.md](../benchmarks.md#honest-cpu-latency-caveat-post-phase-7-followup))
+  — the storage win is the primary value here. Brute-force codec-fidelity overlap with fp16
   across BEIR-6 (`reports/beir_2026q2/topk_overlap.jsonl`):
   **avg ~79% top-10 / ~80% top-100** (range 73–83% top-10), with
   R@100 within −2.1 pt of FP16 on every dataset. Importantly, top-K
@@ -227,11 +229,16 @@ curl -X POST http://localhost:8080/collections/my_col/search \
   BEIR-6) — fully wired on both GPU (Triton fused kernel
   `roq_maxsim_rroq4_riem`) and CPU (Rust SIMD kernel
   `latence_shard_engine.rroq4_riem_score_batch`, AVX2/FMA + cached rayon
-  pool). Currently slower than fp16 in absolute latency on the BEIR
-  sweep (avg 5.0× on GPU, avg 12.7× on CPU at the production batch
-  shape); the win is **storage with zero quality regression**, not
-  throughput. Set `compression="rroq4_riem"` for workloads that reject
-  any quality regression on hard datasets.
+  pool). Still slower than fp16 in absolute latency on the BEIR sweep
+  (avg 5.0× on GPU, **avg ~7.2× on CPU** at the production batch
+  shape, down from ~12.7× pre-fix after the post-Phase-7 CPU lane
+  refresh). The CPU lane shipped the same four optimisations as
+  rroq158 (zero-copy `_to_np`, BLAS thread cap around encode + score,
+  numpy fancy-indexing in the harness, plus the pre-existing
+  nibble-unpack amortisation in `fused_rroq4_riem.rs`). The win is
+  still **storage with zero quality regression**, not throughput. Set
+  `compression="rroq4_riem"` for workloads that reject any quality
+  regression on hard datasets.
 - **ROQ 4-bit**: still available for ~4× compression with the asymmetric
   Triton kernel. Set `compression="roq4"` and optionally
   `quantization_mode="roq4"` on CUDA.

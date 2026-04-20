@@ -109,47 +109,98 @@ fn score_pair_body(
     popc: impl Fn(u32) -> u32,
 ) -> f32 {
     debug_assert_eq!(n_groups * group_words, n_words);
-    let mut total: f32 = 0.0;
 
-    for i in 0..big_s {
-        if let Some(qm) = q_mask_qa {
-            if qm[i] <= 0.0 {
+    // Loop reorder (Phase-7 followup, mirrors fused_rroq4_riem.rs):
+    //
+    // The original layout iterated `for i in 0..big_s { for j in 0..big_t }`,
+    // which forced the *purely doc-side* popcounts (`pos = popc(ds & dn)`,
+    // `neg = popc(!ds & dn)`, `s_g += pos - neg`) to be re-done S times per
+    // (j, w) pair even though they're independent of the query token i.
+    // Reordering to `for j in 0..big_t { for i in 0..big_s }` lets us
+    // amortise that doc-side work once per j and keep `max_sim[i]` as a
+    // running per-query accumulator. Concrete savings at production
+    // shape (S=32, T=32, n_words=4, group_words=1, n_groups=4): 31 *
+    // (n_groups * group_words * 2) = 248 popcounts saved per (q, doc-tok)
+    // pair, and B * T * 248 ≈ 16M popcounts saved per query at B=2000.
+    // Same approach gave +28% docs/s on rroq4_riem at K=8192.
+
+    let q_mask_active: Option<usize> = if let Some(qm) = q_mask_qa {
+        let mut count = 0usize;
+        for &v in qm.iter().take(big_s) {
+            if v > 0.0 {
+                count += 1;
+            }
+        }
+        Some(count)
+    } else {
+        None
+    };
+    if matches!(q_mask_active, Some(0)) {
+        return 0.0;
+    }
+
+    // Per-(i) running max over doc tokens. NEG_INFINITY entries mean the
+    // query token never saw any doc-active token — those rows contribute
+    // nothing to total, matching the original "if max_sim > NEG_INFINITY"
+    // guard at the bottom.
+    let mut max_sim: Vec<f32> = vec![f32::NEG_INFINITY; big_s];
+
+    for j in 0..big_t {
+        if let Some(dm) = docs_mask_d {
+            if dm[j] <= 0.0 {
                 continue;
             }
         }
-        let q_scale = q_meta_qa[i * 2];
-        let q_offset = q_meta_qa[i * 2 + 1];
-        let q_planes_token = &q_planes_qa[i * query_bits * n_words..(i + 1) * query_bits * n_words];
-        let qc_row = &qc_table_qa[i * big_k..(i + 1) * big_k];
+        let sign_row = &docs_sign_d[j * n_words..(j + 1) * n_words];
+        let nz_row = &docs_nz_d[j * n_words..(j + 1) * n_words];
+        let scl_row = &docs_scl_d[j * n_groups..(j + 1) * n_groups];
+        let cid = docs_cid_d[j] as usize;
+        let cos_j = docs_cos_d[j];
+        let sin_j = docs_sin_d[j];
 
-        let mut max_sim = f32::NEG_INFINITY;
-        for j in 0..big_t {
-            if let Some(dm) = docs_mask_d {
-                if dm[j] <= 0.0 {
+        // Hoist doc-side popcounts once per doc token. Stash the per-group
+        // (s_g, ds_w, dn_w) so the inner i-loop only does query-dependent
+        // work. n_groups * group_words is bounded (4 in production), so
+        // these stack allocations are cheap and keep everything in L1.
+        // SAFETY: bounds-checked via the n_groups * group_words == n_words
+        // invariant asserted at function entry.
+        let mut s_per_group: [i32; 32] = [0; 32];
+        debug_assert!(n_groups <= 32);
+        for grp in 0..n_groups {
+            let mut s_g: i32 = 0;
+            let base_word = grp * group_words;
+            for w in 0..group_words {
+                let word_idx = base_word + w;
+                let ds_w = unsafe { *sign_row.get_unchecked(word_idx) as u32 };
+                let dn_w = unsafe { *nz_row.get_unchecked(word_idx) as u32 };
+                s_g += popc(ds_w & dn_w) as i32;
+                s_g -= popc((!ds_w) & dn_w) as i32;
+            }
+            s_per_group[grp] = s_g;
+        }
+
+        for i in 0..big_s {
+            if let Some(qm) = q_mask_qa {
+                if qm[i] <= 0.0 {
                     continue;
                 }
             }
-            let sign_row = &docs_sign_d[j * n_words..(j + 1) * n_words];
-            let nz_row = &docs_nz_d[j * n_words..(j + 1) * n_words];
-            let scl_row = &docs_scl_d[j * n_groups..(j + 1) * n_groups];
-            let cid = docs_cid_d[j] as usize;
+            let q_scale = q_meta_qa[i * 2];
+            let q_offset = q_meta_qa[i * 2 + 1];
+            let q_planes_token = &q_planes_qa
+                [i * query_bits * n_words..(i + 1) * query_bits * n_words];
+            let qc_row = &qc_table_qa[i * big_k..(i + 1) * big_k];
 
             let mut resi: f32 = 0.0;
             for grp in 0..n_groups {
                 let d_scale_g = scl_row[grp];
-                let mut s_g: i32 = 0;
+                let s_g = s_per_group[grp];
                 let mut d_g: i32 = 0;
                 let base_word = grp * group_words;
                 for w in 0..group_words {
                     let word_idx = base_word + w;
-                    // SAFETY: bounds-checked by caller via the n_words/n_groups
-                    //         relation; the hot loop benefits from elision.
                     let ds_w = unsafe { *sign_row.get_unchecked(word_idx) as u32 };
                     let dn_w = unsafe { *nz_row.get_unchecked(word_idx) as u32 };
-                    let dn_active = ds_w & dn_w;
-                    let pos = popc(dn_active) as i32;
-                    let neg = popc((!ds_w) & dn_w) as i32;
-                    s_g += pos - neg;
                     for k in 0..query_bits {
                         let qk_w = unsafe {
                             *q_planes_token
@@ -163,13 +214,19 @@ fn score_pair_body(
                 resi += d_scale_g * (q_offset * s_g as f32 + q_scale * d_g as f32);
             }
             let qc = qc_row[cid];
-            let est = docs_cos_d[j] * qc + docs_sin_d[j] * resi;
-            if est > max_sim {
-                max_sim = est;
+            let est = cos_j * qc + sin_j * resi;
+            // SAFETY: bounded by big_s.
+            let slot = unsafe { max_sim.get_unchecked_mut(i) };
+            if est > *slot {
+                *slot = est;
             }
         }
-        if max_sim > f32::NEG_INFINITY {
-            total += max_sim;
+    }
+
+    let mut total: f32 = 0.0;
+    for &v in max_sim.iter() {
+        if v > f32::NEG_INFINITY {
+            total += v;
         }
     }
     total

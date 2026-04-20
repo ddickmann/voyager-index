@@ -510,7 +510,19 @@ def _rroq158_score_candidates(
     k: int, device: str,
 ):
     """Score one query against the rroq158 GPU payload at the given candidate
-    doc indices. Returns (top_ids, top_scores)."""
+    doc indices. Returns (top_ids, top_scores).
+
+    CPU path note (audit_rroq158_cpu_2026q2): on CPU we must NOT use
+    ``torch.index_select`` for the candidate gather. torch's intra-op
+    thread pool defaults to ``cpu_count()`` workers (64 on a 128-core
+    box), and when the gather runs concurrently with the rayon-parallel
+    Rust kernel it triggers catastrophic context-switch / cache-eviction
+    churn — the same gather that takes ~0.3 ms in numpy takes 90+ ms
+    when followed by the Rust kernel under torch's default threading
+    (measured 2026-04-19 against 2000 candidates × 32 doc-tok). We
+    sidestep the entire torch intra-op pool by gathering with numpy
+    fancy indexing on the underlying numpy arrays cached in ``payload``.
+    """
     on_cuda = str(device).startswith("cuda")
     if on_cuda:
         # qc_table = q @ centroids.T scales linearly with K and dominates
@@ -527,6 +539,18 @@ def _rroq158_score_candidates(
         q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :]).to(device)
         q_dev = torch.from_numpy(np.ascontiguousarray(query_np, dtype=np.float32)).to(device)
         qc_table = (q_dev @ payload["centroids"].T).unsqueeze(0)
+
+        cand_idx = torch.tensor(
+            [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
+            dtype=torch.long, device=device,
+        )
+        sign_b = payload["sign"].index_select(0, cand_idx)
+        nz_b = payload["nz"].index_select(0, cand_idx)
+        scl_b = payload["scl"].index_select(0, cand_idx)
+        cid_b = payload["cid"].index_select(0, cand_idx)
+        cosn_b = payload["cosn"].index_select(0, cand_idx)
+        sinn_b = payload["sinn"].index_select(0, cand_idx)
+        mask_b = payload["mask"].index_select(0, cand_idx)
     else:
         centroids_np = payload.get("centroids_np")
         if centroids_np is None:
@@ -537,21 +561,38 @@ def _rroq158_score_candidates(
             fwht_seed=payload["fwht_seed"], query_bits=4,
             rotator=payload.get("rotator"),
         )
-        q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :]).to(device)
-        q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :]).to(device)
-        qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :]).to(device)
+        q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :])
+        q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :])
+        qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :])
 
-    cand_idx = torch.tensor(
-        [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
-        dtype=torch.long, device=device,
-    )
-    sign_b = payload["sign"].index_select(0, cand_idx)
-    nz_b = payload["nz"].index_select(0, cand_idx)
-    scl_b = payload["scl"].index_select(0, cand_idx)
-    cid_b = payload["cid"].index_select(0, cand_idx)
-    cosn_b = payload["cosn"].index_select(0, cand_idx)
-    sinn_b = payload["sinn"].index_select(0, cand_idx)
-    mask_b = payload["mask"].index_select(0, cand_idx)
+        # Cache numpy views over the payload's torch.from_numpy-backed
+        # tensors. ``.numpy()`` on a CPU torch tensor is a zero-copy view,
+        # so the cache only matters for ergonomics — the gather itself is
+        # the hot path.
+        sign_np = payload.setdefault("sign_np", payload["sign"].numpy())
+        nz_np = payload.setdefault("nz_np", payload["nz"].numpy())
+        scl_np = payload.setdefault("scl_np", payload["scl"].numpy())
+        cid_np = payload.setdefault("cid_np", payload["cid"].numpy())
+        cosn_np = payload.setdefault("cosn_np", payload["cosn"].numpy())
+        sinn_np = payload.setdefault("sinn_np", payload["sinn"].numpy())
+        mask_np = payload.setdefault("mask_np", payload["mask"].numpy())
+
+        cand_np = np.fromiter(
+            (doc_ids_to_idx[int(cid)] for cid in candidate_ids),
+            dtype=np.int64, count=len(candidate_ids),
+        )
+        # Numpy fancy indexing returns a fresh contiguous array — these
+        # arrays then flow into ``_score_rroq158_cpu`` via
+        # ``torch.from_numpy`` (zero-copy view) and the zero-copy fast
+        # path in ``_to_np`` keeps them in numpy storage all the way
+        # into the Rust kernel call.
+        sign_b = torch.from_numpy(sign_np[cand_np])
+        nz_b = torch.from_numpy(nz_np[cand_np])
+        scl_b = torch.from_numpy(scl_np[cand_np])
+        cid_b = torch.from_numpy(cid_np[cand_np])
+        cosn_b = torch.from_numpy(cosn_np[cand_np])
+        sinn_b = torch.from_numpy(sinn_np[cand_np])
+        mask_b = torch.from_numpy(mask_np[cand_np])
 
     return score_rroq158_topk(
         q_planes, q_meta, qc_table,
@@ -860,7 +901,10 @@ def _rroq4_riem_score_candidates(
     k: int, device: str,
 ):
     """Score one query against the rroq4_riem payload at the given candidate
-    doc indices. Mirrors `_rroq158_score_candidates`."""
+    doc indices. Mirrors `_rroq158_score_candidates`, including the
+    ``torch.index_select`` -> numpy fancy indexing bypass on CPU
+    (audit_rroq158_cpu_2026q2 — same root cause: torch's default 64-thread
+    intra-op pool fights the rayon kernel pool on shared cores)."""
     on_cuda = str(device).startswith("cuda")
     group_size = int(payload["group_size"])
 
@@ -876,6 +920,18 @@ def _rroq4_riem_score_candidates(
         q_gs = torch.from_numpy(q_inputs["q_group_sums"][None, :, :]).to(device)
         q_dev = torch.from_numpy(np.ascontiguousarray(query_np, dtype=np.float32)).to(device)
         qc_table = (q_dev @ payload["centroids"].T).unsqueeze(0)
+
+        cand_idx = torch.tensor(
+            [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
+            dtype=torch.long, device=device,
+        )
+        cid_b = payload["cid"].index_select(0, cand_idx)
+        cosn_b = payload["cosn"].index_select(0, cand_idx)
+        sinn_b = payload["sinn"].index_select(0, cand_idx)
+        codes_b = payload["codes"].index_select(0, cand_idx)
+        mins_b = payload["mins"].index_select(0, cand_idx)
+        deltas_b = payload["deltas"].index_select(0, cand_idx)
+        mask_b = payload["mask"].index_select(0, cand_idx)
     else:
         centroids_np = payload.get("centroids_np")
         if centroids_np is None:
@@ -887,21 +943,29 @@ def _rroq4_riem_score_candidates(
             group_size=group_size,
             rotator=payload.get("rotator"),
         )
-        q_rot = torch.from_numpy(q_inputs["q_rot"][None, :, :]).to(device)
-        q_gs = torch.from_numpy(q_inputs["q_group_sums"][None, :, :]).to(device)
-        qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :]).to(device)
+        q_rot = torch.from_numpy(q_inputs["q_rot"][None, :, :])
+        q_gs = torch.from_numpy(q_inputs["q_group_sums"][None, :, :])
+        qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :])
 
-    cand_idx = torch.tensor(
-        [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
-        dtype=torch.long, device=device,
-    )
-    cid_b = payload["cid"].index_select(0, cand_idx)
-    cosn_b = payload["cosn"].index_select(0, cand_idx)
-    sinn_b = payload["sinn"].index_select(0, cand_idx)
-    codes_b = payload["codes"].index_select(0, cand_idx)
-    mins_b = payload["mins"].index_select(0, cand_idx)
-    deltas_b = payload["deltas"].index_select(0, cand_idx)
-    mask_b = payload["mask"].index_select(0, cand_idx)
+        cid_np = payload.setdefault("cid_np", payload["cid"].numpy())
+        cosn_np = payload.setdefault("cosn_np", payload["cosn"].numpy())
+        sinn_np = payload.setdefault("sinn_np", payload["sinn"].numpy())
+        codes_np = payload.setdefault("codes_np", payload["codes"].numpy())
+        mins_np = payload.setdefault("mins_np", payload["mins"].numpy())
+        deltas_np = payload.setdefault("deltas_np", payload["deltas"].numpy())
+        mask_np = payload.setdefault("mask_np", payload["mask"].numpy())
+
+        cand_np = np.fromiter(
+            (doc_ids_to_idx[int(cid)] for cid in candidate_ids),
+            dtype=np.int64, count=len(candidate_ids),
+        )
+        cid_b = torch.from_numpy(cid_np[cand_np])
+        cosn_b = torch.from_numpy(cosn_np[cand_np])
+        sinn_b = torch.from_numpy(sinn_np[cand_np])
+        codes_b = torch.from_numpy(codes_np[cand_np])
+        mins_b = torch.from_numpy(mins_np[cand_np])
+        deltas_b = torch.from_numpy(deltas_np[cand_np])
+        mask_b = torch.from_numpy(mask_np[cand_np])
 
     return score_rroq4_riem_topk(
         q_rot, q_gs, qc_table,
