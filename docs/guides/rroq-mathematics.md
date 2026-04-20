@@ -180,8 +180,20 @@ quantization scales `s_g` (§3) match the variance of the same single
 distribution per group instead of fighting per-axis anisotropy.
 
 In the FWHT-rotated frame, the per-group quantization parameters
-collapse to one scalar per group (typically `dim/group_size = 4` scalars
-per token at `dim=128, group_size=32`).
+collapse to one scalar per group. **Production SOTA default** at
+`dim=128` is `group_size=128` (one scalar per token — `dim/group_size = 1`),
+which the BEIR Pareto sweep validated as ±0.005 NDCG@10 vs the
+previous `group_size=32` (4 scalars per token) at ~13% smaller storage
+and ~10–30% faster CPU p95. The intuition: in the rotated frame, the
+energy is mixed across coordinates uniformly enough that a single scale
+per token captures the magnitude, and the kernel benefits from one
+fewer scale load per group. For corpora with high intra-token
+magnitude variance (e.g. arguana-class — short docs whose token
+distributions are not well-mixed even after FWHT), pin
+`Rroq158Config(group_size=64)` to recover the per-region scales — see
+[`docs/guides/quantization-tuning.md`](quantization-tuning.md). For
+non-multiple-of-128 dims (dim=64 / 96 / 160) the encoder transparently
+steps down through `{128, 64, 32}` with a log warning.
 
 ---
 
@@ -189,8 +201,9 @@ per token at `dim=128, group_size=32`).
 
 The rotated residual `r̃` is symmetric around zero with light tails. We
 encode each coordinate with the **ternary** alphabet \(\{-s_g, 0, +s_g\}\),
-where `s_g` is the per-group scale (one scalar per `group_size = 32`
-coordinates per token). The encode rule is:
+where `s_g` is the per-group scale (one scalar per `group_size`
+coordinates per token; the SOTA production default is `group_size=128`
+at `dim=128`, i.e. one scalar per whole token). The encode rule is:
 
 \[
 \tilde r_i \;\mapsto\;
@@ -311,7 +324,7 @@ the per-group `(min, delta)` overhead at fp16 (only the `delta` for
 rroq158, but we list both for unified accounting with rroq4_riem). The
 fourth is the per-token `(cos_norm, sin_norm)` overhead at fp16.
 
-For `dim = 128, group_size = 32`:
+For `dim = 128, group_size = 32` (the previous default):
 
 | K     | bits/coord | per-token bytes | reconstruction MSE on rotated tangent |
 |-------|-----------:|----------------:|--------------------------------------:|
@@ -320,6 +333,16 @@ For `dim = 128, group_size = 32`:
 | 4096  | 1.68       | 26.9            | 0.54×                                 |
 | 8192  | 1.69       | 27.0            | 0.43×                                 |
 | 16384 | 1.69       | 27.1            | 0.37×                                 |
+
+For `dim = 128, group_size = 128` (the **SOTA default**, K=8192): the
+third term collapses to `2 · 16 / 128 = 0.25` bits/coord (vs `1.0` at
+gs=32), giving **per-coord ≈ 1.55 bits and per-token ≈ 24.8 bits ≈
+25 B of payload + 14.4 B of dense ternary planes ≈ 40 B/token total**
+(matches the measured 40 B in the layout breakdown of the [tuning
+guide](quantization-tuning.md)). The **6 B/token saving vs gs=32 is
+purely from the per-group scale overhead** — the ternary residual
+itself is unchanged. See [`docs/guides/quantization-tuning.md`](quantization-tuning.md)
+for the per-dim breakdown.
 
 So increasing `K` from 1024 to 8192 adds **0.03 bits/coord** but cuts
 the residual MSE by **2.3×**. That MSE drop is exactly what closes the

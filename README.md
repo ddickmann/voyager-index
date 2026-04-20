@@ -7,24 +7,34 @@
 **Late-interaction retrieval for on-prem AI. One node. CPU or GPU. MaxSim is the truth scorer.**
 
 > **What changed in this release:** the default codec for newly built indexes
-> is now `Compression.RROQ158` — Riemannian-aware 1.58-bit ternary ROQ at
-> K=8192 — wired on **both** GPU (Triton fused kernel) and CPU (Rust SIMD
-> kernel with hardware popcount + cached rayon thread pool). On the BEIR
-> 2026-Q2 production sweep it averages **−1.0 pt NDCG@10** vs FP16 with
-> **flat R@100** at **~5.5× smaller doc-token storage**. For workloads that
-> refuse any quality regression, ship `Compression.RROQ4_RIEM` — the
-> Riemannian-aware 4-bit asymmetric no-quality-loss lane (Triton + Rust
-> SIMD wired, parity-tested, ~3× smaller than FP16, **~0.5 pt NDCG@10
-> gap** — still slower than FP16 in absolute BEIR latency, but the
-> Phase-7-followup CPU kernel reorder cut the Rust microbench by ~22%
-> at production K=8192/B=2000, see the sweep table below). Existing
-> FP16 / RROQ158 / RROQ4_RIEM indexes continue to load unchanged — the
-> manifest carries the build-time codec;
-> only newly built indexes pick up the new default. Pass
-> `compression=Compression.FP16` to opt out. Full sweep methodology,
+> is now `Compression.RROQ158` at **`group_size=128`** — Riemannian-aware
+> 1.58-bit ternary ROQ at K=8192 with one scale per token at dim=128, the
+> SOTA storage path. On the 3 BEIR datasets re-validated at the gs=128
+> flip (arguana, fiqa, nfcorpus, full-eval CPU 8-worker), it delivers
+> **~13% smaller storage** (40 vs 46 bytes/token at dim=128, **~6.4×
+> smaller than FP16** overall), **p95 ~10–30% faster** than the previous
+> gs=32 default, with **NDCG@10 within ±0.005** on Pareto-clean datasets.
+> Wired on **both** GPU (Triton fused kernel) and CPU (Rust SIMD kernel
+> with hardware popcount + cached rayon thread pool). For dims that aren't
+> a multiple of 128 (dim=64 / 96 / 160) the encoder transparently steps
+> down to gs=64 / gs=32 with a log warning — no breakage, no need to
+> override. For workloads that refuse any quality regression, ship
+> `Compression.RROQ4_RIEM` — the Riemannian-aware 4-bit asymmetric
+> no-quality-loss lane (Triton + Rust SIMD wired, parity-tested, ~3×
+> smaller than FP16, **~0.5 pt NDCG@10 gap** — still slower than FP16
+> in absolute BEIR latency, but the Phase-7-followup CPU kernel reorder
+> cut the Rust microbench by ~22% at production K=8192/B=2000, see the
+> sweep table below). Existing FP16 / RROQ158 / RROQ4_RIEM indexes
+> continue to load unchanged — the manifest carries the build-time codec
+> _and the resolved group_size_; only newly built indexes pick up the new
+> default. Pass `compression=Compression.FP16` to opt out, or pin
+> `Rroq158Config(group_size=64)` for the safest cross-dataset choice (see
+> [docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md)
+> for the per-dim recipe and override guidance). Sweep methodology,
 > per-dataset numbers, and the F1 default-decision verdict live under
-> [`reports/beir_2026q2/`](reports/beir_2026q2/); the math behind the
-> codec is in
+> [`reports/beir_2026q2/`](reports/beir_2026q2/) and
+> [`reports/rroq158_pareto_cells/`](reports/rroq158_pareto_cells/); the
+> math behind the codec is in
 > [docs/guides/rroq-mathematics.md](docs/guides/rroq-mathematics.md);
 > a public-facing write-up is in
 > [docs/posts/sub-2-bit-late-interaction.md](docs/posts/sub-2-bit-late-interaction.md).
@@ -49,7 +59,7 @@ the **final scorer** — and engineered so a single machine can serve it.
 
 - **One-node deployment.** No control plane, no orchestration tax.
 - **One contract across CPU and GPU.** Rust SIMD on CPU, Triton on GPU.
-- **RROQ-1.58 default.** Riemannian 1.58-bit codec at ~5.5× smaller doc-token storage than FP16, ~−1 pt NDCG@10 average on BEIR (flat R@100), at FP16-comparable GPU latency on most cells. **RROQ-4 Riemannian** ships as the no-quality-loss lane (~3× smaller than FP16, ~0.5 pt NDCG@10 gap; the Phase-7-followup loop-reorder gave the Rust SIMD CPU kernel a ~22% speedup at production K=8192/B=2000, but the codec is still slower than FP16 in absolute latency — the win is storage). FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth.
+- **RROQ-1.58 SOTA default.** Riemannian 1.58-bit codec at K=8192, **group_size=128** (one scale per token at dim=128) — **~6.4× smaller doc-token storage than FP16**, ~−1 pt NDCG@10 average on BEIR (flat R@100), at FP16-comparable GPU latency on most cells and ~10–30% faster CPU p95 than the previous gs=32 default. Dim-aware fallback to gs=64 / gs=32 for non-multiple-of-128 dims (dim=64 / 96 / 160) ships out of the box. **RROQ-4 Riemannian** ships as the no-quality-loss lane (~3× smaller than FP16, ~0.5 pt NDCG@10 gap; the Phase-7-followup loop-reorder gave the Rust SIMD CPU kernel a ~22% speedup at production K=8192/B=2000, but the codec is still slower than FP16 in absolute latency — the win is storage). FP16 / INT8 / FP8 / ROQ-4 all available, all reranked back to float truth. See [docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md) for the decision matrix and per-dim recipe.
 - **Late-interaction native.** ColBERT, ColPali, ColQwen out of the box.
 - **Database semantics.** WAL, checkpoint, crash recovery, scroll, retrieve.
 - **Optional graph lane.** The Latence sidecar augments first-stage retrieval — never required.
@@ -137,6 +147,18 @@ Headline averages (BEIR-6 mean):
 
 <!-- BEIR_2026Q2_HEADLINE_TABLE_END -->
 
+> **Note (gs=128 SOTA flip).** The `rroq158` row above was measured at the
+> previous `group_size=32` default. The new SOTA default `group_size=128`
+> is **~13% smaller storage** (Storage vs FP16 drops from 0.18× to ~0.16×,
+> i.e. ~6.4× smaller than FP16) and **~10–30% faster CPU p95** at
+> NDCG@10 within ±0.005 on the 3 datasets re-validated for the flip
+> (arguana / fiqa / nfcorpus). The full BEIR-6 sweep at gs=128 lands in a
+> follow-up commit refreshing this table — see
+> [`reports/rroq158_pareto_cells/`](reports/rroq158_pareto_cells/) for
+> the per-cell numbers we have today and
+> [docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md)
+> for the per-dim recipe and override guidance.
+
 Detailed per-dataset rows, the F1 default-promotion verdict, and the
 brute-force codec-fidelity overlap (top-10 / 20 / 50 / 100 vs FP16 — the
 rroq158 quality story disaggregated below the rank-aggregate metric)
@@ -145,9 +167,16 @@ live in [docs/benchmarks.md](docs/benchmarks.md).
 #### Default: RROQ-1.58 (Riemannian 1.58-bit ternary, K=8192)
 
 `Compression.RROQ158` is the **default codec for newly built indexes**
-on both GPU (Triton fused kernel) and CPU (Rust SIMD kernel). Per-token
-storage drops to **~46 B** (vs 256 B FP16, 64 B ROQ-4 — i.e. **5.5× /
-1.4× smaller**), and both lanes are wired and parity-tested.
+on both GPU (Triton fused kernel) and CPU (Rust SIMD kernel) — at the
+new SOTA `group_size=128` (one scale per token at dim=128). Per-token
+storage drops to **~40 B** (vs 256 B FP16, 64 B ROQ-4 — i.e. **~6.4× /
+1.6× smaller**), down from the previous ~46 B at gs=32. Both lanes are
+wired and parity-tested. For dims that aren't a multiple of 128 (dim=64
+/ 96 / 160) the encoder transparently steps down to gs=64 / gs=32 with
+a log warning. Override with `Rroq158Config(group_size=64)` for the
+safest cross-corpus choice — see
+[docs/guides/quantization-tuning.md](docs/guides/quantization-tuning.md)
+for the per-dim recipe and override guidance.
 
 The honest sweep verdict from the BEIR 2026-Q2 production sweep
 (`reports/beir_2026q2/sweep.jsonl`, 4 codecs × 6 datasets × 2 modes,
@@ -233,7 +262,7 @@ in fp16) instead of ternary. Both kernels are wired and parity-tested:
   vs the python reference (validated by
   `tests/test_rroq4_riem_kernel.py`).
 
-Per-token storage: ~88 B (vs 256 B FP16, 46 B RROQ-1.58 — i.e. **~3×
+Per-token storage: ~88 B (vs 256 B FP16, 40 B RROQ-1.58 default — i.e. **~3×
 smaller** than fp16). Measured on the Phase-7 BEIR sweep:
 
 - **Quality** is at FP16 parity: avg ΔNDCG@10 = **+0.02 pt** (max

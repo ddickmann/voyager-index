@@ -298,7 +298,7 @@ curl -X POST http://127.0.0.1:8080/collections/tutorial-shard \
     "n_shards": 256,
     "compression": "rroq158",
     "rroq158_k": 8192,
-    "rroq158_group_size": 32,
+    "rroq158_group_size": 128,
     "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",

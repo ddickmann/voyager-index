@@ -48,10 +48,18 @@ class Rroq158Config:
     BEIR datasets (scidocs / arguana) at ~2 MB centroid table cost. Must be
     a power of two and ``>= 256``."""
 
-    group_size: int = 32
-    """Ternary group size in coords. Must be a multiple of 32 (one popcount word
-    per group) and must divide ``dim``. Allowed values: {32, 64} for production
-    dims (64, 96, 128, 160, 256, 384, 768, 1024)."""
+    group_size: int = 128
+    """Ternary group size in coords. Production SOTA default ``128`` (one scale
+    per token at dim=128, the most-tested production dim). Must be a positive
+    multiple of 32 (one popcount word per group). For dims that are not a
+    multiple of the requested ``group_size``, the encoder transparently falls
+    back to the largest compatible value in ``{128, 64, 32}`` and logs a
+    warning — so dim=64 / 96 / 160 corpora still build cleanly without
+    requiring callers to override the default. Set explicitly (typically to
+    ``64``) when (a) you serve a corpus with high intra-token magnitude
+    variance such that one scale per token is too coarse — see
+    ``docs/guides/quantization-tuning.md`` for the per-dim recipe table —
+    or (b) you want to pin behaviour across dim variations."""
 
     spherical_kmeans_iter: int = 15
     fit_sample_cap: int = 100_000
@@ -214,6 +222,50 @@ def get_cached_fwht_rotator(dim: int, seed: int):
     return rot
 
 
+def _resolve_group_size(requested: int, dim: int) -> int:
+    """Pick the largest ``group_size`` in ``{requested, 64, 32}`` that the
+    encoder can actually use for this ``dim``.
+
+    The dim divisibility constraint cannot be checked at config-construction
+    time (``Rroq158Config.__post_init__``) because ``dim`` only becomes
+    known when the corpus is handed to ``encode_rroq158``. Resolving here
+    lets the production default ``group_size=128`` (one scale per token at
+    dim=128 — the SOTA path) work transparently on dim=64 / 96 / 160
+    production corpora by stepping down to gs=64 or gs=32 with a warning,
+    instead of raising and forcing every caller to special-case dim.
+
+    Returns the resolved ``group_size`` (always a positive multiple of 32
+    that divides ``dim``). Raises ``ValueError`` if neither the requested
+    value nor any of {64, 32} divides ``dim`` (e.g. dim=48).
+    """
+    if requested <= 0 or requested % 32 != 0:
+        raise ValueError(
+            f"_resolve_group_size: requested={requested} must be a positive "
+            "multiple of 32"
+        )
+    candidates = (requested, 64, 32)
+    seen: set[int] = set()
+    for gs in candidates:
+        if gs in seen:
+            continue
+        seen.add(gs)
+        if dim % gs == 0 and gs % 32 == 0:
+            if gs != requested:
+                log.warning(
+                    "rroq158: dim=%d not divisible by requested group_size=%d; "
+                    "falling back to gs=%d (largest divisor in {128, 64, 32}). "
+                    "Override Rroq158Config.group_size explicitly to silence "
+                    "this warning.",
+                    dim, requested, gs,
+                )
+            return gs
+    raise ValueError(
+        f"rroq158: dim={dim} cannot fit any of {{128, 64, 32}} as group_size; "
+        "production dims (64, 96, 128, 160, 256, 384, 768, 1024) all support "
+        "at least one of these. Provide a dim that is a multiple of 32."
+    )
+
+
 def _l2(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     n = np.linalg.norm(x, axis=-1, keepdims=True)
     return x / (n + eps)
@@ -332,28 +384,20 @@ def encode_rroq158(
     n, dim = tokens.shape
     if n == 0:
         raise ValueError("encode_rroq158 received an empty token matrix")
-    if dim < cfg.group_size:
-        raise ValueError(
-            f"encode_rroq158: dim={dim} is smaller than group_size="
-            f"{cfg.group_size}; reduce Rroq158Config.group_size to a divisor "
-            f"of dim that is a multiple of 32"
-        )
-    if dim % cfg.group_size != 0:
-        raise ValueError(
-            f"encode_rroq158: dim={dim} is not divisible by group_size="
-            f"{cfg.group_size}; pick a group_size that divides dim "
-            "(production dims of 64/96/128/160/256/384/768/1024 all divide by 32)"
-        )
     if dim % 32 != 0:
         raise ValueError(
             f"encode_rroq158: dim={dim} must be a multiple of 32 so the "
             "ternary planes pack into int32 words for the popcount kernel"
         )
+    # Resolve dim-aware group_size: the SOTA default (128) covers dim=128 /
+    # 256 / 384 / 512 / 768 / 1024; for dim=64 / 96 / 160 we transparently
+    # step down to 64 or 32. Manifest below records the resolved value.
+    resolved_gs = _resolve_group_size(cfg.group_size, dim)
     if n < cfg.K:
         raise ValueError(
             f"encode_rroq158: only {n} tokens available but K={cfg.K} centroids "
             f"requested. Either lower Rroq158Config.K (must remain a power of "
-            f"two and >= {cfg.group_size}) or feed more tokens."
+            f"two and >= {resolved_gs}) or feed more tokens."
         )
     rng = np.random.default_rng(cfg.seed)
 
@@ -401,7 +445,7 @@ def encode_rroq158(
         if tangent_rot.shape[1] != dim:
             tangent_rot = tangent_rot[:, :dim]
 
-        enc = _ternary_encode_rotated(tangent_rot, group_size=cfg.group_size)
+        enc = _ternary_encode_rotated(tangent_rot, group_size=resolved_gs)
         sign_planes.append(enc["sign_plane"])
         nonzero_planes.append(enc["nonzero_plane"])
         scales_all.append(enc["scales"].astype(np.float16))
@@ -424,7 +468,7 @@ def encode_rroq158(
         sin_norm=sin_norm,
         fwht_seed=cfg.seed,
         dim=dim,
-        group_size=cfg.group_size,
+        group_size=resolved_gs,
     )
 
 

@@ -164,7 +164,11 @@ Graph augmentation runs after first-stage retrieval and is merged additively.
   build-time codec via the manifest, so flipping the default is
   non-breaking for deployed clusters.
 - `rroq158_k` / `rroq158_seed` / `rroq158_group_size`: tuning knobs for the
-  default codec. Defaults are `K=8192`, `seed=42`, `group_size=32`.
+  default codec. Defaults are `K=8192`, `seed=42`, **`group_size=128`**
+  (SOTA — one scale per token at dim=128, ~13% smaller storage and
+  ~10–30% faster CPU p95 vs the previous `32` default; for non-multiple-of-128
+  dims the encoder transparently steps down to gs=64 / gs=32 with a log
+  warning). See [`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md).
 - `rroq4_riem_k` / `rroq4_riem_seed` / `rroq4_riem_group_size`: tuning knobs
   for the safe-fallback codec when `compression="rroq4_riem"`. Defaults are
   `K=8192`, `seed=42`, `group_size=32`.

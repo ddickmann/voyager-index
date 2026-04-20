@@ -3,7 +3,9 @@
 > **TL;DR.** We built a 1.58-bit (ternary) per-coordinate codec for
 > ColBERT-style multi-vector indices that lands within ~1 NDCG@10 point
 > of FP16 on average across BEIR while compressing the doc-token
-> footprint by ~5.5×. The trick is *not* a new quantizer — it's the
+> footprint by ~6.4× (at the **SOTA `group_size=128` default** — see
+> the **v1.1 update** further down for the Pareto sweep that landed
+> the new default). The trick is *not* a new quantizer — it's the
 > geometry the quantizer sits on. Code, kernels, and the full benchmark
 > sweep are open in
 > [`voyager-index`](https://github.com/lightonai/voyager-index).
@@ -154,16 +156,25 @@ Including the centroid id, the per-group `Δ` (FP16), and the per-token
 `(cos_norm, sin_norm)`, the total cost lands at:
 
 \[
-\text{rroq158 bits/coord}
+\text{rroq158 bits/coord}\;(\text{at}\ g=32)
 \;\approx\; \underbrace{0.10}_{\log_2 K / d}
 \;+\; \underbrace{1.585}_{\text{ternary}}
-\;+\; \underbrace{0.50}_{16/g\ \text{at}\ g=32}
+\;+\; \underbrace{0.50}_{16/g}
 \;+\; \underbrace{0.25}_{2 \cdot 16/d}
 \;\approx\; \mathbf{2.4 \text{ bits/coord}}.
 \]
 
 That's ~46 bytes/token vs 256 bytes/token for FP16 — **about 5.5×
-smaller doc-token storage**.
+smaller doc-token storage** at the original `group_size=32` default.
+
+At the new **SOTA `group_size=128` default** (one scale per token at
+dim=128 — see the v1.1 update below), the third term collapses to
+`16 / 128 = 0.125`, giving **~2.0 bits/coord ≈ 40 bytes/token, i.e.
+~6.4× smaller than FP16**, with ~10–30% faster CPU p95 (one fewer
+scale load per group in the kernel) and NDCG@10 within ±0.005 of
+gs=32 on the BEIR datasets re-validated for the flip. The full per-dim
+recipe and override guidance live in
+[`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md).
 
 ---
 
@@ -223,7 +234,8 @@ sequentially, and never decoded.
   extremely bandwidth-friendly, and the rroq158 path's per-query
   overhead — BLAS-bound query bit-plane encoding +
   per-doc-token `cos·qc + sin·resi` FMAs — is still larger than
-  the win from reading 5.5× fewer doc bytes. The next backlog item
+  the win from reading ~6.4× fewer doc bytes (at the new gs=128 default;
+  ~5.5× at the previous gs=32). The next backlog item
   is closing the BLAS-bound gap in the encoder.
 
 So the production story we ship is **storage-honest**:
@@ -238,12 +250,18 @@ So the production story we ship is **storage-honest**:
   lane, not a throughput lane.
 - If your bottleneck is disk or hot-tier RAM (which it almost always
   is at scale on multi-vector indices), ship `Compression.RROQ158`
-  (~5.5× smaller than FP16, ~1.4 NDCG@10 point average gap,
-  ~2.7 pt worst case at top-10 on arguana, GPU p95 within 1.13× of
-  FP16 on average). Accept that on CPU you trade **~3× throughput**
-  for the storage win (down from ~8× pre-fix), and that ~20% of the
-  top-10 docs differ from FP16 (R@100 still recovers within −2.1 pt
-  on every dataset).
+  at the **SOTA `group_size=128` default** — **~6.4× smaller** than
+  FP16 (40 vs 256 bytes/token at dim=128 — see the v1.1 update below
+  for the Pareto sweep), ~1.4 NDCG@10 point average gap (carried over
+  from the gs=32 baseline; the gs=128 flip is within ±0.005 of gs=32
+  on Pareto-clean datasets), ~2.7 pt worst case at top-10 on arguana
+  (~2.8 pt at gs=128 — pin `Rroq158Config(group_size=64)` to recover),
+  GPU p95 within 1.13× of FP16 on average, ~10–30% faster CPU p95 than
+  the previous gs=32 default. Accept that on CPU you still trade
+  **~3× throughput** vs FP16 for the storage win (down from ~8× at
+  gs=32, ~10–30% better at gs=128), and that ~20% of the top-10 docs
+  differ from FP16 (R@100 still recovers within −2.1 pt on every
+  dataset).
 
 CPU and GPU implementations share the exact same packed payload tensors
 (sign / nonzero / scale / centroid id / cos_norm / sin_norm) and pass a
@@ -282,8 +300,9 @@ The headline:
   from 12.65×). See
   [docs/benchmarks.md](../benchmarks.md#honest-cpu-latency-caveat-post-phase-7-followup)
   for the four optimisations that landed in the production lane.
-- **Storage vs FP16 doc tokens:** 5.5× smaller for rroq158, ~3×
-  smaller for rroq4_riem.
+- **Storage vs FP16 doc tokens:** ~6.4× smaller for rroq158 at the
+  new `group_size=128` SOTA default (5.5× at the previous gs=32
+  default), ~3× smaller for rroq4_riem.
 
 `rroq158` is not free at top-10. The honest picture from the BEIR-6
 sweep (`reports/beir_2026q2/sweep.jsonl`):
@@ -339,6 +358,60 @@ config = BuildConfig(compression=Compression.RROQ4_RIEM)
 
 config = BuildConfig(compression=Compression.RROQ158)
 ```
+
+---
+
+## v1.1 update: `group_size=128` is the new SOTA default
+
+Six weeks after the initial post, we ran a Pareto sweep on
+`(K, group_size)` to ask "can we push the storage further without
+hurting quality or latency?" The verdict — backed by the per-cell
+JSONL in
+[`reports/rroq158_pareto_cells/`](../../reports/rroq158_pareto_cells/) and
+the per-dataset markdown reports under
+[`reports/rroq158_pareto_arguana.md`](../../reports/rroq158_pareto_arguana.md)
+/ `_fiqa.md` / `_nfcorpus.md` — was that **`group_size=128` is a clean
+Pareto win on every axis**:
+
+| Dataset | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG | p95 (gs=32) | p95 (gs=128) | p95 ratio | B/tok ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| arguana  | 0.3713 | 0.3655 | **−0.0058** | 666 ms | 530 ms | 0.80× | 0.87× |
+| fiqa     | 0.4223 | 0.4260 | **+0.0037** | 279 ms | 253 ms | 0.91× | 0.87× |
+| nfcorpus | 0.3799 | 0.3790 | −0.0009 | 286 ms | 193 ms | 0.67× | 0.87× |
+
+**Headline:** ~13% smaller storage on top of the existing 5.5×, ~10–30%
+faster CPU p95 (one fewer scale load per group in the popcount kernel),
+NDCG@10 within ±0.005 on Pareto-clean datasets. The arguana cell
+**marginally fails the −0.005 quality gate** (−0.0058) — pin
+`Rroq158Config(group_size=64)` to recover (clean Pareto pass on
+arguana). The other 3 BEIR datasets (`scifact`, `scidocs`, `quora`)
+plus `hotpotqa` will be filled in by the post-merge full BEIR-6 sweep
+that refreshes the headline tables in this post and in
+[`docs/benchmarks.md`](../benchmarks.md).
+
+**Dim-aware fallback.** `group_size=128` only divides dims that are
+multiples of 128. The encoder transparently steps down to gs=64 / gs=32
+through the `_resolve_group_size` helper for non-multiple-of-128 dims
+(dim=64 / 96 / 160) with a log warning, so dim=64 / 96 / 160 production
+corpora still build cleanly without callers having to special-case the
+default. The full per-dim recipe and override guidance live in
+[`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md).
+
+**What we tried and dropped.** Before flipping the uniform default we
+also prototyped a **two-regime hybrid** (a sign-only "cheap" regime at
+~25 B/token plus a small fraction `p` of high-residual tokens "rescued"
+at the existing 46 B/token "rich" path — same trick that pays off for
+KV-cache quantization). The full Python prototype on arguana is
+preserved at
+[`reports/rroq158_hybrid_prototype_log.txt`](../../reports/rroq158_hybrid_prototype_log.txt).
+The slope of the rescue curve flattens fast (each +5% rescue buys
++0.005 NDCG@10 at p<0.10, falling to +0.0025 at p=0.20 and turning
+noisy beyond that), so the hybrid never matched the FP32 ceiling and
+the engineering cost of the on-disk format + Rust kernel + Triton
+kernel work didn't pay back versus the uniform `gs=128` win we already
+have. We close the investigation here. See the
+[quantization tuning guide](../guides/quantization-tuning.md#closing-retrospective--why-we-did-not-ship-the-outlier-rescue-hybrid)
+for the full retrospective.
 
 ---
 

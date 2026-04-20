@@ -1,0 +1,192 @@
+2026-04-20 10:32:53,897 INFO [prototype] loading arguana ...
+2026-04-20 10:32:55,949 INFO arguana: 8674 docs, 1401 queries, dim=128, tokens/doc p50=173 p95=278
+2026-04-20 10:32:55,949 INFO [prototype] loaded arguana: 8674 docs, 1401 queries, 1541060 tokens, dim=128
+2026-04-20 10:32:55,949 INFO [prototype] encoding rich (gs=32) + cheap (gs=128 sign-only) regimes ...
+2026-04-20 10:32:56,013 INFO [two-regime] centroid fit: 100000/1541060 tokens, K=8192
+2026-04-20 10:36:29,759 INFO [two-regime] encode: chunk=32768 (rich gs=32, cheap gs=128 sign-only)
+2026-04-20 10:37:13,790 INFO [prototype] encode done in 259.7s; r_norm percentiles: p50=0.140 p90=0.248 p95=0.300 p99=0.378
+2026-04-20 10:37:13,790 INFO [prototype] scoring FP32 baseline (quality ceiling) ...
+2026-04-20 10:37:48,614 INFO [maxsim] 70/1401 queries scored
+2026-04-20 10:38:23,014 INFO [maxsim] 140/1401 queries scored
+2026-04-20 10:38:57,512 INFO [maxsim] 210/1401 queries scored
+2026-04-20 10:39:32,217 INFO [maxsim] 280/1401 queries scored
+2026-04-20 10:40:07,113 INFO [maxsim] 350/1401 queries scored
+2026-04-20 10:40:46,017 INFO [maxsim] 420/1401 queries scored
+2026-04-20 10:41:24,613 INFO [maxsim] 490/1401 queries scored
+2026-04-20 10:42:03,211 INFO [maxsim] 560/1401 queries scored
+2026-04-20 10:42:42,719 INFO [maxsim] 630/1401 queries scored
+2026-04-20 10:43:21,410 INFO [maxsim] 700/1401 queries scored
+2026-04-20 10:44:11,811 INFO [maxsim] 770/1401 queries scored
+2026-04-20 10:45:01,614 INFO [maxsim] 840/1401 queries scored
+2026-04-20 10:45:43,625 INFO [maxsim] 910/1401 queries scored
+2026-04-20 10:46:24,318 INFO [maxsim] 980/1401 queries scored
+2026-04-20 10:47:04,214 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 10:47:39,115 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 10:48:13,211 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 10:48:47,712 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 10:49:22,313 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 10:49:57,117 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 10:49:57,614 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 10:49:57,651 INFO [prototype] FP32 baseline: NDCG@10=0.3688 Recall@100=0.9593 (763.9s)
+2026-04-20 10:49:57,651 INFO [prototype] scoring p=0.00 variant ...
+2026-04-20 10:50:32,023 INFO [maxsim] 70/1401 queries scored
+2026-04-20 10:51:06,017 INFO [maxsim] 140/1401 queries scored
+2026-04-20 10:51:40,310 INFO [maxsim] 210/1401 queries scored
+2026-04-20 10:52:14,512 INFO [maxsim] 280/1401 queries scored
+2026-04-20 10:52:49,026 INFO [maxsim] 350/1401 queries scored
+2026-04-20 10:53:23,428 INFO [maxsim] 420/1401 queries scored
+2026-04-20 10:53:57,612 INFO [maxsim] 490/1401 queries scored
+2026-04-20 10:54:32,017 INFO [maxsim] 560/1401 queries scored
+2026-04-20 10:55:06,812 INFO [maxsim] 630/1401 queries scored
+2026-04-20 10:55:41,320 INFO [maxsim] 700/1401 queries scored
+2026-04-20 10:56:15,721 INFO [maxsim] 770/1401 queries scored
+2026-04-20 10:56:50,324 INFO [maxsim] 840/1401 queries scored
+2026-04-20 10:57:24,512 INFO [maxsim] 910/1401 queries scored
+2026-04-20 10:57:58,613 INFO [maxsim] 980/1401 queries scored
+2026-04-20 10:58:32,710 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 10:59:06,729 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 10:59:39,728 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:00:12,124 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:00:45,915 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:01:20,718 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:01:21,210 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:01:21,323 INFO [prototype] p=0.00: NDCG@10=0.3079 Recall@100=0.9158 B/tok=25.0 (683.7s)
+2026-04-20 11:01:21,323 INFO [prototype] scoring p=0.05 variant ...
+2026-04-20 11:01:56,113 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:02:30,531 INFO [maxsim] 140/1401 queries scored
+2026-04-20 11:03:05,010 INFO [maxsim] 210/1401 queries scored
+2026-04-20 11:03:39,510 INFO [maxsim] 280/1401 queries scored
+2026-04-20 11:04:14,210 INFO [maxsim] 350/1401 queries scored
+2026-04-20 11:04:49,115 INFO [maxsim] 420/1401 queries scored
+2026-04-20 11:05:23,313 INFO [maxsim] 490/1401 queries scored
+2026-04-20 11:05:57,114 INFO [maxsim] 560/1401 queries scored
+2026-04-20 11:06:30,813 INFO [maxsim] 630/1401 queries scored
+2026-04-20 11:07:05,312 INFO [maxsim] 700/1401 queries scored
+2026-04-20 11:07:39,813 INFO [maxsim] 770/1401 queries scored
+2026-04-20 11:08:13,711 INFO [maxsim] 840/1401 queries scored
+2026-04-20 11:08:48,315 INFO [maxsim] 910/1401 queries scored
+2026-04-20 11:09:22,225 INFO [maxsim] 980/1401 queries scored
+2026-04-20 11:09:56,623 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 11:10:31,110 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 11:11:05,319 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:11:39,911 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:12:14,014 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:12:48,028 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:12:48,615 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:12:48,726 INFO [prototype] p=0.05: NDCG@10=0.3127 Recall@100=0.9186 B/tok=26.1 (687.4s)
+2026-04-20 11:12:48,727 INFO [prototype] scoring p=0.10 variant ...
+2026-04-20 11:13:23,116 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:13:57,512 INFO [maxsim] 140/1401 queries scored
+2026-04-20 11:14:31,520 INFO [maxsim] 210/1401 queries scored
+2026-04-20 11:15:05,812 INFO [maxsim] 280/1401 queries scored
+2026-04-20 11:15:40,412 INFO [maxsim] 350/1401 queries scored
+2026-04-20 11:16:14,411 INFO [maxsim] 420/1401 queries scored
+2026-04-20 11:16:47,814 INFO [maxsim] 490/1401 queries scored
+2026-04-20 11:17:21,610 INFO [maxsim] 560/1401 queries scored
+2026-04-20 11:17:55,313 INFO [maxsim] 630/1401 queries scored
+2026-04-20 11:18:29,121 INFO [maxsim] 700/1401 queries scored
+2026-04-20 11:19:02,810 INFO [maxsim] 770/1401 queries scored
+2026-04-20 11:19:37,014 INFO [maxsim] 840/1401 queries scored
+2026-04-20 11:20:10,725 INFO [maxsim] 910/1401 queries scored
+2026-04-20 11:20:44,510 INFO [maxsim] 980/1401 queries scored
+2026-04-20 11:21:18,713 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 11:21:53,315 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 11:22:27,820 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:23:02,124 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:23:36,613 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:24:11,014 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:24:11,512 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:24:11,627 INFO [prototype] p=0.10: NDCG@10=0.3167 Recall@100=0.9229 B/tok=27.2 (682.9s)
+2026-04-20 11:24:11,628 INFO [prototype] scoring p=0.20 variant ...
+2026-04-20 11:24:46,215 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:25:20,612 INFO [maxsim] 140/1401 queries scored
+2026-04-20 11:25:54,829 INFO [maxsim] 210/1401 queries scored
+2026-04-20 11:26:29,213 INFO [maxsim] 280/1401 queries scored
+2026-04-20 11:27:03,424 INFO [maxsim] 350/1401 queries scored
+2026-04-20 11:27:38,025 INFO [maxsim] 420/1401 queries scored
+2026-04-20 11:28:12,918 INFO [maxsim] 490/1401 queries scored
+2026-04-20 11:28:47,425 INFO [maxsim] 560/1401 queries scored
+2026-04-20 11:29:21,112 INFO [maxsim] 630/1401 queries scored
+2026-04-20 11:29:54,520 INFO [maxsim] 700/1401 queries scored
+2026-04-20 11:30:29,025 INFO [maxsim] 770/1401 queries scored
+2026-04-20 11:31:03,612 INFO [maxsim] 840/1401 queries scored
+2026-04-20 11:31:38,012 INFO [maxsim] 910/1401 queries scored
+2026-04-20 11:32:12,619 INFO [maxsim] 980/1401 queries scored
+2026-04-20 11:32:47,113 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 11:33:21,719 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 11:33:56,412 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:34:31,113 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:35:05,313 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:35:39,816 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:35:40,226 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:35:40,416 INFO [prototype] p=0.20: NDCG@10=0.3217 Recall@100=0.9265 B/tok=29.4 (688.8s)
+2026-04-20 11:35:40,416 INFO [prototype] scoring p=0.30 variant ...
+2026-04-20 11:36:15,013 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:36:49,532 INFO [maxsim] 140/1401 queries scored
+2026-04-20 11:37:24,117 INFO [maxsim] 210/1401 queries scored
+2026-04-20 11:37:58,516 INFO [maxsim] 280/1401 queries scored
+2026-04-20 11:38:32,622 INFO [maxsim] 350/1401 queries scored
+2026-04-20 11:39:06,915 INFO [maxsim] 420/1401 queries scored
+2026-04-20 11:39:41,411 INFO [maxsim] 490/1401 queries scored
+2026-04-20 11:40:16,212 INFO [maxsim] 560/1401 queries scored
+2026-04-20 11:40:51,024 INFO [maxsim] 630/1401 queries scored
+2026-04-20 11:41:25,517 INFO [maxsim] 700/1401 queries scored
+2026-04-20 11:41:59,715 INFO [maxsim] 770/1401 queries scored
+2026-04-20 11:42:33,710 INFO [maxsim] 840/1401 queries scored
+2026-04-20 11:43:07,818 INFO [maxsim] 910/1401 queries scored
+2026-04-20 11:43:41,510 INFO [maxsim] 980/1401 queries scored
+2026-04-20 11:44:16,116 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 11:44:50,521 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 11:45:25,317 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:45:59,913 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:46:34,513 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:47:08,713 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:47:09,212 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:47:09,316 INFO [prototype] p=0.30: NDCG@10=0.3206 Recall@100=0.9286 B/tok=31.6 (688.9s)
+2026-04-20 11:47:09,316 INFO [prototype] scoring p=0.50 variant ...
+2026-04-20 11:47:43,527 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:48:17,012 INFO [maxsim] 140/1401 queries scored
+2026-04-20 11:48:51,231 INFO [maxsim] 210/1401 queries scored
+2026-04-20 11:49:26,017 INFO [maxsim] 280/1401 queries scored
+2026-04-20 11:50:00,613 INFO [maxsim] 350/1401 queries scored
+2026-04-20 11:50:34,522 INFO [maxsim] 420/1401 queries scored
+2026-04-20 11:51:08,721 INFO [maxsim] 490/1401 queries scored
+2026-04-20 11:51:43,110 INFO [maxsim] 560/1401 queries scored
+2026-04-20 11:52:17,916 INFO [maxsim] 630/1401 queries scored
+2026-04-20 11:52:51,416 INFO [maxsim] 700/1401 queries scored
+2026-04-20 11:53:25,814 INFO [maxsim] 770/1401 queries scored
+2026-04-20 11:54:00,312 INFO [maxsim] 840/1401 queries scored
+2026-04-20 11:54:34,413 INFO [maxsim] 910/1401 queries scored
+2026-04-20 11:55:08,922 INFO [maxsim] 980/1401 queries scored
+2026-04-20 11:55:43,614 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 11:56:18,513 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 11:56:53,311 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 11:57:28,014 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 11:58:02,210 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 11:58:35,913 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 11:58:36,327 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 11:58:36,512 INFO [prototype] p=0.50: NDCG@10=0.3259 Recall@100=0.9293 B/tok=36.0 (687.2s)
+2026-04-20 11:58:36,512 INFO [prototype] scoring p=1.00 variant ...
+2026-04-20 11:59:09,914 INFO [maxsim] 70/1401 queries scored
+2026-04-20 11:59:44,417 INFO [maxsim] 140/1401 queries scored
+2026-04-20 12:00:18,425 INFO [maxsim] 210/1401 queries scored
+2026-04-20 12:00:53,030 INFO [maxsim] 280/1401 queries scored
+2026-04-20 12:01:27,430 INFO [maxsim] 350/1401 queries scored
+2026-04-20 12:02:02,416 INFO [maxsim] 420/1401 queries scored
+2026-04-20 12:02:36,830 INFO [maxsim] 490/1401 queries scored
+2026-04-20 12:03:10,615 INFO [maxsim] 560/1401 queries scored
+2026-04-20 12:03:45,010 INFO [maxsim] 630/1401 queries scored
+2026-04-20 12:04:19,017 INFO [maxsim] 700/1401 queries scored
+2026-04-20 12:04:52,320 INFO [maxsim] 770/1401 queries scored
+2026-04-20 12:05:26,213 INFO [maxsim] 840/1401 queries scored
+2026-04-20 12:06:00,212 INFO [maxsim] 910/1401 queries scored
+2026-04-20 12:06:34,219 INFO [maxsim] 980/1401 queries scored
+2026-04-20 12:07:08,617 INFO [maxsim] 1050/1401 queries scored
+2026-04-20 12:07:43,127 INFO [maxsim] 1120/1401 queries scored
+2026-04-20 12:08:17,212 INFO [maxsim] 1190/1401 queries scored
+2026-04-20 12:08:51,510 INFO [maxsim] 1260/1401 queries scored
+2026-04-20 12:09:26,129 INFO [maxsim] 1330/1401 queries scored
+2026-04-20 12:10:00,615 INFO [maxsim] 1400/1401 queries scored
+2026-04-20 12:10:01,026 INFO [maxsim] 1401/1401 queries scored
+2026-04-20 12:10:01,227 INFO [prototype] p=1.00: NDCG@10=0.3402 Recall@100=0.9450 B/tok=47.0 (684.7s)
+2026-04-20 12:10:01,232 INFO [prototype] wrote report -> /workspace/voyager-index/reports/rroq158_hybrid_prototype.md

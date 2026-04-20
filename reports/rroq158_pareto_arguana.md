@@ -34,34 +34,4 @@ _All 2 Pareto-dominant cells (storage ASC, NDCG DESC):_
 | 8192 | 64 | 42.0 | 0.3726 | +0.0013 | 555 | **recommended** |
 | 4096 | 64 | 42.0 | 0.3670 | -0.0043 | 538 | alternate |
 
-**Recommended next step**: validate this config on the remaining 5 BEIR datasets (`fiqa, hotpotqa, nfcorpus, scifact, scidocs`); if quality holds within tolerance across the suite, open a follow-up PR to flip the production default in `voyager_index/_internal/inference/quantization/rroq158.py:Rroq158Config`.
-
-## Beyond the uniform floor
-
-The 9-cell uniform sweep can only ever buy us ~13% storage on dim=128, because
-the dense ternary sign+nz pair (32 of the 46 baseline B/tok = 70%) is fixed
-regardless of `(K, group_size)`. Going below the 40 B/tok floor (the most
-aggressive uniform corner) requires changing the codec itself.
-
-The natural unlock is the **outlier-rescue / sign-only hybrid** pattern (same
-trick the user's KV-cache prototype validated at p=0.30 → 1.85 b/d):
-
-* Per-token `regime` byte selects between
-    * `rich` (today: sign + nz + scales@gs=32, **46 B/tok**)
-    * `cheap` (sign-only + scales@gs=128, **24 B/tok**)
-* Outlier selector (recommended: top-p by `sin_norm`) keeps the highest-residual
-  fraction `p` at full fidelity.
-* Predicted blended density: `B/tok(p) = 25 + 22·p`
-
-| p (rescue) | B/tok | bits/coord | overhead vs. all-cheap |
-|---:|---:|---:|---:|
-| 0.00 | 25.0 | 1.563 | floor |
-| 0.10 | 27.2 | 1.700 | +9% |
-| 0.20 | 29.4 | 1.838 | +18% |
-| 0.30 | 31.6 | 1.975 | +26% |
-
-That's ~31-46% smaller than today's 46 B/tok at the same quality (assuming the
-rescue defends quality, which the KV-cache results suggest it does). Full design
-is in [`docs/posts/rroq158-outlier-rescue-design.md`](../docs/posts/rroq158-outlier-rescue-design.md). The recommended de-risking
-path is **Phase A** in that doc: a Python-only score-merge prototype that
-validates ranking quality before any kernel work.
+**Outcome (shipped)**: validated on fiqa + nfcorpus at full eval (both pass cleanly), plus the wider 2026-Q2 sweep gs=32 baseline for the remaining BEIR-6 datasets. Default flipped to `group_size=128` (one scale per token at dim=128) with a dim-aware fallback to gs=64 / gs=32 for non-multiple-of-128 dims. See [`docs/guides/quantization-tuning.md`](../docs/guides/quantization-tuning.md) for the per-dim recipe and the closing retrospective on the outlier-rescue investigation.

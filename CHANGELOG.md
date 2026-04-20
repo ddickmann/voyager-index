@@ -6,6 +6,74 @@ reads in release order again.
 
 ## Unreleased
 
+### Phase 8 — RROQ158 SOTA default at `group_size=128` + dim-aware fallback (2026-04-20)
+
+- flipped the default `Rroq158Config.group_size` from `32` to `128` (one
+  scale per token at dim=128, the most-tested production dim) — closes
+  the Pareto sweep run after Phase 7. The SOTA flip is **~13% smaller
+  storage** (~40 vs ~46 bytes/token at dim=128 → ~6.4× smaller than
+  fp16, up from ~5.5×) with **CPU p95 ~10–30% faster** (one fewer scale
+  load per group in the popcount kernel) and **NDCG@10 within ±0.005**
+  of the previous gs=32 default on the 3 BEIR datasets re-validated for
+  the flip (arguana, fiqa, nfcorpus, full-eval CPU 8-worker; per-cell
+  data in `reports/rroq158_pareto_cells/`). The remaining 3 BEIR
+  datasets (`scifact`, `scidocs`, `quora`) plus `hotpotqa` will be
+  filled in by a post-merge full BEIR-6 sweep that refreshes the
+  headline tables in a follow-up commit.
+- added `_resolve_group_size(requested, dim)` to
+  `voyager_index/_internal/inference/quantization/rroq158.py` — a
+  dim-aware fallback that picks the largest of `{requested, 64, 32}`
+  that divides `dim`. `encode_rroq158` calls it at entry and records
+  the **resolved** group_size in the manifest, so the new
+  `group_size=128` default works transparently on dim=64 / 96 / 160
+  production corpora (steps down to gs=64 / gs=32 with a log warning)
+  without callers having to special-case dim. Existing callers passing
+  an explicit `Rroq158Config(group_size=...)` are unaffected when their
+  value already divides dim.
+- updated `BuildConfig.rroq158_group_size` default to `128` and
+  refreshed the dim-aware pre-validation in
+  `voyager_index/_internal/inference/shard_engine/_builder/pipeline.py`
+  and `.../_manager/lifecycle.py` so the corpus-too-small check uses
+  the resolved gs (not the raw request) and dim=64 corpora no longer
+  silently fall back to FP16 under the new default.
+- updated docstrings on `Rroq158Config`, `Compression.RROQ158`,
+  `BuildConfig`, and `BuildConfig.rroq158_group_size` with the new
+  headline numbers and the dim-aware fallback rule.
+- added the canonical [`docs/guides/quantization-tuning.md`](docs/guides/quantization-tuning.md):
+  decision matrix (rroq158 vs rroq4_riem vs fp16), per-dim recipe
+  table, override guidance for high-intra-token-variance corpora
+  (e.g. arguana → pin `Rroq158Config(group_size=64)` to recover the
+  −0.0058 marginal fail), and the closing retrospective on the
+  outlier-rescue investigation with the prototype p-curve.
+- refreshed `README.md`, `docs/benchmarks.md`,
+  `docs/guides/shard-engine.md`, `docs/guides/rroq-mathematics.md`,
+  `docs/posts/sub-2-bit-late-interaction.md` (added v1.1 update
+  section), `docs/api/python.md`,
+  `docs/getting-started/quickstart.md`,
+  `docs/full_feature_cookbook.md`, `docs/reference_api_tutorial.md`,
+  and `docs/guides/max-performance-reference-api.md` for the new
+  default + dim-aware fallback + new headline numbers. The detailed
+  per-dataset tables in `README.md`/`docs/benchmarks.md` remain at
+  the gs=32 baseline until the post-merge full BEIR-6 sweep refreshes
+  them in a follow-up commit.
+- closed the **outlier-rescue hybrid investigation** as
+  "explored, didn't ship". The full Python prototype on arguana
+  (preserved at `reports/rroq158_hybrid_prototype_log.txt`) showed
+  the rescue curve flattening fast (slope drops from +0.005 NDCG per
+  +5% rescue at p<0.10 to +0.0025 at p=0.20 and turns noisy beyond),
+  with even p=1.00 leaving −0.029 NDCG vs the FP32 ceiling — the
+  uniform `gs=128` win we already have delivers the same ~13% storage
+  reduction at the same or better quality without any kernel work or
+  on-disk format change. Removed `docs/posts/rroq158-outlier-rescue-design.md`
+  (replaced by the one-paragraph retrospective in the tuning guide)
+  and updated `reports/rroq158_pareto_arguana.md` to point at the
+  tuning guide instead of the dropped design doc.
+- migration: existing `RROQ158` indexes load unchanged — the manifest
+  carries the build-time `group_size`. Only newly built indexes pick
+  up the new default. Pin `Rroq158Config(group_size=32)` to restore
+  the previous default exactly; pin `Rroq158Config(group_size=64)`
+  for the safest cross-dataset choice.
+
 ### Phase 7 — RROQ production-validation sweep (2026-04-19 → 2026-04-20)
 
 - ran the BEIR 2026-Q2 production-validation sweep

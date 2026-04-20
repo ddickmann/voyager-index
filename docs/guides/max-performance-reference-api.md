@@ -158,7 +158,7 @@ curl -X POST http://127.0.0.1:8080/collections/shard-prod \
     "k_candidates": 2000,
     "compression": "rroq158",
     "rroq158_k": 8192,
-    "rroq158_group_size": 32,
+    "rroq158_group_size": 128,
     "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
@@ -221,7 +221,7 @@ curl -X POST http://127.0.0.1:8080/collections/shard-prod/search \
 
 - `compression`: `rroq158` (default — Riemannian 1.58-bit, K=8192, GPU+CPU), `rroq4_riem` (Riemannian 4-bit asymmetric — safe-fallback for zero-regression workloads), `fp16`, `int8`, `roq4`
 - `rroq158_k`: rroq158 spherical k-means centroid count (default `8192`)
-- `rroq158_group_size`: rroq158 ternary group size (default `32`)
+- `rroq158_group_size`: rroq158 ternary group size (default **`128`** — SOTA, one scale per token at dim=128; the encoder transparently steps down to gs=64 / gs=32 with a log warning for non-multiple-of-128 dims; pin to `64` for arguana-class corpora — see [`docs/guides/quantization-tuning.md`](quantization-tuning.md))
 - `rroq158_seed`: rroq158 FWHT rotator + k-means initialisation seed (default `42`)
 - `rroq4_riem_k`: rroq4_riem spherical k-means centroid count (default `8192`)
 - `rroq4_riem_group_size`: rroq4_riem 4-bit asymmetric residual group size (default `32`)

@@ -11,9 +11,21 @@ class Compression(str, Enum):
     INT8 = "int8"
     ROQ4 = "roq4"
     RROQ158 = "rroq158"
-    """Riemannian-aware 1.58-bit (ternary) ROQ. ~5.5x smaller than fp16,
-    ~30% smaller than ROQ4, and matches fp16 R@10 on offline brute-force
-    nfcorpus (0.345 vs 0.345). See research/low_bit_roq/PROGRESS.md."""
+    """Riemannian-aware 1.58-bit (ternary) ROQ — the SOTA storage default.
+
+    Production default at K=8192, group_size=128 (one scale per token at
+    dim=128, the most-tested production dim). On the 3 BEIR datasets
+    re-validated for the gs=128 flip (arguana, fiqa, nfcorpus) the new
+    default delivers ~13% smaller storage (40 vs 46 bytes/token at dim=128),
+    p95 ~10-30% faster than the previous gs=32 default, with NDCG@10 within
+    +/-0.005 of the gs=32 baseline on Pareto-clean datasets. Overall vs FP16:
+    ~6.4x smaller doc-token storage. See `docs/guides/quantization-tuning.md`
+    for the per-dim recipe table — for dims that aren't a multiple of 128
+    the encoder transparently steps down to gs=64 / gs=32 with a log warning.
+    Override with `Rroq158Config(group_size=64)` for high-intra-token-variance
+    corpora (e.g. arguana, where gs=128 has -0.0058 NDCG vs -0.0050 gate).
+    See `docs/posts/sub-2-bit-late-interaction.md` for the public write-up
+    and `research/low_bit_roq/PROGRESS.md` for the development history."""
 
     RROQ4_RIEM = "rroq4_riem"
     """Riemannian-aware 4-bit asymmetric ROQ — the no-quality-loss lane.
@@ -92,15 +104,24 @@ class BuildConfig:
     """Build-time configuration for offline shard index construction.
 
     The default codec is :class:`Compression.RROQ158` (Riemannian-aware
-    1.58-bit ternary ROQ at K=8192). On the BEIR 2026-Q2 production
-    sweep it averages **−1.43 pt NDCG@10** vs fp16 with **−0.48 pt
-    R@100** at **~5.5x smaller doc-token storage**, and is at
-    **GPU p95 parity (1.13× avg)**. Documented quality cost: up to
-    −2.69 pt NDCG@10 on hard datasets (worst: arguana). The
-    brute-force top-K codec-fidelity overlap with fp16 is ~82% on
-    arguana — relevant docs are still recovered (R@100 within −1.4 pt
-    on the same brute-force path), but ~18% of top-10 positions are
-    displaced relative to fp16. See ``benchmarks/topk_overlap_sweep.py``.
+    1.58-bit ternary ROQ at K=8192, ``group_size=128`` — the SOTA
+    storage default flipped from the previous ``group_size=32`` after
+    the BEIR Pareto sweep). On the BEIR 2026-Q2 production sweep
+    rroq158 averages **−1.43 pt NDCG@10** vs fp16 with **−0.48 pt
+    R@100** at **~6.4x smaller doc-token storage** at the new gs=128
+    default (40 vs the previous 46 bytes/token at dim=128) and **GPU
+    p95 parity (1.13× avg)**. The gs=128 flip is +/-0.005 NDCG@10 on
+    Pareto-clean datasets (fiqa, nfcorpus, scidocs-class) and is
+    actually slightly faster (p95 ~10-30% better than gs=32) thanks to
+    one scale per token in the popcount kernel. Documented quality
+    cost: up to −2.69 pt NDCG@10 on hard datasets (worst: arguana,
+    where gs=128 itself adds another -0.0058 — pin to
+    ``Rroq158Config(group_size=64)`` to recover that, see
+    ``docs/guides/quantization-tuning.md``). The brute-force top-K
+    codec-fidelity overlap with fp16 is ~82% on arguana — relevant
+    docs are still recovered (R@100 within −1.4 pt on the same
+    brute-force path), but ~18% of top-10 positions are displaced
+    relative to fp16. See ``benchmarks/topk_overlap_sweep.py``.
     Workloads requiring exact top-10 rank fidelity should opt into
     ``Compression.RROQ4_RIEM`` or use rroq158 with an FP16 rerank on
     the shortlist (``benchmarks/diag_rroq158_rescue.py``).
@@ -153,9 +174,17 @@ class BuildConfig:
     rroq158_seed: int = 42
     """Seed for the FWHT rotation and spherical k-means init."""
 
-    rroq158_group_size: int = 32
-    """Ternary group size in coordinates. Must divide ``dim`` and be a
-    multiple of 32 (one popcount word per group)."""
+    rroq158_group_size: int = 128
+    """Ternary group size in coordinates. Production SOTA default ``128``
+    (one scale per token at dim=128 — the most-tested production dim,
+    where it gives ~13% smaller storage and ~10-30% faster p95 over the
+    previous ``32`` default with NDCG@10 within +/-0.005 on BEIR cells
+    that pass the Pareto gate). Must be a positive multiple of 32. For
+    dims that are not a multiple of the requested value the rroq158
+    encoder transparently steps down through ``{128, 64, 32}`` and logs
+    a warning, so dim=64 / 96 / 160 corpora still build cleanly. See
+    ``docs/guides/quantization-tuning.md`` for the per-dim recipe table
+    and the override recipe for high-intra-token-variance corpora."""
 
     rroq4_riem_k: int = 8192
     """Centroid codebook size for RROQ4_RIEM. Same shape rules as

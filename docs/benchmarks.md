@@ -69,13 +69,44 @@ How to read these results:
   K=8192) on both GPU and CPU; see the next subsection for kernel-level
   performance and the trade-off statement.
 
-### Default codec: RROQ-1.58 (K=8192) — Phase-7 BEIR 2026-Q2 sweep
+### Default codec: RROQ-1.58 (K=8192, **group_size=128 SOTA**) — Phase-7 BEIR 2026-Q2 sweep
 
 `Compression.RROQ158` is the **default** for newly built indexes on both
-GPU (Triton fused kernel) and CPU (Rust SIMD kernel). Per-token storage
-drops to **46 B** (vs 256 B FP16, 64 B ROQ-4 — 5.5× / 1.4× smaller).
+GPU (Triton fused kernel) and CPU (Rust SIMD kernel) — at the new SOTA
+**`group_size=128`** (one scale per token at dim=128, the most-tested
+production dim). Per-token storage at the new default drops to **40 B**
+(vs 256 B FP16, 64 B ROQ-4, and the previous 46 B at gs=32 — i.e.
+**~6.4× / 1.6× / 1.15×** smaller respectively). For dims that aren't a
+multiple of 128 (dim=64 / 96 / 160) the encoder transparently steps down
+to gs=64 / gs=32 with a log warning. The full per-dim recipe and override
+guidance live in [docs/guides/quantization-tuning.md](guides/quantization-tuning.md).
 
-The full 4-codec × 6-dataset × 2-mode sweep that backs this default is
+#### gs=128 flip — Pareto-validated cells (CPU 8-worker, full eval)
+
+The 3 BEIR datasets re-validated for the gs=128 default flip, sourced from
+[`reports/rroq158_pareto_cells/`](../reports/rroq158_pareto_cells/):
+
+| Dataset | NDCG@10 (gs=32) | NDCG@10 (gs=128) | ΔNDCG | R@100 (gs=32) | R@100 (gs=128) | p95 (gs=32) | p95 (gs=128) | p95 ratio | B/tok ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arguana  | 0.3713 | 0.3655 | **−0.0058** | 0.9633 | 0.9633 | 666 ms | 530 ms | 0.80× | 0.87× |
+| fiqa     | 0.4223 | 0.4260 | **+0.0037** | 0.7151 | 0.7118 | 279 ms | 253 ms | 0.91× | 0.87× |
+| nfcorpus | 0.3799 | 0.3790 | −0.0009 | 0.3354 | 0.3329 | 286 ms | 193 ms | 0.67× | 0.87× |
+
+Headline (ship-now signal across these 3 cells): **−13% storage, +0% to
++33% faster CPU p95, NDCG@10 within ±0.005 on Pareto-clean datasets**
+(arguana marginal fail, recoverable with `Rroq158Config(group_size=64)`
+— see the tuning guide). The **remaining 3 BEIR datasets** (`scifact`,
+`scidocs`, `quora`) plus `hotpotqa` will be filled in by the **post-merge
+full BEIR-6 sweep at gs=128** that refreshes the headline averages table
+below in a follow-up commit.
+
+#### Pre-flip 4-codec sweep (gs=32 baseline)
+
+The full 4-codec × 6-dataset × 2-mode sweep below was measured at the
+**previous `group_size=32` default**. The post-merge full BEIR-6 sweep
+will refresh the rroq158 rows at gs=128.
+
+The full sweep that backed this default is
 [`benchmarks/beir_2026q2_full_sweep.py`](../benchmarks/beir_2026q2_full_sweep.py),
 with raw per-cell JSONL + provenance under
 [`reports/beir_2026q2/`](../reports/beir_2026q2/) and the rendered
@@ -110,7 +141,7 @@ to regenerate.
 | scidocs | 25,657 | 0.1975 | 0.2752 | 0.1377 | 0.2069 | 0.4346 | 238.6 | 4.6 | N/A | N/A |
 | scifact | 5,183 | 0.7531 | 0.7717 | 0.7124 | 0.8766 | 0.9567 | 262.5 | 4.0 | N/A | N/A |
 
-#### `rroq158` (default — Riemannian 1.58-bit ternary, K=8192)
+#### `rroq158` (gs=32 baseline — pre-SOTA-flip, refreshed post-merge)
 
 | Dataset | Docs | NDCG@10 | NDCG@100 | MAP@100 | Recall@10 | Recall@100 | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -138,7 +169,7 @@ to regenerate.
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | fp16 | 0.5206 | 0.5498 | 0.6105 | 0.7360 | 4.0 | 103.1 | 271.2 | 127.1 |
 | int8 | 0.5200 | 0.5491 | 0.6106 | 0.7357 | 4.0 | n/a | 277.9 | n/a |
-| **rroq158 (default)** | 0.5063 | 0.5376 | 0.5950 | 0.7312 | 4.6 | 324.8 | 285.9 | 41.3 |
+| **rroq158 (gs=32, pre-flip)** | 0.5063 | 0.5376 | 0.5950 | 0.7312 | 4.6 | 324.8 | 285.9 | 41.3 |
 | rroq4_riem (no-loss lane) | 0.5208 | 0.5505 | 0.6105 | 0.7383 | 20.1 | 740.5 | 119.0 | 24.8 |
 
 <!-- BEIR_2026Q2_FULL_TABLE_END -->
@@ -300,7 +331,8 @@ instead of ternary.
 | ------------ | --------: | ------------------: | -----------: | --------------: | -----: |
 | `fp16`       | 256 B     | 0 (baseline)        | 1×           | 1× (baseline)   | shipped |
 | `rroq4_riem` | ~88 B     | +0.02 pt avg, max ±0.05 pt | ~3× smaller | ~5.0× slower GPU avg, ~7.2× slower CPU avg | shipped (no-quality-loss lane) |
-| `rroq158`    | ~46 B     | −1.43 pt avg, max −2.69 pt (arguana) | ~5.5× smaller | 1.13× GPU avg, ~3.2× slower CPU avg | shipped (default) |
+| `rroq158` (gs=128, **SOTA default**) | **~40 B** | within ±0.005 NDCG vs gs=32 on validated cells, plus the −1.43 pt vs FP16 from gs=32 | **~6.4× smaller** | 0.67–0.91× CPU p95 vs gs=32 baseline; GPU at ~p95 parity with FP16 | shipped (default) |
+| `rroq158` (gs=32, prev default) | ~46 B     | −1.43 pt avg vs FP16, max −2.69 pt (arguana) | ~5.5× smaller | 1.13× GPU avg, ~3.2× slower CPU avg vs FP16 | shipped (override `Rroq158Config(group_size=32)`) |
 
 Both kernels are wired and parity-tested:
 
@@ -313,11 +345,14 @@ Both kernels are wired and parity-tested:
 End-to-end build + search is covered by
 `tests/test_rroq4_riem_e2e.py::test_rroq4_riem_build_and_search_cpu`.
 
-When to pick which codec: use **rroq158** when latency parity with FP16
-matters more than a 1-point NDCG@10 budget on hard datasets (most
-production retrieval workloads). Use **rroq4_riem** when you cannot
-accept the rroq158 NDCG@10 cost (e.g. regulated domains, high-stakes
-ranking) and the latency hit is acceptable.
+When to pick which codec: use **rroq158** (gs=128 SOTA default) when
+latency parity with FP16 matters more than a 1-point NDCG@10 budget on
+hard datasets (most production retrieval workloads). Pin
+`Rroq158Config(group_size=64)` for high-intra-token-variance corpora
+(e.g. arguana). Use **rroq4_riem** when you cannot accept the rroq158
+NDCG@10 cost (e.g. regulated domains, high-stakes ranking) and the
+latency hit is acceptable. The full decision matrix and per-dim recipe
+live in [docs/guides/quantization-tuning.md](guides/quantization-tuning.md).
 
 #### Phase-7 followup: end-to-end CPU lane refresh for `rroq4_riem`
 

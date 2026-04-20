@@ -44,10 +44,10 @@ These keyword arguments are passed through when `engine="shard"`:
 |---|---|
 | `n_shards` | Number of sealed shards |
 | `k_candidates` | LEMUR candidate budget before exact scoring |
-| `compression` | Stored representation. Default: `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4`, `rroq4_riem` (Riemannian 4-bit asymmetric — the safe-fallback lane for zero-regression workloads). The `rroq158` and `rroq4_riem` codecs need `n_tokens >= K` to train the codebook — they auto-shrink K to the largest valid power-of-two when the corpus is too small, and silently downgrade to fp16 when even that does not fit |
-| `rroq158_k` | rroq158 spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ `rroq158_group_size` |
+| `compression` | Stored representation. Default: `rroq158` (Riemannian 1.58-bit, K=8192, **`group_size=128` SOTA**, GPU+CPU). Other options: `fp16`, `int8`, `roq4`, `rroq4_riem` (Riemannian 4-bit asymmetric — the safe-fallback lane for zero-regression workloads). The `rroq158` and `rroq4_riem` codecs need `n_tokens >= K` to train the codebook — they auto-shrink K to the largest valid power-of-two when the corpus is too small, and silently downgrade to fp16 when even that does not fit. See [`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md). |
+| `rroq158_k` | rroq158 spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ effective `rroq158_group_size` |
 | `rroq158_seed` | rroq158 FWHT rotator + k-means initialisation seed. Default: `42` |
-| `rroq158_group_size` | rroq158 ternary group size. Default: `32`. Must be a positive multiple of 32 (so the ternary planes pack into int32 words) |
+| `rroq158_group_size` | rroq158 ternary group size. **Default: `128`** (SOTA — one scale per token at dim=128, ~13% smaller storage and ~10–30% faster CPU p95 vs the previous `32` default; NDCG@10 within ±0.005 on Pareto-clean BEIR datasets). Must be a positive multiple of 32 (so the ternary planes pack into int32 words). For dims that aren't a multiple of the requested value (dim=64 / 96 / 160) the encoder transparently steps down through `{128, 64, 32}` and logs a warning — so dim=64 / 96 / 160 corpora still build cleanly. Pin to `64` for the safest cross-corpus choice (e.g. arguana-class corpora). See [`docs/guides/quantization-tuning.md`](../guides/quantization-tuning.md) for the per-dim recipe and override guidance. |
 | `rroq4_riem_k` | rroq4_riem spherical k-means centroid count. Default: `8192`. Must be a power of two and ≥ `rroq4_riem_group_size` |
 | `rroq4_riem_seed` | rroq4_riem FWHT rotator + k-means initialisation seed. Default: `42` |
 | `rroq4_riem_group_size` | rroq4_riem 4-bit asymmetric residual group size. Default: `32`. Must be a positive even integer that divides `dim` |
@@ -107,8 +107,8 @@ idx = Index(
     engine="shard",
     n_shards=64,
     k_candidates=512,
-    # compression defaults to "rroq158" (K=8192). Override with "fp16" /
-    # "int8" / "roq4" if required.
+    # compression defaults to "rroq158" (K=8192, group_size=128 SOTA).
+    # Override with "fp16" / "int8" / "roq4" if required.
     quantization_mode="fp8",
 )
 ```
@@ -125,8 +125,8 @@ idx = (
     .with_shard(
         n_shards=64,
         k_candidates=512,
-        # compression defaults to "rroq158" (K=8192). Override here if you
-        # need the legacy "fp16" lane.
+        # compression defaults to "rroq158" (K=8192, group_size=128 SOTA).
+        # Override here if you need the legacy "fp16" lane.
         quantization_mode="fp8",
         transfer_mode="pinned",
     )

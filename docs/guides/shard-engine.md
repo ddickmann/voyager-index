@@ -114,7 +114,7 @@ curl -X POST http://localhost:8080/collections/my_col \
     "n_shards": 256,
     "compression": "rroq158",
     "rroq158_k": 8192,
-    "rroq158_group_size": 32,
+    "rroq158_group_size": 128,
     "rroq158_seed": 42,
     "quantization_mode": "fp8",
     "transfer_mode": "pinned",
@@ -162,10 +162,10 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 |-----------|---------|-------------|
 | `n_shards` | 256 | Number of storage shards |
 | `dim` | 128 | Embedding dimension |
-| `compression` | `rroq158` | Storage compression. Default is `rroq158` (Riemannian 1.58-bit, K=8192, GPU+CPU). Other options: `fp16`, `int8`, `roq4`, `rroq4_riem` (Riemannian 4-bit asymmetric — safe-fallback lane for zero-regression workloads) |
-| `rroq158_k` | 8192 | rroq158 spherical k-means centroid count (must be a power of two ≥ `group_size`) |
+| `compression` | `rroq158` | Storage compression. Default is `rroq158` (Riemannian 1.58-bit, K=8192, **group_size=128 SOTA**, GPU+CPU). Other options: `fp16`, `int8`, `roq4`, `rroq4_riem` (Riemannian 4-bit asymmetric — safe-fallback lane for zero-regression workloads). See [`docs/guides/quantization-tuning.md`](quantization-tuning.md). |
+| `rroq158_k` | 8192 | rroq158 spherical k-means centroid count (must be a power of two ≥ effective `group_size`) |
 | `rroq158_seed` | 42 | rroq158 FWHT rotator + k-means initialisation seed |
-| `rroq158_group_size` | 32 | rroq158 ternary group size (must be a multiple of 32 to align with the `popcnt` kernel) |
+| `rroq158_group_size` | **128** | rroq158 ternary group size — SOTA default (one scale per token at dim=128). Must be a positive multiple of 32. The encoder transparently steps down to gs=64 / gs=32 with a log warning for dims that aren't a multiple of the requested value (dim=64 / 96 / 160 still build cleanly). Set to `64` for the safest cross-dataset choice (e.g. arguana-class corpora). See [`docs/guides/quantization-tuning.md`](quantization-tuning.md). |
 | `rroq4_riem_k` | 8192 | rroq4_riem spherical k-means centroid count (must be a power of two ≥ `group_size`) |
 | `rroq4_riem_seed` | 42 | rroq4_riem FWHT rotator + k-means initialisation seed |
 | `rroq4_riem_group_size` | 32 | rroq4_riem 4-bit asymmetric residual group size (positive even integer that divides `dim`) |
@@ -201,14 +201,24 @@ curl -X POST http://localhost:8080/collections/my_col/search \
 - **Pinned transfer knobs**: `pinned_pool_buffers` and
   `pinned_buffer_max_tokens` matter only for CPU->GPU fetch pipelines, not the
   pure CPU exact path.
-- **RROQ-1.58 (default)**: ~5.5× smaller storage than fp16 (~46 B / token
-  vs 256 B / token). On the BEIR 2026-Q2 production sweep: avg −1.43 pt
-  NDCG@10 vs fp16 with avg −0.48 pt R@100, avg GPU p95 1.13× fp16
-  (within the 1.20× retention budget). CPU p95 is currently **~3.2×
-  slower than fp16** at the production batch shape (down from ~7.9×
-  pre-fix after the post-Phase-7 wrapper + kernel refresh; see
+- **RROQ-1.58 (default, `group_size=128` SOTA)**: **~6.4× smaller storage
+  than fp16** (~40 B / token vs 256 B / token at dim=128 — down from
+  ~46 B at the previous gs=32 default). On the BEIR 2026-Q2 production
+  sweep at the gs=32 baseline: avg −1.43 pt NDCG@10 vs fp16 with avg
+  −0.48 pt R@100, avg GPU p95 1.13× fp16 (within the 1.20× retention
+  budget). CPU p95 is currently **~3.2× slower than fp16** at the
+  production batch shape (down from ~7.9× pre-fix after the post-Phase-7
+  wrapper + kernel refresh; see
   [docs/benchmarks.md](../benchmarks.md#honest-cpu-latency-caveat-post-phase-7-followup))
-  — the storage win is the primary value here. Brute-force codec-fidelity overlap with fp16
+  — the storage win is the primary value here. The gs=128 flip itself is
+  Pareto-clean: NDCG@10 within ±0.005 of gs=32 on the 3 datasets
+  re-validated for the flip, p95 ~10–30% faster than gs=32 (one scale
+  per token cuts kernel scale loads by 4×). For dims that aren't a
+  multiple of 128 (dim=64 / 96 / 160) the encoder transparently steps
+  down to gs=64 / gs=32 with a log warning. Override with
+  `Rroq158Config(group_size=64)` for the safest cross-corpus choice
+  (e.g. arguana-class corpora where one scale per token is too coarse —
+  see [`docs/guides/quantization-tuning.md`](quantization-tuning.md)). Brute-force codec-fidelity overlap with fp16
   across BEIR-6 (`reports/beir_2026q2/topk_overlap.jsonl`):
   **avg ~79% top-10 / ~80% top-100** (range 73–83% top-10), with
   R@100 within −2.1 pt of FP16 on every dataset. Importantly, top-K

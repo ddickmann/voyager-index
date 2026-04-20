@@ -185,32 +185,41 @@ class ShardSegmentManagerLifecycleMixin:
             elif cfg.compression == Compression.RROQ158:
                 from voyager_index._internal.inference.quantization.rroq158 import (
                     Rroq158Config,
+                    _resolve_group_size,
                     choose_effective_rroq158_k,
                     encode_rroq158,
                 )
 
-                gs = int(cfg.rroq158_group_size)
+                requested_gs = int(cfg.rroq158_group_size)
                 n_tok = int(all_vecs.shape[0])
                 token_dim = int(all_vecs.shape[1])
-                if token_dim < gs:
-                    # Embedding dim smaller than one ternary group → no
-                    # quantization is possible (one popcount word per group
-                    # requires at least group_size coords per token). This
-                    # is the synthetic-test / demo path (e.g. dim=16 with
-                    # the default group_size=32). Drop to FP16 with a loud
-                    # warning so the operator can either bump dim or
-                    # explicitly request FP16. Production embeddings live
-                    # in dim=128/256/768 → never trips this branch.
+                # Resolve the dim-aware group_size so the corpus-size check
+                # below uses the value the encoder will actually apply
+                # (e.g. requested gs=128 + dim=64 -> effective gs=64).
+                if token_dim < 32 or token_dim % 32 != 0:
                     logger.warning(
-                        "RROQ158 requested but token dim=%d is smaller than "
-                        "group_size=%d. Falling back to FP16 — rroq158 needs "
-                        "at least group_size coordinates per token to pack a "
-                        "ternary group. Pass compression=FP16 explicitly to "
-                        "silence, or use a group_size that divides %d.",
-                        token_dim, gs, token_dim,
+                        "RROQ158 requested but token dim=%d is not a positive "
+                        "multiple of 32. rroq158 cannot encode this dim — "
+                        "falling back to FP16. Production dims (64, 96, 128, "
+                        "160, 256, 384, 768, 1024) all satisfy this; pass "
+                        "compression=FP16 explicitly to silence.",
+                        token_dim,
                     )
                     effective_compression = Compression.FP16
-                elif n_tok < gs:
+                    gs = requested_gs
+                else:
+                    try:
+                        gs = _resolve_group_size(requested_gs, token_dim)
+                    except ValueError as exc:
+                        logger.warning(
+                            "RROQ158 requested but dim=%d cannot fit any of "
+                            "{128, 64, 32} group_size (%s). Falling back to "
+                            "FP16.",
+                            token_dim, exc,
+                        )
+                        effective_compression = Compression.FP16
+                        gs = requested_gs
+                if effective_compression == Compression.RROQ158 and n_tok < gs:
                     # Data-shape fallback (NOT a codec error): a corpus with
                     # fewer tokens than a single ternary group cannot be
                     # quantized at all (one popcount word == one group). Drop
@@ -221,13 +230,14 @@ class ShardSegmentManagerLifecycleMixin:
                     # any ternary codebook.
                     logger.warning(
                         "RROQ158 requested but corpus has only %d tokens "
-                        "(< group_size=%d). Falling back to FP16 — rroq158 "
-                        "needs at least one ternary group of tokens to "
-                        "encode. Pass compression=FP16 explicitly to silence.",
+                        "(< effective group_size=%d). Falling back to FP16 — "
+                        "rroq158 needs at least one ternary group of tokens "
+                        "to encode. Pass compression=FP16 explicitly to "
+                        "silence.",
                         n_tok, gs,
                     )
                     effective_compression = Compression.FP16
-                else:
+                if effective_compression == Compression.RROQ158:
                     # Auto-shrink K when the corpus has fewer tokens than
                     # the requested codebook size (typical only in tests /
                     # demos / very small shards). This keeps the user's

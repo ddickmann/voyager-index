@@ -142,30 +142,47 @@ def build(cfg: BuildConfig, npz_path: Path = DEFAULT_NPZ, device: str = "cuda") 
         # ``voyager_index/_internal/inference/shard_engine/_manager/lifecycle.py``.
         from voyager_index._internal.inference.quantization.rroq158 import (
             Rroq158Config,
+            _resolve_group_size,
             choose_effective_rroq158_k,
             encode_rroq158,
         )
         active_arr = np.asarray(active_vectors)
         n_tokens = int(active_arr.shape[0])
         token_dim = int(active_arr.shape[1]) if active_arr.ndim >= 2 else 0
-        gs = int(cfg.rroq158_group_size)
-        if token_dim and token_dim < gs:
+        requested_gs = int(cfg.rroq158_group_size)
+        # Resolve the dim-aware group_size up-front so the ``n_tokens < gs``
+        # corpus-too-small check uses the value the encoder will actually
+        # apply (e.g. requested gs=128 + dim=64 -> effective gs=64).
+        if token_dim < 32 or token_dim % 32 != 0:
             log.warning(
-                "RROQ158 requested but token dim=%d is smaller than "
-                "group_size=%d. Falling back to FP16 — rroq158 needs at "
-                "least group_size coordinates per token.",
-                token_dim, gs,
+                "RROQ158 requested but token dim=%d is not a positive multiple "
+                "of 32. rroq158 cannot encode this dim — falling back to FP16. "
+                "Production dims (64, 96, 128, 160, 256, 384, 768, 1024) all "
+                "satisfy this. Pass compression=FP16 explicitly to silence.",
+                token_dim,
             )
             cfg.compression = Compression.FP16
-        elif n_tokens < gs:
+            gs = requested_gs  # unused after fallback, set for clarity
+        else:
+            try:
+                gs = _resolve_group_size(requested_gs, token_dim)
+            except ValueError as exc:
+                log.warning(
+                    "RROQ158 requested but dim=%d cannot fit any of "
+                    "{128, 64, 32} group_size (%s). Falling back to FP16.",
+                    token_dim, exc,
+                )
+                cfg.compression = Compression.FP16
+                gs = requested_gs
+        if cfg.compression == Compression.RROQ158 and n_tokens < gs:
             log.warning(
                 "RROQ158 requested but corpus has only %d tokens "
-                "(< group_size=%d). Falling back to FP16 — rroq158 needs "
-                "at least one ternary group of tokens to encode.",
+                "(< effective group_size=%d). Falling back to FP16 — rroq158 "
+                "needs at least one ternary group of tokens to encode.",
                 n_tokens, gs,
             )
             cfg.compression = Compression.FP16
-        else:
+        if cfg.compression == Compression.RROQ158:
             effective_k = choose_effective_rroq158_k(
                 n_tokens=n_tokens,
                 requested_k=int(cfg.rroq158_k),
