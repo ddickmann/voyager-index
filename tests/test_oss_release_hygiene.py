@@ -166,16 +166,16 @@ def test_pyproject_install_contract_matches_public_release_story() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
 
-    assert pyproject["project"]["version"] == "0.1.5"
+    assert pyproject["project"]["version"] == "0.1.6"
     assert "full" in extras
     assert "shard-native" in extras
     assert "solver" in extras
     assert "native" in extras
     assert "latence-graph" in extras
-    assert "latence-shard-engine>=0.1.5" in extras["shard-native"]
-    assert "latence-solver>=0.1.5" in extras["solver"]
-    assert "latence-shard-engine>=0.1.5" in extras["native"]
-    assert "latence-solver>=0.1.5" in extras["native"]
+    assert "latence-shard-engine>=0.1.6" in extras["shard-native"]
+    assert "latence-solver>=0.1.6" in extras["solver"]
+    assert "latence-shard-engine>=0.1.6" in extras["native"]
+    assert "latence-solver>=0.1.6" in extras["native"]
     assert "latence>=0.1.1" in extras["latence-graph"]
 
 

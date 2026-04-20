@@ -6,6 +6,24 @@ reads in release order again.
 
 ## Unreleased
 
+## 0.1.6 — RROQ158 SOTA Default at `group_size=128`
+
+This release promotes the dim-aware `Rroq158Config(group_size=128)` lane to the
+build-time default for newly created RROQ158 indexes. The flip ships **~13%
+smaller per-token storage** (~40 vs ~46 bytes/token at dim=128, ~6.4× smaller
+than fp16, up from ~5.5×) at **CPU p95 ~10–30% faster** and **NDCG@10 within
+±0.005** of the previous gs=32 baseline across the full BEIR-6 sweep
+(arguana / fiqa / nfcorpus / quora / scidocs / scifact, GPU Triton + 8-worker
+CPU Rust SIMD). The flip is dim-aware: `_resolve_group_size(requested, dim)`
+transparently steps down to `gs=64` or `gs=32` (with a log warning) on
+production corpora whose token dimension is not divisible by 128, so the new
+default works on dim=64 / 96 / 128 / 160 alike without caller changes.
+
+Existing on-disk indexes are unaffected — the manifest carries the build-time
+`group_size` and only newly built indexes pick up the new default. Pin
+`Rroq158Config(group_size=32)` to restore the previous default exactly; pin
+`Rroq158Config(group_size=64)` for the safest cross-dataset choice.
+
 ### Phase 8 follow-up — Full BEIR-6 sweep at `gs=128` SOTA default (2026-04-20)
 
 - ran the full BEIR-6 (arguana / fiqa / nfcorpus / quora / scidocs /
