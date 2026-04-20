@@ -1,0 +1,123 @@
+2026-04-20 02:29:14,122 INFO Overlap matrix: 6 datasets × 2 codecs (0 cells already complete)
+2026-04-20 02:29:14,123 INFO Device: cuda
+2026-04-20 02:29:14,170 INFO ================================================================================
+2026-04-20 02:29:14,170 INFO DATASET arguana | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 02:29:14,170 INFO ================================================================================
+2026-04-20 02:29:16,372 INFO arguana: 8674 docs, 1401 queries, dim=128, tokens/doc p50=173 p95=278
+2026-04-20 02:29:16,373 INFO arguana loaded: 8674 docs, 1401 queries, dim=128
+2026-04-20 02:29:16,373 INFO Evaluating on 1401 queries (subset of 1401 total in qrels)
+2026-04-20 02:29:16,373 INFO fp16 brute-force MaxSim ...
+2026-04-20 02:29:37,032 INFO fp16: NDCG@10=0.3687 R@100=0.9593 R@10=0.7409 (20.6s)
+2026-04-20 02:29:37,032 INFO Running brute-force rroq158 on arguana ...
+2026-04-20 02:29:37,048 INFO rroq158 encoding 1541060 tokens, K=8192
+2026-04-20 02:29:37,555 INFO rroq158 fit: 100000/1541060 tokens, K=8192
+2026-04-20 02:32:28,771 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 02:33:04,031 INFO rroq158 packed: docs=8674 t_max=512 (max real=291) n_groups=4
+2026-04-20 02:35:25,910 INFO rroq158: NDCG@10=0.3410 (Δ=-0.0278) R@100=0.9450 (Δ=-0.0143) overlap@10=82.2% @20=81.8% @50=80.0% @100=78.5% (348.7s)
+2026-04-20 02:35:25,916 INFO Running brute-force rroq4_riem on arguana ...
+2026-04-20 02:35:25,926 INFO rroq4_riem encoding 1541060 tokens, K=8192, gs=32
+2026-04-20 02:35:26,363 INFO rroq4_riem fit: 100000/1541060 tokens, K=8192
+2026-04-20 02:37:49,334 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 02:38:24,959 INFO rroq4_riem packed: docs=8674 t_max=512 n_groups=4
+2026-04-20 02:43:08,729 INFO rroq4_riem: NDCG@10=0.3684 (Δ=-0.0003) R@100=0.9615 (Δ=+0.0021) overlap@10=96.8% @20=96.9% @50=96.8% @100=96.7% (462.7s)
+2026-04-20 02:43:08,738 INFO ================================================================================
+2026-04-20 02:43:08,738 INFO DATASET fiqa | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 02:43:08,738 INFO ================================================================================
+2026-04-20 02:43:19,046 INFO fiqa: 57638 docs, 648 queries, dim=128, tokens/doc p50=108 p95=274
+2026-04-20 02:43:19,046 INFO fiqa loaded: 57638 docs, 648 queries, dim=128
+2026-04-20 02:43:19,046 INFO Evaluating on 648 queries (subset of 648 total in qrels)
+2026-04-20 02:43:19,046 INFO fp16 brute-force MaxSim ...
+2026-04-20 02:43:36,596 INFO fp16: NDCG@10=0.4555 R@100=0.7561 R@10=0.5223 (17.5s)
+2026-04-20 02:43:36,597 INFO Running brute-force rroq158 on fiqa ...
+2026-04-20 02:43:36,597 INFO rroq158 encoding 7695260 tokens, K=8192
+2026-04-20 02:43:38,638 INFO rroq158 fit: 100000/7695260 tokens, K=8192
+2026-04-20 02:45:58,727 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 02:49:01,110 INFO rroq158 packed: docs=57638 t_max=512 (max real=300) n_groups=4
+2026-04-20 02:50:05,920 INFO rroq158: NDCG@10=0.4318 (Δ=-0.0237) R@100=0.7354 (Δ=-0.0207) overlap@10=75.1% @20=76.1% @50=77.4% @100=78.4% (389.3s)
+2026-04-20 02:50:05,925 INFO Running brute-force rroq4_riem on fiqa ...
+2026-04-20 02:50:05,925 INFO rroq4_riem encoding 7695260 tokens, K=8192, gs=32
+2026-04-20 02:50:08,016 INFO rroq4_riem fit: 100000/7695260 tokens, K=8192
+2026-04-20 02:52:32,872 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 02:55:23,052 INFO rroq4_riem packed: docs=57638 t_max=512 n_groups=4
+2026-04-20 02:59:06,692 INFO rroq4_riem: NDCG@10=0.4531 (Δ=-0.0024) R@100=0.7571 (Δ=+0.0011) overlap@10=95.0% @20=95.4% @50=95.8% @100=96.2% (540.7s)
+2026-04-20 02:59:06,707 INFO ================================================================================
+2026-04-20 02:59:06,708 INFO DATASET nfcorpus | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 02:59:06,708 INFO ================================================================================
+2026-04-20 02:59:07,858 INFO nfcorpus: 3633 docs, 323 queries, dim=128, tokens/doc p50=257 p95=275
+2026-04-20 02:59:07,858 INFO nfcorpus loaded: 3633 docs, 323 queries, dim=128
+2026-04-20 02:59:07,858 INFO Evaluating on 323 queries (subset of 323 total in qrels)
+2026-04-20 02:59:07,858 INFO fp16 brute-force MaxSim ...
+2026-04-20 02:59:08,649 INFO fp16: NDCG@10=0.3827 R@100=0.3348 R@10=0.3396 (0.8s)
+2026-04-20 02:59:08,649 INFO Running brute-force rroq158 on nfcorpus ...
+2026-04-20 02:59:08,649 INFO rroq158 encoding 864642 tokens, K=8192
+2026-04-20 02:59:08,868 INFO rroq158 fit: 100000/864642 tokens, K=8192
+2026-04-20 03:01:28,547 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 03:01:47,367 INFO rroq158 packed: docs=3633 t_max=512 (max real=286) n_groups=4
+2026-04-20 03:01:51,578 INFO rroq158: NDCG@10=0.3808 (Δ=-0.0019) R@100=0.3336 (Δ=-0.0013) overlap@10=79.5% @20=80.1% @50=80.5% @100=80.4% (162.8s)
+2026-04-20 03:01:51,581 INFO Running brute-force rroq4_riem on nfcorpus ...
+2026-04-20 03:01:51,581 INFO rroq4_riem encoding 864642 tokens, K=8192, gs=32
+2026-04-20 03:01:51,805 INFO rroq4_riem fit: 100000/864642 tokens, K=8192
+2026-04-20 03:04:08,444 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 03:04:26,962 INFO rroq4_riem packed: docs=3633 t_max=512 n_groups=4
+2026-04-20 03:04:41,183 INFO rroq4_riem: NDCG@10=0.3827 (Δ=+0.0001) R@100=0.3369 (Δ=+0.0021) overlap@10=95.8% @20=95.9% @50=96.1% @100=96.3% (169.6s)
+2026-04-20 03:04:41,188 INFO ================================================================================
+2026-04-20 03:04:41,189 INFO DATASET quora | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 03:04:41,189 INFO ================================================================================
+2026-04-20 03:04:41,911 INFO quora: 15675 docs, 10000 queries, dim=128, tokens/doc p50=13 p95=23
+2026-04-20 03:04:41,911 INFO quora loaded: 15675 docs, 10000 queries, dim=128
+2026-04-20 03:04:41,912 INFO Evaluating on 10000 queries (subset of 10000 total in qrels)
+2026-04-20 03:04:41,912 INFO fp16 brute-force MaxSim ...
+2026-04-20 03:04:48,414 INFO fp16: NDCG@10=0.9774 R@100=0.9995 R@10=0.9934 (6.2s)
+2026-04-20 03:04:48,414 INFO Running brute-force rroq158 on quora ...
+2026-04-20 03:04:48,414 INFO rroq158 encoding 213725 tokens, K=8192
+2026-04-20 03:04:48,504 INFO rroq158 fit: 100000/213725 tokens, K=8192
+2026-04-20 03:07:07,819 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 03:07:12,520 INFO rroq158 packed: docs=15675 t_max=64 (max real=61) n_groups=4
+2026-04-20 03:09:37,622 INFO rroq158: NDCG@10=0.9707 (Δ=-0.0067) R@100=0.9992 (Δ=-0.0003) overlap@10=72.9% @20=72.5% @50=72.2% @100=72.1% (288.6s)
+2026-04-20 03:09:37,630 INFO Running brute-force rroq4_riem on quora ...
+2026-04-20 03:09:37,631 INFO rroq4_riem encoding 213725 tokens, K=8192, gs=32
+2026-04-20 03:09:37,711 INFO rroq4_riem fit: 100000/213725 tokens, K=8192
+2026-04-20 03:11:59,642 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 03:12:04,314 INFO rroq4_riem packed: docs=15675 t_max=64 n_groups=4
+2026-04-20 03:22:04,031 INFO rroq4_riem: NDCG@10=0.9774 (Δ=+0.0000) R@100=0.9995 (Δ=-0.0000) overlap@10=94.9% @20=94.9% @50=95.1% @100=95.2% (745.7s)
+2026-04-20 03:22:04,054 INFO ================================================================================
+2026-04-20 03:22:04,054 INFO DATASET scidocs | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 03:22:04,055 INFO ================================================================================
+2026-04-20 03:22:10,435 INFO scidocs: 25657 docs, 1000 queries, dim=128, tokens/doc p50=189 p95=274
+2026-04-20 03:22:10,435 INFO scidocs loaded: 25657 docs, 1000 queries, dim=128
+2026-04-20 03:22:10,435 INFO Evaluating on 1000 queries (subset of 1000 total in qrels)
+2026-04-20 03:22:10,435 INFO fp16 brute-force MaxSim ...
+2026-04-20 03:22:29,684 INFO fp16: NDCG@10=0.1987 R@100=0.4439 R@10=0.2094 (19.2s)
+2026-04-20 03:22:29,684 INFO Running brute-force rroq158 on scidocs ...
+2026-04-20 03:22:29,684 INFO rroq158 encoding 4842314 tokens, K=8192
+2026-04-20 03:22:30,989 INFO rroq158 fit: 100000/4842314 tokens, K=8192
+2026-04-20 03:24:51,990 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 03:26:36,230 INFO rroq158 packed: docs=25657 t_max=512 (max real=300) n_groups=4
+2026-04-20 03:28:07,319 INFO rroq158: NDCG@10=0.1864 (Δ=-0.0124) R@100=0.4314 (Δ=-0.0125) overlap@10=82.1% @20=83.1% @50=83.8% @100=84.6% (337.5s)
+2026-04-20 03:28:07,324 INFO Running brute-force rroq4_riem on scidocs ...
+2026-04-20 03:28:07,324 INFO rroq4_riem encoding 4842314 tokens, K=8192, gs=32
+2026-04-20 03:28:08,631 INFO rroq4_riem fit: 100000/4842314 tokens, K=8192
+2026-04-20 03:30:29,596 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 03:32:13,755 INFO rroq4_riem packed: docs=25657 t_max=512 n_groups=4
+2026-04-20 03:35:19,324 INFO rroq4_riem: NDCG@10=0.1989 (Δ=+0.0002) R@100=0.4435 (Δ=-0.0004) overlap@10=96.4% @20=96.6% @50=97.0% @100=97.2% (431.9s)
+2026-04-20 03:35:19,346 INFO ================================================================================
+2026-04-20 03:35:19,346 INFO DATASET scifact | n_queries=0 | top_k=100 | codecs=['rroq158', 'rroq4_riem']
+2026-04-20 03:35:19,346 INFO ================================================================================
+2026-04-20 03:35:20,933 INFO scifact: 5183 docs, 300 queries, dim=128, tokens/doc p50=252 p95=277
+2026-04-20 03:35:20,933 INFO scifact loaded: 5183 docs, 300 queries, dim=128
+2026-04-20 03:35:20,933 INFO Evaluating on 300 queries (subset of 300 total in qrels)
+2026-04-20 03:35:20,933 INFO fp16 brute-force MaxSim ...
+2026-04-20 03:35:22,842 INFO fp16: NDCG@10=0.7585 R@100=0.9567 R@10=0.8772 (1.9s)
+2026-04-20 03:35:22,842 INFO Running brute-force rroq158 on scifact ...
+2026-04-20 03:35:22,842 INFO rroq158 encoding 1195220 tokens, K=8192
+2026-04-20 03:35:23,134 INFO rroq158 fit: 100000/1195220 tokens, K=8192
+2026-04-20 03:37:45,421 INFO rroq158 encode: chunked, chunk=32768
+2026-04-20 03:38:10,981 INFO rroq158 packed: docs=5183 t_max=512 (max real=297) n_groups=4
+2026-04-20 03:38:23,364 INFO rroq158: NDCG@10=0.7421 (Δ=-0.0164) R@100=0.9567 (Δ=+0.0000) overlap@10=82.8% @20=82.5% @50=82.5% @100=83.0% (180.3s)
+2026-04-20 03:38:23,368 INFO Running brute-force rroq4_riem on scifact ...
+2026-04-20 03:38:23,368 INFO rroq4_riem encoding 1195220 tokens, K=8192, gs=32
+2026-04-20 03:38:23,675 INFO rroq4_riem fit: 100000/1195220 tokens, K=8192
+2026-04-20 03:40:45,722 INFO rroq4_riem encode: chunked, chunk=32768
+2026-04-20 03:41:11,504 INFO rroq4_riem packed: docs=5183 t_max=512 n_groups=4
+2026-04-20 03:41:41,278 INFO rroq4_riem: NDCG@10=0.7563 (Δ=-0.0022) R@100=0.9567 (Δ=+0.0000) overlap@10=96.4% @20=96.6% @50=96.6% @100=96.7% (197.9s)
+2026-04-20 03:41:41,366 INFO Overlap sweep complete. Output: reports/beir_2026q2/topk_overlap.jsonl

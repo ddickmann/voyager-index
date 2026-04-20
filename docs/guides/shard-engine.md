@@ -206,14 +206,22 @@ curl -X POST http://localhost:8080/collections/my_col/search \
   NDCG@10 vs fp16 with avg −0.48 pt R@100, avg GPU p95 1.13× fp16
   (within the 1.20× retention budget). CPU p95 is currently ~7.9× slower
   than fp16 at the production batch shape — the storage win is the
-  primary value here. Brute-force codec-fidelity overlap with fp16 on
-  arguana (the worst case for rroq158): top-10 ~82%, R@100 within
-  −1.4 pt (relevant docs are admitted; ~18% of top-10 positions are
-  rank-displaced). Override with `compression="fp16"` only if you need
-  parity with an older deployment or to disambiguate a quality-regression
-  hypothesis. For workloads requiring exact top-10 fidelity, opt into
-  `rroq4_riem` (below) or use rroq158 with an FP16 rerank on the
-  shortlist (`benchmarks/diag_rroq158_rescue.py`).
+  primary value here. Brute-force codec-fidelity overlap with fp16
+  across BEIR-6 (`reports/beir_2026q2/topk_overlap.jsonl`):
+  **avg ~79% top-10 / ~80% top-100** (range 73–83% top-10), with
+  R@100 within −2.1 pt of FP16 on every dataset. Importantly, top-K
+  overlap is roughly *flat across K* (e.g. quora drops from 72.9% at
+  K=10 to 72.1% at K=100), so widening the serve window is **not** a
+  reliable rescue mechanism for displaced top-K docs — the
+  displacement is *out of the candidate set*, not within it. R@100
+  still recovers because rroq158 admits the labeled relevant docs;
+  the displacement is among the non-relevant tail. Override with
+  `compression="fp16"` only if you need parity with an older
+  deployment or to disambiguate a quality-regression hypothesis. For
+  workloads requiring exact top-10 rank fidelity vs FP16, opt into
+  `rroq4_riem` (below — avg ~96% top-10 overlap) or use rroq158 with
+  an FP16 rerank on the shortlist
+  (`benchmarks/diag_rroq158_rescue.py`).
 - **RROQ-4 Riemannian (no-quality-loss lane)**: ~3× smaller than fp16
   (~88 B / token), avg ΔNDCG@10 = +0.02 pt vs fp16 (max ±0.05 pt across
   BEIR-6) — fully wired on both GPU (Triton fused kernel

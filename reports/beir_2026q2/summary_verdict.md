@@ -27,3 +27,22 @@ Failed condition(s):
 
 ### Verdict: **KEEP rroq158 as opt-in storage-saver alternative**
 
+## Codec-fidelity overlap (brute-force, vs fp16)
+
+Each cell shows the average per-query top-K overlap of the codec's brute-force MaxSim ranking with fp16 brute-force MaxSim. 100% means the codec returns exactly the same documents in the top-K as fp16.
+
+| Dataset | Codec | overlap@10 | overlap@20 | overlap@50 | overlap@100 |
+|---|---|---:|---:|---:|---:|
+| arguana | rroq158 | 0.8223 | 0.8185 | 0.7997 | 0.7851 |
+| arguana | rroq4_riem | 0.9680 | 0.9688 | 0.9681 | 0.9665 |
+| fiqa | rroq158 | 0.7508 | 0.7612 | 0.7735 | 0.7840 |
+| fiqa | rroq4_riem | 0.9495 | 0.9540 | 0.9584 | 0.9616 |
+| nfcorpus | rroq158 | 0.7954 | 0.8014 | 0.8046 | 0.8038 |
+| nfcorpus | rroq4_riem | 0.9576 | 0.9591 | 0.9611 | 0.9629 |
+| quora | rroq158 | 0.7292 | 0.7246 | 0.7220 | 0.7206 |
+| quora | rroq4_riem | 0.9487 | 0.9491 | 0.9510 | 0.9515 |
+| scidocs | rroq158 | 0.8213 | 0.8308 | 0.8377 | 0.8462 |
+| scidocs | rroq4_riem | 0.9638 | 0.9662 | 0.9695 | 0.9718 |
+| scifact | rroq158 | 0.8280 | 0.8248 | 0.8251 | 0.8299 |
+| scifact | rroq4_riem | 0.9643 | 0.9658 | 0.9661 | 0.9675 |
+

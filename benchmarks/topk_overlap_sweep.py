@@ -16,10 +16,15 @@ rroq158 top-K overlap with FP16 — the BEIR sweep shows ~−1.4 pt avg
 NDCG@10 with flat R@100, but it does not say *whether* the right docs
 are admitted vs simply displaced. This script answers that directly by
 running brute-force MaxSim with both codecs and reporting per-query
-top-K overlap. The Phase-7 result on arguana (the hardest BEIR-6
-dataset for rroq158) is ~82% top-10 overlap with R@100 within −1.4 pt
-of FP16 — relevant docs are admitted; the rank cost is in the
-top-K ordering.
+top-K overlap. The Phase-7 BEIR-6 result (`reports/beir_2026q2/
+topk_overlap.jsonl`) is rroq158 averaging ~79% top-10 / ~80% top-100
+overlap with FP16 (range 73–83% top-10), with R@100 within −2.1 pt
+of FP16 on every dataset — labeled relevant docs are still admitted;
+the rank cost is in the displacement of FP16's top-K against the
+non-relevant tail. Notably, top-K overlap is roughly flat with K,
+so widening the serve window is **not** a reliable rescue mechanism.
+rroq4_riem averages ~96% top-10 overlap, confirming the
+no-quality-loss positioning.
 
 Output: one JSONL line per (dataset, codec) cell with overlap@{10,20,50,100}
 plus the codec's own NDCG@10 / R@100 on the same brute-force scoring

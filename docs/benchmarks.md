@@ -176,25 +176,53 @@ with each codec's brute-force MaxSim, and reports per-query top-K
 overlap as well as the codec's own NDCG@10 / R@100 on the brute-force
 path (i.e. with all routing artifacts removed).
 
-For **arguana** (the hardest dataset for rroq158, measured in
-`reports/beir_2026q2/topk_overlap.jsonl`):
+Full BEIR-6 results, measured in
+`reports/beir_2026q2/topk_overlap.jsonl`:
 
-| Codec       | Brute-force NDCG@10 | Brute-force R@100 | overlap@10 | overlap@20 | overlap@50 | overlap@100 |
-|-------------|--------------------:|------------------:|-----------:|-----------:|-----------:|------------:|
-| fp16        |              0.3687 |            0.9593 |       100% |       100% |       100% |        100% |
-| **rroq158** |    0.3410 (−2.78pt) |  0.9450 (−1.43pt) |      82.2% |      81.8% |      80.0% |       78.5% |
+| Dataset  | Codec        | Brute-force NDCG@10 | Brute-force R@100 | overlap@10 | overlap@20 | overlap@50 | overlap@100 |
+|----------|--------------|--------------------:|------------------:|-----------:|-----------:|-----------:|------------:|
+| arguana  | fp16         |              0.3687 |            0.9593 |       100% |       100% |       100% |        100% |
+| arguana  | **rroq158**  |    0.3410 (−2.78pt) |  0.9450 (−1.43pt) |      82.2% |      81.8% |      80.0% |       78.5% |
+| arguana  | rroq4_riem   |    0.3684 (−0.03pt) |  0.9615 (+0.21pt) |      96.8% |      96.9% |      96.8% |       96.7% |
+| fiqa     | fp16         |              0.4555 |            0.7561 |       100% |       100% |       100% |        100% |
+| fiqa     | **rroq158**  |    0.4318 (−2.37pt) |  0.7354 (−2.07pt) |      75.1% |      76.1% |      77.4% |       78.4% |
+| fiqa     | rroq4_riem   |    0.4531 (−0.24pt) |  0.7571 (+0.11pt) |      95.0% |      95.4% |      95.8% |       96.2% |
+| nfcorpus | fp16         |              0.3827 |            0.3348 |       100% |       100% |       100% |        100% |
+| nfcorpus | **rroq158**  |    0.3808 (−0.19pt) |  0.3336 (−0.13pt) |      79.5% |      80.1% |      80.5% |       80.4% |
+| nfcorpus | rroq4_riem   |    0.3827 (+0.01pt) |  0.3369 (+0.21pt) |      95.8% |      95.9% |      96.1% |       96.3% |
+| quora    | fp16         |              0.9774 |            0.9995 |       100% |       100% |       100% |        100% |
+| quora    | **rroq158**  |    0.9707 (−0.67pt) |  0.9992 (−0.03pt) |      72.9% |      72.5% |      72.2% |       72.1% |
+| quora    | rroq4_riem   |    0.9774 (+0.00pt) |  0.9995 (−0.00pt) |      94.9% |      94.9% |      95.1% |       95.2% |
+| scidocs  | fp16         |              0.1987 |            0.4439 |       100% |       100% |       100% |        100% |
+| scidocs  | **rroq158**  |    0.1864 (−1.24pt) |  0.4314 (−1.25pt) |      82.1% |      83.1% |      83.8% |       84.6% |
+| scidocs  | rroq4_riem   |    0.1989 (+0.02pt) |  0.4435 (−0.04pt) |      96.4% |      96.6% |      97.0% |       97.2% |
+| scifact  | fp16         |              0.7585 |            0.9567 |       100% |       100% |       100% |        100% |
+| scifact  | **rroq158**  |    0.7421 (−1.64pt) |  0.9567 (+0.00pt) |      82.8% |      82.5% |      82.5% |       83.0% |
+| scifact  | rroq4_riem   |    0.7563 (−0.22pt) |  0.9567 (+0.00pt) |      96.4% |      96.6% |      96.6% |       96.7% |
 
-What this means in plain terms: ~18% of the top-10 docs surfaced by
-rroq158 are not the *exact* docs FP16 would surface, but the relevant
-docs are still mostly in the candidate set — R@100 drops by only
-1.4 pt. The displacement is in the tail-of-top-K ordering, not in
-which docs are admitted. For workloads where exact rank fidelity in
-top-10 is critical, opt into `rroq4_riem` (the no-quality-loss lane —
-brute-force rroq4_riem is at FP16 parity per the headline averages
-above) or use rroq158 with a wider serve window plus an FP16 rerank
-on the shortlist (`benchmarks/diag_rroq158_rescue.py` validates that
-an FP16 rerank on top-32/top-64 fully closes the NDCG@10 gap on
-arguana / scifact / scidocs with no R@100 regression).
+**Headline:** rroq158 averages ~79% top-10 / ~80% top-100 overlap with
+FP16 brute-force across BEIR-6; rroq4_riem averages ~96% top-10 /
+~97% top-100 (the no-quality-loss positioning holds end-to-end).
+
+What this means in plain terms: rroq158 surfaces a different ~20% of
+the top-10 documents than FP16, but the labeled relevant documents
+are still mostly in the candidate set — R@100 is within −2.1 pt of
+FP16 on every BEIR-6 dataset (within 0.0–1.4 pt on arguana, scifact,
+nfcorpus, quora and scidocs; the worst case is fiqa at −2.07 pt).
+
+Note on top-K monotonicity: for rroq158, top-K overlap is roughly
+**flat or slightly declining with K** (e.g. quora 72.9% → 72.1% from
+K=10 to K=100, arguana 82.2% → 78.5%, fiqa actually improves from
+75.1% → 78.4%). Widening the serve window is therefore **not** a
+reliable rescue mechanism — the displacement is *out of the candidate
+set*, not within it. R@100 stays high because rroq158 still admits
+the labeled relevant docs; the displacement is among the non-relevant
+tail of FP16's top-100. For workloads where exact top-10 rank
+fidelity vs FP16 is critical, opt into `rroq4_riem` (the
+no-quality-loss lane at ~96% top-10 overlap) or use rroq158 with an
+FP16 rerank on the shortlist (`benchmarks/diag_rroq158_rescue.py`
+validates that an FP16 rerank on top-32/top-64 fully closes the
+NDCG@10 gap on arguana / scifact / scidocs with no R@100 regression).
 
 #### Honest CPU-latency caveat
 

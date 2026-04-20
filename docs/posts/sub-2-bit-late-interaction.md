@@ -221,14 +221,20 @@ sequentially, and never decoded.
 
 So the production story we ship is **storage-honest**:
 
-- If you can afford the disk, ship `Compression.RROQ4_RIEM`
+- If you can afford the latency, ship `Compression.RROQ4_RIEM`
   (Riemannian-aware 4-bit asymmetric, ~3× smaller than FP16, FP16
-  parity in NDCG@10, and faster than FP16 on GPU on most cells).
+  parity in NDCG@10 to within ±0.05 pt on every BEIR-6 dataset, and
+  ~96% top-10 codec-fidelity overlap with FP16). At the production
+  batch shape it is currently ~5× slower than FP16 on GPU and ~13×
+  slower on CPU — it's a **storage with zero quality regression**
+  lane, not a throughput lane.
 - If your bottleneck is disk or hot-tier RAM (which it almost always
   is at scale on multi-vector indices), ship `Compression.RROQ158`
-  (~5.5× smaller than FP16, 1 NDCG@10 point average gap, ~2.5 worst
-  case at top-10) and accept that on CPU you trade some throughput for
-  the storage win.
+  (~5.5× smaller than FP16, ~1.4 NDCG@10 point average gap,
+  ~2.7 pt worst case at top-10 on arguana, GPU p95 within 1.13× of
+  FP16 on average). Accept that on CPU you trade ~8× throughput for
+  the storage win, and that ~20% of the top-10 docs differ from FP16
+  (R@100 still recovers within −2.1 pt on every dataset).
 
 CPU and GPU implementations share the exact same packed payload tensors
 (sign / nonzero / scale / centroid id / cos_norm / sin_norm) and pass a
@@ -254,11 +260,16 @@ The full table is in the
 [README](../../README.md#beir-retrieval--rtx-a5000-search-only-full-query-set).
 The headline:
 
-- **NDCG@10 vs FP16 (averaged across BEIR-6):** ~−0.7 pt for rroq158,
-  ~−0.1 pt for rroq4_riem.
-- **Recall@100 vs FP16 (averaged):** essentially flat for both.
-- **Storage vs FP16 doc tokens:** 5.5× smaller for rroq158, 3× smaller
+- **NDCG@10 vs FP16 (averaged across BEIR-6):** −1.43 pt for rroq158
+  (worst dataset arguana at −2.69 pt), +0.02 pt for rroq4_riem
+  (within ±0.05 pt on every dataset).
+- **Recall@100 vs FP16 (averaged):** −0.48 pt for rroq158, +0.23 pt
   for rroq4_riem.
+- **GPU p95 vs FP16 (averaged):** 1.13× for rroq158, 5.03× for
+  rroq4_riem (rroq4_riem is the storage-with-zero-quality-loss lane,
+  not the throughput lane).
+- **Storage vs FP16 doc tokens:** 5.5× smaller for rroq158, ~3×
+  smaller for rroq4_riem.
 
 `rroq158` is not free at top-10. The honest picture from the BEIR-6
 sweep (`reports/beir_2026q2/sweep.jsonl`):
@@ -272,12 +283,23 @@ sweep (`reports/beir_2026q2/sweep.jsonl`):
   The right docs are still in the candidate set; they just trade
   ranks within the top-K.
 - An exact diagnostic — using brute-force top-K overlap of rroq158 vs
-  FP16 on the same encoder — shows that on arguana, brute-force
-  rroq158 retains **~82% top-10 overlap** with the FP16 brute-force
-  ranking, and brute-force R@100 stays within −1.4 pt of FP16. So
-  ~18% of top-10 positions are rank-displaced relative to FP16, but
-  the relevant docs are still admitted. See
-  [`benchmarks/topk_overlap_sweep.py`](../../benchmarks/topk_overlap_sweep.py).
+  FP16 on the same encoder — shows that across BEIR-6, brute-force
+  rroq158 retains **avg ~79% top-10 overlap** with the FP16
+  brute-force ranking (range 73–83%), and brute-force R@100 stays
+  within −2.1 pt of FP16 on every dataset (worst case fiqa at
+  −2.07 pt, best cases scifact / quora at 0.0 pt). So ~20% of top-10
+  positions are displaced relative to FP16, but the relevant docs are
+  still admitted. Notably, top-K overlap is **roughly flat or
+  slightly declining with K** for rroq158 (e.g. quora drops from
+  72.9% top-10 to 72.1% top-100), so widening the serve window does
+  not reliably recover the displaced top-10 docs — the displacement
+  is *out of the codec's candidate set*, not within it. R@100
+  survives because rroq158 still admits the labeled relevant docs;
+  the displaced ~20% sits among the non-relevant tail of FP16's
+  top-100. See
+  [`benchmarks/topk_overlap_sweep.py`](../../benchmarks/topk_overlap_sweep.py)
+  and `reports/beir_2026q2/topk_overlap.jsonl` for the full
+  per-dataset breakdown.
 - For workloads that need exact top-10 rank fidelity, an FP16 rerank
   on the rroq158 top-32/top-64 shortlist closes the NDCG@10 gap on
   arguana / scifact / scidocs with no R@100 regression

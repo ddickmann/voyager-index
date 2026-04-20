@@ -155,15 +155,26 @@ full BEIR query sets):
   arguana at −2.69 pt; best: nfcorpus at −0.39 pt). Avg R@100 vs FP16:
   **−0.48 pt** (essentially flat in absolute terms). The
   brute-force codec-fidelity overlap diagnostic
-  (`benchmarks/topk_overlap_sweep.py`) shows that on arguana — the
-  hardest dataset — rroq158 retains **~82% top-10 overlap** with the
-  FP16 brute-force ranking and recovers **R@100 within −1.4 pt**: the
-  displacement is in the tail-of-top-K ordering, not in which docs
-  are admitted. Workloads requiring exact top-10 rank fidelity should
-  opt into `rroq4_riem` (the no-quality-loss lane below) or use
-  rroq158 with an FP16 rerank on the shortlist
-  (`benchmarks/diag_rroq158_rescue.py` shows top-32/64 FP16 rerank
-  closes the gap with no R@100 regression).
+  (`benchmarks/topk_overlap_sweep.py`, `reports/beir_2026q2/topk_overlap.jsonl`)
+  measures the per-query top-K overlap of each codec's brute-force
+  MaxSim ranking against the FP16 brute-force ranking — i.e. the
+  fraction of FP16's top-K documents that the codec also returns in
+  *its* top-K. Across BEIR-6 the rroq158 codec retains **avg ~79%
+  top-10 overlap and ~80% top-100 overlap** (range: 73–83% top-10,
+  72–85% top-100; per-dataset numbers in
+  [docs/benchmarks.md](docs/benchmarks.md)). Important: top-K overlap
+  is roughly *flat across K* for rroq158 (e.g. quora 72.9% → 72.1%
+  from K=10 to K=100), so widening the serve window is **not** a
+  reliable rescue mechanism — the displacement is *out of the
+  candidate set*, not within it. Even so, rroq158 R@100 stays
+  within −2.1 pt of FP16 on every dataset (and within −1.4 pt on
+  arguana specifically), because the codec still admits the labeled
+  relevant documents — the displacement happens among the
+  non-relevant tail. Workloads requiring exact top-10 rank fidelity
+  vs FP16 should opt into `rroq4_riem` (the no-quality-loss lane below
+  — avg ~96% top-10 overlap) or use rroq158 with an FP16 rerank on
+  the shortlist (`benchmarks/diag_rroq158_rescue.py` shows top-32/64
+  FP16 rerank closes the gap with no R@100 regression).
 - **Latency.** Avg GPU p95: **4.6 ms vs 4.0 ms FP16 (1.13×)** — within
   the 1.20× retention budget on every dataset. Avg CPU p95: **812 ms
   vs 103 ms FP16 (7.88×)** — at the BEIR batch shape (2000 doc candidates

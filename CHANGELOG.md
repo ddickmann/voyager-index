@@ -37,12 +37,23 @@ reads in release order again.
 - added a brute-force codec-fidelity diagnostic harness
   (`benchmarks/topk_overlap_sweep.py`) that scores every (query, doc)
   pair with both fp16 and the codec and reports per-query top-K overlap
-  (K ∈ {10, 20, 50, 100}); on arguana (the worst dataset for rroq158)
-  the brute-force top-10 overlap is ~82% and R@100 is within −1.4 pt
-  of fp16 on the same brute-force path, disaggregating the
-  rank-aggregate NDCG@10 cost from "the right doc was retrieved"
-  (relevant docs are recovered; ~18% of top-10 positions are
-  rank-displaced relative to fp16)
+  (K ∈ {10, 20, 50, 100}); ran the full BEIR-6 sweep with results in
+  `reports/beir_2026q2/topk_overlap.jsonl`. Headline: rroq158 averages
+  ~79% top-10 / ~80% top-100 overlap with FP16 brute-force across
+  BEIR-6 (range 73–83% top-10), with R@100 within −2.1 pt of FP16 on
+  every dataset (within −1.4 pt on arguana, within 0 pt on scifact /
+  quora). rroq4_riem averages ~96% top-10 / ~97% top-100, confirming
+  the no-quality-loss positioning. Top-K overlap is roughly **flat
+  across K** for rroq158 (e.g. quora 72.9% → 72.1% from K=10 to
+  K=100) — this disconfirms the earlier "wider serve window de-risks
+  displacement" framing; the displacement is *out of the candidate
+  set*, not within it. R@100 still recovers because rroq158 admits
+  the labeled relevant docs; the displacement happens among the
+  non-relevant tail of FP16's top-100. Documentation across README,
+  `docs/benchmarks.md`, `docs/posts/sub-2-bit-late-interaction.md`,
+  `docs/guides/shard-engine.md`, `docs/guides/rroq-mathematics.md`,
+  and `research/low_bit_roq/PROGRESS.md` was updated with the
+  measured per-dataset numbers and the corrected window framing
 - shipped a kernel-graceful fallback for small-corpus tests: if the
   build-time codec is rroq158/rroq4_riem and no kernel is reachable
   (no CUDA + no Rust SIMD), and the auto-K-shrink fired
