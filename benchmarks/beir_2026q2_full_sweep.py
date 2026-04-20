@@ -19,6 +19,15 @@ runtime, wheel versions, encoder, kernel parameters, raw qps / p50 /
 p95 / NDCG / Recall, plus the n_eval used for each cell). The sweep is
 resumable: cells already present in the JSONL are skipped on a re-run.
 
+Companion script: `benchmarks/topk_overlap_sweep.py` produces the
+codec-fidelity overlap@K (K ∈ {10,20,50,100}) measurement vs fp16
+brute-force MaxSim. The production sweep here measures wrapper-included
+end-to-end p95 with LEMUR routing; the overlap sweep isolates pure
+codec quality from routing artifacts. Both JSONL outputs are consumed
+by `scripts/format_beir_2026q2_table.py` to render the README table
+plus the "rroq158 displaces a few ranks lower, recovered by top-20"
+honesty callout.
+
 Usage:
     python benchmarks/beir_2026q2_full_sweep.py \
         --output reports/beir_2026q2/sweep.jsonl
@@ -48,16 +57,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from benchmarks.beir_benchmark import (  # noqa: E402
-    DATASETS as DEFAULT_DATASETS,
+from benchmarks.beir_benchmark import (
     _COMPRESSION_BY_NAME,
     _GPU_ONLY_COMPRESSIONS,
     run_dataset,
+)
+from benchmarks.beir_benchmark import (  # noqa: E402
+    DATASETS as DEFAULT_DATASETS,
 )
 from voyager_index._internal.inference.shard_engine.config import Compression  # noqa: E402
 
