@@ -496,6 +496,15 @@ jobs:
         with:
           packages-dir: dist-native/
           verbose: true
+          # The native crates (`latence-shard-engine`, `latence-solver`) are
+          # versioned independently of the root `colsearch` package and only
+          # need a republish when their Rust source changes. When a colsearch
+          # release ships without a native version bump (e.g. metadata-only
+          # changes like updated repository URLs), every native wheel already
+          # exists on PyPI under the same `<name>-<version>` filename and
+          # twine returns 400. `skip-existing: true` makes that path idempotent
+          # so the colsearch root publish that follows isn't blocked.
+          skip-existing: true
 
   publish-root:
     needs: [build-python, publish-native]
@@ -514,3 +523,7 @@ jobs:
         with:
           packages-dir: dist-root/
           verbose: true
+          # Idempotent across rerun-failed: if the colsearch wheel/sdist for
+          # this version is already on PyPI from a previous successful upload
+          # in the same release, don't fail the rerun.
+          skip-existing: true
