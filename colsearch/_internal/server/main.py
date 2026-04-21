@@ -69,7 +69,7 @@ def create_app(
     if "VOYAGER_INDEX_PATH" in os.environ and "COLSEARCH_INDEX_PATH" not in os.environ:
         logger.warning(
             "VOYAGER_INDEX_PATH is deprecated; use COLSEARCH_INDEX_PATH. "
-            "The legacy name will be removed in 0.3.0."
+            "The legacy name will be removed in 0.2.0."
         )
     index_dir = (
         index_path

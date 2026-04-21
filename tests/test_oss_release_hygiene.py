@@ -166,7 +166,7 @@ def test_pyproject_install_contract_matches_public_release_story() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
 
-    assert pyproject["project"]["version"] == "0.2.0"
+    assert pyproject["project"]["version"] == "0.1.7"
     assert "full" in extras
     assert "shard-native" in extras
     assert "solver" in extras

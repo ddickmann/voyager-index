@@ -1692,7 +1692,7 @@ def _run_rroq158_cpu_mode(
     # expires we stop submitting new work and collect partial results.
     # Configurable via COLSEARCH_BENCH_CPU_TIME_BUDGET_S (default: 600s).
     # The legacy VOYAGER_BENCH_CPU_TIME_BUDGET_S name is honoured for one
-    # release cycle; it will be removed in 0.3.0.
+    # release cycle; it will be removed in 0.2.0.
     try:
         cpu_budget_s = float(
             os.environ.get(

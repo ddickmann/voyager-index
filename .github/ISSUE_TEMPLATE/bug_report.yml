@@ -52,7 +52,7 @@ body:
       placeholder: |
         OS: Ubuntu 22.04
         Python: 3.11.10
-        colsearch: 0.2.0
+        colsearch: 0.1.7
         torch: 2.9.1 (CPU)
         Optional packages: latence_shard_engine, latence_solver
     validations:

@@ -6,7 +6,7 @@
 
 **ColSearch — the production search category for late-interaction retrieval.** One node. CPU or GPU. MaxSim is the truth scorer. 1.58-bit ColBERT at 40 B/token. **3.12× FastPlaid on H100.**
 
-> **Renamed from `voyager-index`.** `pip install colsearch` is the new home. The legacy `voyager-index` package and `import voyager_index` path keep working in `0.2.x` (with a one-line `DeprecationWarning`) and will be removed in `0.3.0`. See [CHANGELOG.md](CHANGELOG.md).
+> **Renamed from `voyager-index`.** `pip install colsearch` is the new home. The legacy `import voyager_index` path keeps working in `0.1.7` (with a one-line `DeprecationWarning`) and will be removed in `0.2.0`. See [CHANGELOG.md](CHANGELOG.md).
 
 ## The pain
 
@@ -188,4 +188,4 @@ For commercial licensing inquiries, contact **commercial@latence.ai**.
 
 **Carveout — vendored Qdrant subtree.** The directory `src/kernels/vendor/qdrant/` is a vendored copy of upstream [qdrant/qdrant](https://github.com/qdrant/qdrant) and remains under its original **Apache-2.0** license; that license travels with those files into any derivative binaries. See [LICENSING.md](LICENSING.md) and [internal/contracts/QDRANT_VENDORING.md](internal/contracts/QDRANT_VENDORING.md) for the full carveout.
 
-**Prior releases.** Releases previously distributed under the `voyager-index` name (versions `0.1.x`, Apache-2.0) remain available to recipients who already obtained them under their original license. The CC-BY-NC-4.0 license above and the `colsearch` package name apply to this source tree and to all `0.2.x+` releases made from it going forward.
+**Prior releases.** Releases previously distributed under the `voyager-index` name (versions `0.1.0` through `0.1.6`, Apache-2.0) remain available to recipients who already obtained them under their original license. The CC-BY-NC-4.0 license above and the `colsearch` package name apply to this source tree and to all `0.1.7+` releases made from it going forward.

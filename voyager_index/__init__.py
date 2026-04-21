@@ -1,13 +1,13 @@
 """
 Compatibility shim for the renamed package.
 
-`voyager_index` was renamed to `colsearch` in 0.2.0. This shim eagerly walks
+`voyager_index` was renamed to `colsearch` in 0.1.7. This shim eagerly walks
 the on-disk `colsearch` package tree at import time and aliases every
 submodule under the matching `voyager_index.<sub>` name in `sys.modules`,
 so that `import voyager_index.X.Y` resolves to the *exact same module
 object* as `colsearch.X.Y` (no duplicate enums or classes). A single
 `DeprecationWarning` is emitted on first import so callers can migrate.
-The shim will be removed in 0.3.0.
+The shim will be removed in 0.2.0.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from colsearch import __version__ as __version__  # noqa: F401
 _warnings.warn(
     "The `voyager_index` package has been renamed to `colsearch`. "
     "Update your imports to `from colsearch import ...`. "
-    "The `voyager_index` alias is a compatibility shim that will be removed in 0.3.0.",
+    "The `voyager_index` alias is a compatibility shim that will be removed in 0.2.0.",
     DeprecationWarning,
     stacklevel=2,
 )

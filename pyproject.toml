@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "colsearch"
-version = "0.2.0"
+version = "0.1.7"
 description = "ColSearch — production late-interaction retrieval for ColBERT and ColPali style workloads. Single-node CPU/GPU, Triton MaxSim, 1.58-bit ROQ quantization at 40 B/token, BM25 hybrid search, durable CRUD/WAL, multimodal preprocessing, and a base64-ready reference API."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -127,7 +127,7 @@ dev = [
 
 [project.scripts]
 colsearch-server = "colsearch.server:main"
-# Legacy alias retained for one release cycle. Removed in 0.3.0.
+# Legacy alias retained for one release cycle. Removed in 0.2.0.
 voyager-index-server = "colsearch.server:main"
 
 [project.urls]
