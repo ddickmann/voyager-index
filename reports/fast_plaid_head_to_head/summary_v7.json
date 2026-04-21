@@ -1,6 +1,5 @@
 {
   "datasets": [
-    "scifact",
     "webis-touche2020"
   ],
   "libraries": [
@@ -20,10 +19,10 @@
         "webis-touche2020"
       ],
       "n_datasets": 8,
-      "ndcg_at_10_mean": 0.7140817344442939,
-      "qps_mean": 1846.3680198273166,
-      "qps_geomean": 1561.527781719076,
-      "indexing_time_s_total": 0.0
+      "ndcg_at_10_mean": 0.5173154222334881,
+      "qps_mean": 650.4900522381516,
+      "qps_geomean": 446.73951897406226,
+      "indexing_time_s_total": 1179.9045882225037
     },
     "voyager_fp16_cpu": {
       "datasets": [
@@ -37,9 +36,9 @@
         "webis-touche2020"
       ],
       "n_datasets": 8,
-      "ndcg_at_10_mean": 0.7117874355429099,
-      "qps_mean": 87.52135715748074,
-      "qps_geomean": 54.45877507404239,
+      "ndcg_at_10_mean": 0.5127369621871322,
+      "qps_mean": 18.63459191362484,
+      "qps_geomean": 11.28271220210492,
       "indexing_time_s_total": 0.0
     },
     "voyager_rroq158_gs128_gpu": {
@@ -49,14 +48,14 @@
         "nfcorpus",
         "quora",
         "scidocs",
-        "trec-covid",
         "scifact",
+        "trec-covid",
         "webis-touche2020"
       ],
       "n_datasets": 8,
-      "ndcg_at_10_mean": 0.6968316031942872,
-      "qps_mean": 850.1832779185881,
-      "qps_geomean": 636.3748700484391,
+      "ndcg_at_10_mean": 0.49843156556376533,
+      "qps_mean": 445.79119224018143,
+      "qps_geomean": 294.4088076149292,
       "indexing_time_s_total": 0.0
     },
     "voyager_rroq158_gs128_cpu": {
@@ -71,9 +70,9 @@
         "webis-touche2020"
       ],
       "n_datasets": 8,
-      "ndcg_at_10_mean": 0.6961868691145309,
-      "qps_mean": 116.88295495439374,
-      "qps_geomean": 75.84926669410218,
+      "ndcg_at_10_mean": 0.49819478301799985,
+      "qps_mean": 27.478388827974143,
+      "qps_geomean": 13.643503605205224,
       "indexing_time_s_total": 0.0
     }
   },

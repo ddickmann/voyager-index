@@ -51,9 +51,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import glob
 import json
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -179,6 +181,48 @@ _VOYAGER_CONFIGS: Dict[str, Dict[str, Any]] = {
         "kwargs": {},
     },
 }
+
+
+# Root of the on-disk shard-bench cache. Each dataset can grow ~30 GB during
+# build (fp16 + rroq158 variants + intermediate `index_*` directory). We GC
+# per-dataset after all 4 lanes complete to keep peak disk = max(per-dataset)
+# rather than Σ(per-dataset).
+_SHARD_BENCH_ROOT = Path("/root/.cache/shard-bench")
+
+
+def _cleanup_dataset_artifacts(dataset: str) -> None:
+    """Remove built shard-bench indexes + intermediate build dirs for a
+    finished dataset. Safe no-op if any path is missing.
+    """
+    targets: list[Path] = []
+    ds_dir = _SHARD_BENCH_ROOT / "beir" / dataset
+    if ds_dir.exists():
+        targets.append(ds_dir)
+    # Intermediate `index_<n_docs>_<algo>_proxy_grouped_lemur_uniform` build
+    # dirs that the pipeline writes before sealing into the final per-dataset
+    # location. Anything left behind (e.g. after an early failure) is dead
+    # weight on the next dataset.
+    for d in glob.glob(str(_SHARD_BENCH_ROOT / "index_*_proxy_grouped_lemur_uniform")):
+        targets.append(Path(d))
+    freed = 0
+    for p in targets:
+        try:
+            if p.is_dir():
+                # Cheap pre-stat — du takes ~1 s, but Path.stat over the
+                # tree is too slow for our purposes; just count via shutil.
+                freed_before = shutil.disk_usage(p.parent).free
+                shutil.rmtree(p)
+                freed_after = shutil.disk_usage(p.parent).free
+                freed += max(0, freed_after - freed_before)
+        except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
+            logger = logging.getLogger("fast_plaid_h2h")
+            logger.warning("cleanup: failed to rm %s (%s)", p, exc)
+    if targets:
+        logger = logging.getLogger("fast_plaid_h2h")
+        logger.info(
+            "cleanup[%s]: removed %d artefact dir(s), freed ~%.1f GB",
+            dataset, len(targets), freed / 1e9,
+        )
 
 
 def run_voyager_lane(
@@ -762,6 +806,8 @@ def main() -> int:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+
+        _cleanup_dataset_artifacts(ds)
 
     # ── Output ──────────────────────────────────────────────────────────────
     print()

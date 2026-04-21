@@ -72,13 +72,18 @@ def warmup_maxsim(
     """Pre-warm Triton autotune for the exact (S, T, H) shapes that will appear.
 
     Triton autotune keys on (NUM_Q_TOKENS, NUM_D_TOKENS, EMBED_DIM) only — B
-    (batch size) is NOT a key.  We use B=4 for minimal memory and warm only
-    the unique (S, T, H) combinations.
+    (batch size) is NOT in the key, so the config selected at warmup is
+    reused for every runtime batch.  Warming at B=4 picks configs that are
+    great for tiny launches but starve large tiers (e.g. webis-touche2020
+    T=512 with B=137k went 5.6 QPS vs 3000+ QPS when warmed at scale).
 
-    `score_candidates` always pads the per-call (qt, dt) up to the next pow2
-    (with mask=0 for the padded region), so we only need to warm the pow2
-    grid that the runtime will land on; this makes warmup cheap even for
-    datasets with hundreds of unique raw (qt, dt) combinations.
+    We warm at a *representative* B per tier — large enough that autotune
+    differentiates configs by parallelism / occupancy / shared-memory —
+    while keeping VRAM bounded (~256 MB per (S,T,H) combo).
+
+    `score_candidates` always pads the per-call (qt, dt) up to the next
+    pow-2 (with mask=0 for the padded region), so the warm grid covers
+    every (qt, dt) the runtime can land on.
     """
     global _warmup_done
     if not torch.cuda.is_available() and "cuda" in device:
@@ -86,9 +91,6 @@ def warmup_maxsim(
     maxsim = _get_maxsim()
     dev = torch.device(device)
 
-    # Default Q-tokens grid: covers all queries up to 512 tokens at the
-    # rounded-pow2 granularity. Extra Q sizes can be supplied via
-    # `query_token_counts` to keep the grid tight on a known dataset.
     q_pow2 = {32, 64, 128, 256, 512}
     if query_token_counts:
         for qt in query_token_counts:
@@ -101,7 +103,10 @@ def warmup_maxsim(
     if not d_tokens_set:
         d_tokens_set = {32, 64, 128, 256, 512, 1024, 2048}
 
-    n_warmup_docs = 4
+    # Fixed B large enough that autotune differentiates configs by parallelism
+    # / occupancy / shared-memory rather than launch overhead.  At B=1024 a
+    # 132-SM H100 sees 32 programs/SM (DPK=32) → real saturation.
+    n_warmup_docs = 1024
     for qt in q_tokens_list:
         for dt in sorted(d_tokens_set):
             key = (qt, dt, dim)
@@ -114,9 +119,11 @@ def warmup_maxsim(
             maxsim(q, d, documents_mask=m)
             with _warmup_done_lock:
                 _warmup_done.add(key)
+            del q, d, m
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+        torch.cuda.empty_cache()
     logger.info("MaxSim kernel warmup done for %d (S,T,H) combos", len(_warmup_done))
 
 
@@ -929,16 +936,28 @@ class PreloadedGpuCorpus:
                 and torch.cuda.is_available()
                 and top_idx.is_cuda
             ):
-                paired = torch.stack(
-                    [top_idx.to(torch.float32), top_sc.to(torch.float32)], dim=0,
-                )
-                self._h_paired[:, :final_k].copy_(paired, non_blocking=True)
-                # Synchronise the default stream so the host read sees
-                # the staged data.
-                torch.cuda.current_stream().synchronize()
-                idx_list = self._h_paired[0, :final_k].to(torch.int64).tolist()
-                sc_list = self._h_paired[1, :final_k].tolist()
-                return [self.doc_ids[i] for i in idx_list], sc_list
+                # Fused D2H via pinned host buffer. Wrapped in try/except
+                # so any async CUDA error from an earlier kernel surfaces
+                # here as a recoverable exception rather than poisoning
+                # the whole bench run — we fall back to the slower but
+                # always-correct .cpu() path on the next line.
+                try:
+                    paired = torch.stack(
+                        [top_idx.to(torch.float32), top_sc.to(torch.float32)],
+                        dim=0,
+                    )
+                    self._h_paired[:, :final_k].copy_(paired, non_blocking=True)
+                    torch.cuda.current_stream().synchronize()
+                    idx_list = self._h_paired[0, :final_k].to(torch.int64).tolist()
+                    sc_list = self._h_paired[1, :final_k].tolist()
+                    return [self.doc_ids[i] for i in idx_list], sc_list
+                except Exception as exc:  # noqa: BLE001 — broad on purpose
+                    logger.warning(
+                        "score_all: pinned D2H failed (%s); disabling pinned "
+                        "buffer for this corpus and falling back to .cpu()",
+                        type(exc).__name__,
+                    )
+                    self._h_paired = None
             idx_list = top_idx.cpu().tolist()
             return [self.doc_ids[i] for i in idx_list], top_sc.cpu().tolist()
 

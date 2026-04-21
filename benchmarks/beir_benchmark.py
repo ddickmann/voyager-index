@@ -177,30 +177,29 @@ def _should_use_fast_path(
 ) -> bool:
     """Decide whether to skip routing and score the whole corpus.
 
-    Three cumulative triggers:
+    The PreloadedGpuCorpus has already paid the VRAM cost; the fast
+    path's only per-query overhead is an O(n_docs) score buffer
+    (~1.5 MB at 382 k docs), which is negligible vs the multi-tier
+    LEMUR pipeline (route + gather + score_candidates).
+
+    Two triggers:
       (a) ``max_docs_exact >= n_docs`` — routing would pick everything
           anyway, so skipping it is a strict win.
       (b) ``n_docs <= WHOLE_CORPUS_FAST_PATH_THRESHOLD`` — at default
           1 M-doc threshold, this captures every BEIR-class corpus on
           accelerator-class GPUs.
-      (c) Optional ``gpu_corpus_bytes`` is well under free VRAM (≤25%
-          of the free pool) so the per-query temporaries (one
-          ``(n_docs,)`` score buffer) fit comfortably.
+
+    The previous "corpus must be ≤25% of free VRAM" gate was wrong:
+    it compared the *already-resident* corpus footprint against the
+    *post-load* free pool, so anything above ~25 % of VRAM (e.g. webis
+    382 k docs at 25 GB on an 80 GB H100) was forced through LEMUR
+    even though full-corpus MaxSim is faster *and* strictly higher
+    NDCG. The router only prunes candidates; it never adds quality.
     """
     if max_docs_exact >= n_docs:
         return True
     if n_docs > WHOLE_CORPUS_FAST_PATH_THRESHOLD:
         return False
-    if gpu_corpus_bytes is not None:
-        try:
-            import torch as _torch
-
-            if _torch.cuda.is_available():
-                free, _total = _torch.cuda.mem_get_info()
-                if gpu_corpus_bytes > free * 0.25:
-                    return False
-        except Exception:  # pragma: no cover — best-effort guard
-            pass
     return True
 
 OPTIMAL_GPU = dict(
@@ -340,7 +339,12 @@ def build_index(
             index_dir.parent.mkdir(parents=True, exist_ok=True)
             if index_dir.exists():
                 shutil.rmtree(index_dir)
-            shutil.copytree(fp16_dir, index_dir)
+            # Hardlink instead of copy: rroq158 reuses fp16 LEMUR + corpus
+            # artifacts unchanged and only adds its own rroq158_* cache files
+            # on top, so the two dirs can safely share inodes. Saves 30-70 GB
+            # per dataset on disk-tight benches (webis-touche2020 fp16 dir is
+            # 41 GB; copytree previously doubled it).
+            shutil.copytree(fp16_dir, index_dir, copy_function=os.link)
             return index_dir, 0.0
 
     npz_path = BEIR_CACHE / f"{name}.npz"
@@ -352,7 +356,17 @@ def build_index(
         index_dir.parent.mkdir(parents=True, exist_ok=True)
         if index_dir.exists():
             shutil.rmtree(index_dir)
-        shutil.copytree(built_dir, index_dir)
+        # Move rather than copy: built_dir is single-purpose, so renaming
+        # avoids duplicating up to 70 GB on big corpora (webis-touche2020,
+        # trec-covid). On the same filesystem this is an atomic dentry
+        # rename.
+        try:
+            os.rename(str(built_dir), str(index_dir))
+        except OSError:
+            # Cross-device fallback (rare in practice; shard-bench cache is
+            # one filesystem).
+            shutil.copytree(built_dir, index_dir)
+            shutil.rmtree(built_dir, ignore_errors=True)
 
     log.info("Built index for %s in %.1fs at %s", name, build_elapsed, index_dir)
     return index_dir, build_elapsed
