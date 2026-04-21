@@ -1,6 +1,6 @@
 # Benchmarks
 
-This page documents how `voyager-index` benchmark claims are framed today,
+This page documents how `colsearch` benchmark claims are framed today,
 including the headline BEIR results that ship in the README and the
 head-to-head comparison against the established OSS reference.
 
@@ -11,7 +11,7 @@ Two rules matter more than any single latency number:
 
 ## Public Proof Layers
 
-`voyager-index` has two public proof layers, and they should be read together:
+`colsearch` has two public proof layers, and they should be read together:
 
 - **Core production lane.** The shard-first route is proven by the BEIR shard
   benchmark in `benchmarks/beir_benchmark.py`. That harness measures
@@ -290,7 +290,7 @@ after the post-Phase-7 CPU lane refresh. The four optimisations that
 landed in the production lane (and the wheel that backs this table):
 
 1. **Zero-copy `_to_np`** in
-   [`scorer.py`](../voyager_index/_internal/inference/shard_engine/scorer.py)
+   [`scorer.py`](../colsearch/_internal/inference/shard_engine/scorer.py)
    that bypasses `np.ascontiguousarray` for already-contiguous
    CPU-resident tensors entering the rroq158 / rroq4_riem dispatch
    path. Eliminates one redundant per-query allocation + memcpy of
@@ -304,9 +304,9 @@ landed in the production lane (and the wheel that backs this table):
    was already in place from the Phase-7 followup.
 3. **`threadpoolctl.threadpool_limits` cap** around the BLAS matrix
    multiplications in
-   [`rroq158.encode_query`](../voyager_index/_internal/inference/quantization/rroq158.py)
+   [`rroq158.encode_query`](../colsearch/_internal/inference/quantization/rroq158.py)
    and
-   [`rroq4_riem.encode_query`](../voyager_index/_internal/inference/quantization/rroq4_riem.py),
+   [`rroq4_riem.encode_query`](../colsearch/_internal/inference/quantization/rroq4_riem.py),
    plus a safety net around the kernel call in `scorer.py` to stop
    OpenBLAS / MKL from oversubscribing while rayon is already saturating
    the CPU. On the 128-physical-core host this single change accounts
@@ -330,7 +330,7 @@ disk-bound deployments, and the kernel now closes most of the
 absolute-latency gap to FP16 at this batch shape.
 
 GPU lane: fused two-stage Triton kernel
-(`voyager_index._internal.kernels.triton_roq_rroq158`), parity ≤ 1e-4
+(`colsearch._internal.kernels.triton_roq_rroq158`), parity ≤ 1e-4
 vs the python reference. CPU lane: Rust SIMD kernel
 (`latence_shard_engine.rroq158_score_batch`) with hardware `popcnt` +
 AVX2/BMI2/FMA + cached rayon thread pool, bitwise parity to rtol=1e-4
@@ -363,7 +363,7 @@ instead of ternary.
 Both kernels are wired and parity-tested:
 
 - **GPU**: fused Triton kernel `roq_maxsim_rroq4_riem`
-  (`voyager_index._internal.kernels.triton_roq_rroq4_riem`).
+  (`colsearch._internal.kernels.triton_roq_rroq4_riem`).
 - **CPU**: Rust SIMD kernel `latence_shard_engine.rroq4_riem_score_batch`
   with AVX2/FMA + cached rayon thread pool, parity to rtol=1e-4 vs the
   python reference (validated by `tests/test_rroq4_riem_kernel.py`).
@@ -431,7 +431,7 @@ uses a much larger corpus for that dataset.
 | scifact  | voyager    | 0.7544     | 0.7141     | 0.9567     | **263.4** | **4.0**      | **69.1**  | **138.4**    |
 |          | next-plaid | **0.7593** | **0.7186** | **0.9633** | 7.9       | 169.5        | 16.9      | 305.4        |
 
-In our current benchmark setup, voyager-index is **competitive or better on
+In our current benchmark setup, colsearch is **competitive or better on
 retrieval quality** across most listed datasets and shows **materially higher
 search throughput with much lower P95 latency** on an RTX A5000. **This is
 not a fully apples-to-apples comparison:** next-plaid reports H100 numbers
@@ -577,7 +577,7 @@ Not directly comparable:
 
 ## Warmup Policy
 
-For `voyager-index` benchmark tables:
+For `colsearch` benchmark tables:
 
 - warmup runs are excluded from measured latency
 - Triton kernels must be warmed before comparing steady-state latency

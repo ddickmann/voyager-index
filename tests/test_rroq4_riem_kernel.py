@@ -44,13 +44,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from voyager_index._internal.inference.quantization.rroq4_riem import (
+from colsearch._internal.inference.quantization.rroq4_riem import (
     Rroq4RiemConfig,
     encode_query_for_rroq4_riem,
     encode_rroq4_riem,
     unpack_4bit,
 )
-from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+from colsearch._internal.kernels.triton_roq_rroq4_riem import (
     reference_score_rroq4_riem,
 )
 
@@ -110,7 +110,7 @@ def _brute_force_maxsim(queries, enc, n_docs, n_d_tok):
     dlts_per_dim = np.repeat(enc.deltas.astype(np.float32), group_size, axis=1)
     r_rot = mins_per_dim + dlts_per_dim * codes_full  # (n_total_d, dim)
 
-    from voyager_index._internal.inference.quantization.rroq158 import (
+    from colsearch._internal.inference.quantization.rroq158 import (
         get_cached_fwht_rotator,
     )
     rotator = get_cached_fwht_rotator(dim=dim, seed=enc.fwht_seed)
@@ -213,7 +213,7 @@ def test_rroq4_riem_rust_simd_matches_python_reference():
 def test_rroq4_riem_triton_matches_python_reference():
     """The Triton GPU kernel must match the python reference."""
     triton = pytest.importorskip("triton")  # noqa: F841
-    from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+    from colsearch._internal.kernels.triton_roq_rroq4_riem import (
         roq_maxsim_rroq4_riem,
     )
 
@@ -257,7 +257,7 @@ def test_rroq4_riem_microbench():
     Phase-7 wrapper-included BEIR p95 can be split into kernel-only ms
     vs wrapper ms."""
     pytest.importorskip("triton")
-    from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+    from colsearch._internal.kernels.triton_roq_rroq4_riem import (
         roq_maxsim_rroq4_riem,
     )
 

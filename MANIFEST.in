@@ -1,3 +1,4 @@
+include colsearch/py.typed
 include voyager_index/py.typed
 include tests/fixtures/dataset_di_fixture.json
 include tests/fixtures/latence_graph_quality_eval.json

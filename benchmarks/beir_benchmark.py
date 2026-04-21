@@ -1,5 +1,5 @@
 """
-BEIR Benchmark Suite for voyager-index
+BEIR Benchmark Suite for colsearch
 
 Runs 6 standard BEIR datasets in two modes:
   1. GPU-corpus  -- full corpus preloaded into VRAM, LEMUR routing, Triton MaxSim
@@ -35,8 +35,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.shard_bench.metrics import compute_all_metrics, ndcg_at_k, map_at_k, recall_at_k
-from voyager_index._internal.inference.shard_engine.builder import build, load_corpus, _index_dir
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine.builder import build, load_corpus, _index_dir
+from colsearch._internal.inference.shard_engine.config import (
     AnnBackend,
     BuildConfig,
     Compression,
@@ -46,9 +46,9 @@ from voyager_index._internal.inference.shard_engine.config import (
     StorageLayout,
     TransferMode,
 )
-from voyager_index._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
-from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
-from voyager_index._internal.inference.shard_engine.scorer import (
+from colsearch._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
+from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
+from colsearch._internal.inference.shard_engine.scorer import (
     PreloadedGpuCorpus,
     brute_force_maxsim,
     score_all_docs_topk,
@@ -56,19 +56,19 @@ from voyager_index._internal.inference.shard_engine.scorer import (
     score_rroq4_riem_topk,
     warmup_maxsim,
 )
-from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
-from voyager_index._internal.inference.quantization.rroq158 import (
+from colsearch._internal.inference.shard_engine.shard_store import ShardStore
+from colsearch._internal.inference.quantization.rroq158 import (
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,
     pack_doc_codes_to_int32_words,
 )
-from voyager_index._internal.inference.quantization.rroq4_riem import (
+from colsearch._internal.inference.quantization.rroq4_riem import (
     Rroq4RiemConfig,
     encode_query_for_rroq4_riem,
     encode_rroq4_riem,
 )
-from voyager_index._internal.inference.quantization.distill_mv import (
+from colsearch._internal.inference.quantization.distill_mv import (
     MultiViewDistillHead,
     build_features_for_shortlist,
 )
@@ -660,7 +660,7 @@ def _warm_rroq158_triton_fallback(
     Returns True if warmup ran (always — no-op if no tiers).
     """
     try:
-        from voyager_index._internal.kernels.triton_roq_rroq158 import (
+        from colsearch._internal.kernels.triton_roq_rroq158 import (
             roq_maxsim_rroq158,
         )
     except Exception:
@@ -752,7 +752,7 @@ def _build_rroq158_gpu_payload(
         try:
             t_load = time.perf_counter()
             data = np.load(cache_path, allow_pickle=False)
-            from voyager_index._internal.inference.quantization.rroq158 import (
+            from colsearch._internal.inference.quantization.rroq158 import (
                 Rroq158Encoded,
             )
             enc = Rroq158Encoded(
@@ -894,7 +894,7 @@ def _build_rroq158_gpu_payload(
         " MULTI-TIER ACTIVE" if is_multi_tier else " (single-tier)",
     )
 
-    from voyager_index._internal.inference.quantization.rroq158 import (
+    from colsearch._internal.inference.quantization.rroq158 import (
         get_cached_fwht_rotator,
     )
 
@@ -1353,8 +1353,8 @@ def _rroq158_tier_scores(
     Mirrors `score_rroq158_topk` minus the topk + D2H tail so the caller
     can scatter into a multi-tier scores buffer.
     """
-    from voyager_index._internal.kernels import cuda_b1_rroq158
-    from voyager_index._internal.kernels.triton_roq_rroq158 import (
+    from colsearch._internal.kernels import cuda_b1_rroq158
+    from colsearch._internal.kernels.triton_roq_rroq158 import (
         roq_maxsim_rroq158,
     )
 
@@ -1690,9 +1690,16 @@ def _run_rroq158_cpu_mode(
     # Wall-time budget for CPU lanes — keeps full-corpus exact MaxSim on
     # large datasets (e.g. quora 522k docs) tractable. After the budget
     # expires we stop submitting new work and collect partial results.
-    # Configurable via VOYAGER_BENCH_CPU_TIME_BUDGET_S (default: 600s).
+    # Configurable via COLSEARCH_BENCH_CPU_TIME_BUDGET_S (default: 600s).
+    # The legacy VOYAGER_BENCH_CPU_TIME_BUDGET_S name is honoured for one
+    # release cycle; it will be removed in 0.3.0.
     try:
-        cpu_budget_s = float(os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"))
+        cpu_budget_s = float(
+            os.environ.get(
+                "COLSEARCH_BENCH_CPU_TIME_BUDGET_S",
+                os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"),
+            )
+        )
     except ValueError:
         cpu_budget_s = 600.0
 
@@ -1965,7 +1972,7 @@ def _build_rroq4_riem_payload(
               + cid_dt.nbytes + cosn_dt.nbytes + sinn_dt.nbytes) / 1e6,
              bytes_per_tok)
 
-    from voyager_index._internal.inference.quantization.rroq4_riem import (
+    from colsearch._internal.inference.quantization.rroq4_riem import (
         get_cached_fwht_rotator,
     )
 
@@ -2416,7 +2423,12 @@ def run_cpu_multiworker_mode(
             worker.search(query_vecs[qi], params, TOP_K)
 
     try:
-        cpu_budget_s = float(os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"))
+        cpu_budget_s = float(
+            os.environ.get(
+                "COLSEARCH_BENCH_CPU_TIME_BUDGET_S",
+                os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"),
+            )
+        )
     except ValueError:
         cpu_budget_s = 600.0
 
@@ -2788,7 +2800,7 @@ def format_comparison_table(all_results: List[Dict[str, Any]]) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BEIR Benchmark Suite for voyager-index")
+    parser = argparse.ArgumentParser(description="BEIR Benchmark Suite for colsearch")
     parser.add_argument("--datasets", nargs="*", default=DATASETS)
     parser.add_argument("--modes", nargs="*", default=["gpu", "cpu"], choices=["gpu", "cpu"])
     parser.add_argument("--n-workers", type=int, default=8)
@@ -2884,7 +2896,7 @@ def main():
             continue
 
     print("\n" + "=" * 120)
-    print("BEIR BENCHMARK RESULTS — voyager-index (search-only, encoding excluded)")
+    print("BEIR BENCHMARK RESULTS — colsearch (search-only, encoding excluded)")
     print(f"Model: lightonai/GTE-ModernColBERT-v1 | top_k={TOP_K}")
     print("=" * 120)
     print(format_results_table(all_results))

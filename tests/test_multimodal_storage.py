@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
+from colsearch._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
 
 
 def _engine(path: Path, *, quantized: bool = False) -> ColPaliEngine:

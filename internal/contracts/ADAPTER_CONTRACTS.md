@@ -1,7 +1,7 @@
 # Adapter Contracts
 
 This document defines the first-pass cross-stream seams around
-`voyager-index`.
+`colsearch`.
 
 It is intentionally documentation-first. These contracts are not yet versioned
 wire formats or enforced schemas across every repo, but they name the intended
@@ -25,7 +25,7 @@ flowchart LR
     datasetIntel["Dataset Intelligence"] --> ontologySidecar["OntologySidecar"]
     anyIndex["Any Index"] --> candidatePack["CandidatePack"]
 
-    pageBundle --> voyagerIndex["voyager-index"]
+    pageBundle --> voyagerIndex["colsearch"]
     embeddingBundle --> voyagerIndex
     ontologySidecar --> voyagerIndex
     candidatePack --> latenceCompute["latence-compute (roadmap)"]
@@ -35,11 +35,11 @@ flowchart LR
 
 Producer:
 - document intelligence systems such as `superpod/services/doc_intel_v2/`
-- local `voyager-index` preprocessing via `voyager_index.render_documents(...)`
+- local `colsearch` preprocessing via `colsearch.render_documents(...)`
   or `POST /reference/preprocess/documents`
 
 Consumer:
-- `voyager-index` multimodal and hybrid ingestion flows
+- `colsearch` multimodal and hybrid ingestion flows
 
 Required fields:
 - `bundle_version`
@@ -73,7 +73,7 @@ Producer:
 - `vllm-factory` or another embedding provider
 
 Consumer:
-- `voyager-index`
+- `colsearch`
 
 Required fields:
 - `bundle_version`
@@ -106,7 +106,7 @@ Producer:
 - dataset intelligence systems such as `latenceai-dataset-intelligence/`
 
 Consumer:
-- `voyager-index`
+- `colsearch`
 
 Required fields:
 - `bundle_version`
@@ -132,7 +132,7 @@ Purpose:
 ## CandidatePack
 
 Producer:
-- `voyager-index` or any external index
+- `colsearch` or any external index
 
 Consumer:
 - future `latence-compute`

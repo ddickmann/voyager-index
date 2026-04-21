@@ -36,7 +36,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.beir_benchmark import evaluate, load_beir_npz  # noqa: E402
-from voyager_index._internal.inference.quantization.rroq158 import (  # noqa: E402
+from colsearch._internal.inference.quantization.rroq158 import (  # noqa: E402
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,
@@ -172,7 +172,7 @@ def _build_payload(all_vectors, doc_offsets, K, group_size, seed, device):
 
 
 def rroq158_full_topk(query_vecs, payload, top_k, device, query_bits):
-    from voyager_index._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
+    from colsearch._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
 
     rotator = get_cached_fwht_rotator(dim=payload["dim"], seed=payload["fwht_seed"])
     n_docs = payload["sign_g"].shape[0]

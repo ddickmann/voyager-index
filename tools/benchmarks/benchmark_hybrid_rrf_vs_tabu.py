@@ -51,7 +51,7 @@ from urllib.request import urlretrieve
 
 import numpy as np
 
-# Repo root: tools/benchmarks -> voyager-index
+# Repo root: tools/benchmarks -> colsearch
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -61,11 +61,11 @@ _KNAP_PY = _REPO_ROOT / "src" / "kernels" / "knapsack_solver" / "python"
 if _KNAP_PY.is_dir() and str(_KNAP_PY) not in sys.path:
     sys.path.insert(0, str(_KNAP_PY))
 
-from voyager_index._internal.inference.config import BM25Config, FusionConfig
-from voyager_index._internal.inference.engines.base import SearchResult
-from voyager_index._internal.inference.engines.bm25 import BM25Engine
-from voyager_index._internal.inference.fusion.strategies import fuse_results
-from voyager_index._internal.inference.index_core.hnsw_manager import HnswSegmentManager
+from colsearch._internal.inference.config import BM25Config, FusionConfig
+from colsearch._internal.inference.engines.base import SearchResult
+from colsearch._internal.inference.engines.bm25 import BM25Engine
+from colsearch._internal.inference.fusion.strategies import fuse_results
+from colsearch._internal.inference.index_core.hnsw_manager import HnswSegmentManager
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("benchmark_hybrid_rrf_vs_tabu")
@@ -1527,7 +1527,7 @@ def main() -> None:
     p.add_argument(
         "--cache-dir",
         type=Path,
-        default=Path.home() / ".cache" / "voyager_index_benchmarks" / "scifact",
+        default=Path.home() / ".cache" / "colsearch_benchmarks" / "scifact",
     )
     p.add_argument("--output-json", type=Path, default=None)
     p.add_argument("--top-m", type=int, default=100)

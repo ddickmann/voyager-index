@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from voyager_index import RENDERABLE_SOURCE_SUFFIXES, enumerate_renderable_documents, render_documents
+from colsearch import RENDERABLE_SOURCE_SUFFIXES, enumerate_renderable_documents, render_documents
 
 
 MINIMAL_PNG_B64 = (

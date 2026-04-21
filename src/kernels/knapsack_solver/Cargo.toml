@@ -6,7 +6,7 @@ authors = ["Latence Team"]
 description = "CPU-reference-first Tabu Search Quadratic Knapsack solver with optional experimental accelerators"
 license = "CC-BY-NC-4.0"
 readme = "README.md"
-repository = "https://github.com/ddickmann/voyager-index"
+repository = "https://github.com/ddickmann/colsearch"
 keywords = ["optimization", "knapsack", "tabu-search", "cpu", "cuda", "machine-learning"]
 categories = ["algorithms", "science"]
 

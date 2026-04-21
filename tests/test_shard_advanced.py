@@ -11,11 +11,11 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.compaction import (
+from colsearch._internal.inference.shard_engine.compaction import (
     CompactionTask,
     CompactionScheduler,
 )

@@ -12,7 +12,7 @@ still happens after first-stage shard retrieval.
 
 Use the shard engine when you want:
 
-- the mainline `voyager-index` production path
+- the mainline `colsearch` production path
 - a simpler mental model than graph-native retrieval
 - CPU fallback and GPU acceleration from the same collection layout
 - durable CRUD, WAL, checkpoint, and recovery
@@ -71,7 +71,7 @@ Key properties:
 ### Python API
 
 ```python
-from voyager_index import Index
+from colsearch import Index
 
 # Build
 idx = Index("my_shard_index", dim=128, engine="shard")
@@ -95,7 +95,7 @@ idx2 = Index("my_shard_index", dim=128, engine="shard")  # auto-loads
 ### IndexBuilder
 
 ```python
-from voyager_index import IndexBuilder
+from colsearch import IndexBuilder
 
 idx = (IndexBuilder("my_index", dim=128)
        .with_shard(n_shards=256, k_candidates=2000)
@@ -294,7 +294,7 @@ The shard engine integrates with `HybridSearchManager` for BM25 + dense
 fusion in programmatic flows:
 
 ```python
-from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
 
 hybrid = HybridSearchManager(
     shard_path=Path("my_hybrid"),
@@ -353,6 +353,6 @@ Example: 100K docs × 128 tokens × 128 dim = ~3.3 GB.
 - shard is the documented production retrieval path in this repo
 - HTTP shard search is vector-only
 - dense BM25 hybrid remains on `dense` collections over HTTP
-- `voyager-index[shard,shard-native]` or `voyager-index[native]` enables the Rust shard CPU fast-path
+- `colsearch[shard,shard-native]` or `colsearch[native]` enables the Rust shard CPU fast-path
 - `latence_solver` remains the optional native add-on for `tabu`
-- `voyager-index[latence-graph]` adds the optional premium graph lane on top of the shard production path
+- `colsearch[latence-graph]` adds the optional premium graph lane on top of the shard production path

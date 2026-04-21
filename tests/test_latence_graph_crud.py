@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from voyager_index._internal.inference.index_core.graph_contract import GraphContractClass
-from voyager_index._internal.server.api.models import CollectionKind, CreateCollectionRequest, PointVector, SearchRequest
-from voyager_index._internal.server.api.service import SearchService
+from colsearch._internal.inference.index_core.graph_contract import GraphContractClass
+from colsearch._internal.server.api.models import CollectionKind, CreateCollectionRequest, PointVector, SearchRequest
+from colsearch._internal.server.api.service import SearchService
 
 
 def _dense_points() -> list[PointVector]:

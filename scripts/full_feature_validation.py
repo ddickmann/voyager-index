@@ -26,16 +26,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from voyager_index._internal.inference.quantization.rotational import RoQConfig, RotationalQuantizer
-from voyager_index._internal.inference.quantization.scalar import int4_dequantize, int4_quantize
-from voyager_index._internal.kernels.maxsim import fast_colbert_scores
-from voyager_index._internal.kernels.roq import (
+from colsearch._internal.inference.quantization.rotational import RoQConfig, RotationalQuantizer
+from colsearch._internal.inference.quantization.scalar import int4_dequantize, int4_quantize
+from colsearch._internal.kernels.maxsim import fast_colbert_scores
+from colsearch._internal.kernels.roq import (
     ROQ_TRITON_AVAILABLE,
     roq_maxsim_1bit,
     roq_maxsim_2bit,
     roq_maxsim_4bit,
 )
-from voyager_index.preprocessing import (
+from colsearch.preprocessing import (
     enumerate_renderable_documents as shared_enumerate_renderable_documents,
     render_documents as shared_render_documents,
 )
@@ -249,7 +249,7 @@ if os.environ.get("VOYAGER_FORCE_HNSW_FALLBACK") == "1":
 
     builtins.__import__ = blocked_import
 
-from voyager_index._internal.inference.index_core.hnsw_manager import HnswSegmentManager
+from colsearch._internal.inference.index_core.hnsw_manager import HnswSegmentManager
 
 vectors = np.array(
     [
@@ -1437,7 +1437,7 @@ def _benchmark_multimodal_sidecar_maintenance(
             "reason": "requires_at_least_two_documents",
         }
 
-    from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
+    from colsearch._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
 
     base_count = len(doc_ids) - 1
     add_ids = [doc_ids[-1]]
@@ -1622,7 +1622,7 @@ def _benchmark_centroid_scale_harness(
     if not torch.cuda.is_available():
         return {"status": "skipped", "reason": "cuda_unavailable"}
 
-    from voyager_index._internal.inference.index_core.centroid_screening import CentroidScreeningIndex
+    from colsearch._internal.inference.index_core.centroid_screening import CentroidScreeningIndex
 
     rng = np.random.default_rng(42)
     n_topics = 128
@@ -1838,7 +1838,7 @@ def run_quantization_validation(output_dir: Path, evaluation_bundle: dict[str, A
         "score_correlation": _score_correlation(exact_dense_scores, scalar_scores),
     }
 
-    from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
+    from colsearch._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
 
     doc_ids = [record["id"] for record in records]
     doc_vectors = [record["multivector"] for record in records]
@@ -2607,7 +2607,7 @@ def run_maxsim_validation(output_dir: Path, evaluation_bundle: dict[str, Any]) -
 
 
 def run_hybrid_storage_validation(output_dir: Path, entities: list[dict[str, Any]]) -> dict[str, Any]:
-    from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+    from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
 
     vectors = np.stack([synthetic_vector(entity["entity_id"], 8) for entity in entities], axis=0)
     ids = [idx for idx in range(len(entities))]
@@ -2723,7 +2723,7 @@ def run_api_validation(
     evaluation_bundle: dict[str, Any],
     native_packages: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    from voyager_index._internal.server.main import create_app
+    from colsearch._internal.server.main import create_app
 
     records = evaluation_bundle["records"]
     queries = evaluation_bundle["queries"]
@@ -3049,7 +3049,7 @@ def run_multimodal_ordering_validation(
     native_packages: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     from fastapi.testclient import TestClient
-    from voyager_index._internal.server.main import create_app
+    from colsearch._internal.server.main import create_app
 
     records = evaluation_bundle["records"]
     queries = evaluation_bundle["queries"]
@@ -3213,7 +3213,7 @@ def _synthetic_model_image(output_dir: Path, entities: list[dict[str, Any]]) -> 
     from PIL import Image, ImageDraw
 
     image_path = output_dir / "synthetic-model-input.png"
-    first = entities[0] if entities else {"canonical_name": "Voyager Index", "label": "Validation"}
+    first = entities[0] if entities else {"canonical_name": "ColSearch", "label": "Validation"}
     image = Image.new("RGB", (1200, 800), color="white")
     draw = ImageDraw.Draw(image)
     draw.text((60, 80), f"Entity: {first['canonical_name']}", fill="black")
@@ -3312,7 +3312,7 @@ def _evaluate_dense_retrieval_variant(
     payload_feature_pack: list[dict[str, Any]] | None = None,
     solver_enabled: bool,
 ) -> dict[str, Any]:
-    from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+    from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
 
     dense_vectors = np.stack([record["dense_vector"] for record in records]).astype(np.float32)
     internal_to_external = {index: record["id"] for index, record in enumerate(records)}

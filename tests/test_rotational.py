@@ -5,7 +5,7 @@ Tests for Rotational Quantization
 import pytest
 import numpy as np
 import torch
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig, FastWalshHadamard
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig, FastWalshHadamard
 
 @pytest.fixture
 def sample_embeddings():

@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from voyager_index._internal.inference.quantization.rroq4_riem import (
+from colsearch._internal.inference.quantization.rroq4_riem import (
     Rroq4RiemConfig,
     encode_query_for_rroq4_riem,
     encode_rroq4_riem,
@@ -223,7 +223,7 @@ def _profile_one_query_gpu(
     rng: np.random.Generator,
 ):
     """Time each stage of one GPU query against the synthetic payload."""
-    from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+    from colsearch._internal.kernels.triton_roq_rroq4_riem import (
         roq_maxsim_rroq4_riem,
     )
 

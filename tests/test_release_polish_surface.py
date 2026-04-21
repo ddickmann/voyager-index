@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from examples.reference_api_feature_tour import run_feature_tour, write_report
 from examples.reference_api_happy_path import run_happy_path
-from voyager_index.server import create_app
+from colsearch.server import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,7 +98,7 @@ def test_public_examples_and_benchmark_do_not_reach_into_internal_modules() -> N
     ]
     for path in public_files:
         payload = path.read_text(encoding="utf-8")
-        assert "voyager_index._internal" not in payload, path
+        assert "colsearch._internal" not in payload, path
 
 
 def test_docs_quickstart_and_api_ref_exist() -> None:
@@ -107,7 +107,7 @@ def test_docs_quickstart_and_api_ref_exist() -> None:
     assert quickstart.exists(), "quickstart.md missing"
     assert api_ref.exists(), "python.md API ref missing"
     qs_text = quickstart.read_text(encoding="utf-8")
-    assert "voyager_index" in qs_text
+    assert "colsearch" in qs_text
     assert "Index" in qs_text
 
 

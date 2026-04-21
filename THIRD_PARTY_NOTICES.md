@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-The umbrella `voyager-index` repository is licensed under
+The umbrella `colsearch` repository is licensed under
 **CC-BY-NC-4.0** (see `LICENSE` and `LICENSING.md`). It additionally bundles
 third-party code that carries its own, separate license. Each such component
 and its license is documented below; those obligations apply independently

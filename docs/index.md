@@ -1,6 +1,6 @@
-# voyager-index Docs
+# colsearch Docs
 
-`voyager-index` is a shard-first late-interaction retrieval system for
+`colsearch` is a shard-first late-interaction retrieval system for
 multivector text and multimodal search.
 
 The public story is:
@@ -46,7 +46,7 @@ It is probably **not** the first choice if you need:
 
 ### No mandatory graph dependency
 
-`voyager-index` uses proxy routing plus exact MaxSim reranking without
+`colsearch` uses proxy routing plus exact MaxSim reranking without
 requiring a graph build step in the OSS serving path. When installed, the
 optional Latence graph sidecar is invoked after first-stage retrieval and
 merged additively. That keeps the system simpler to operate while preserving
@@ -83,7 +83,7 @@ XLSX, and image inputs.
 | Surface | What it does |
 |---|---|
 | `Index(engine="shard")` | Local shard collections with CRUD and search |
-| `voyager-index-server` | Reference HTTP API with dense, late-interaction, multimodal, and shard collections |
+| `colsearch-server` | Reference HTTP API with dense, late-interaction, multimodal, and shard collections |
 | `encode_vector_payload()` | Preferred base64 serializer for dense and multivector requests |
 | `SearchPipeline` | In-process dense + BM25 fusion |
 | `latence_solver` | Optional Tabu Search solver for `tabu` refinement and `/reference/optimize` |

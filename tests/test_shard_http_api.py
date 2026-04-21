@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.server.main import create_app
 
 DIM = 32
 N_TOKENS = 8

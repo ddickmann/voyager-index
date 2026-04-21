@@ -7,14 +7,14 @@ import numpy as np
 import torch
 from fastapi.testclient import TestClient
 
-from voyager_index._internal.server.api.models import (
+from colsearch._internal.server.api.models import (
     CollectionKind,
     CreateCollectionRequest,
     PointVector,
     SearchRequest,
 )
-from voyager_index._internal.server.api.service import SearchService
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.server.api.service import SearchService
+from colsearch._internal.server.main import create_app
 
 
 def _create_client(index_path: Path) -> TestClient:

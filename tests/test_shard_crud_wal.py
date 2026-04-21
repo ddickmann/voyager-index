@@ -9,17 +9,17 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.wal import (
+from colsearch._internal.inference.shard_engine.wal import (
     WalEntry,
     WalOp,
     WalReader,
     WalWriter,
 )
-from voyager_index._internal.inference.shard_engine.memtable import MemTable
+from colsearch._internal.inference.shard_engine.memtable import MemTable
 
 
 def _make_corpus(n_docs: int = 100, dim: int = 64, min_tok: int = 8, max_tok: int = 24):

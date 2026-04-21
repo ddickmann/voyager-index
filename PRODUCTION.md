@@ -1,6 +1,6 @@
 # Production Notes
 
-This page is intentionally short. `voyager-index` now has a shipped
+This page is intentionally short. `colsearch` now has a shipped
 shard-first production path, so this document is a deployment checklist rather
 than a migration RFC.
 
@@ -9,7 +9,7 @@ than a migration RFC.
 Use:
 
 - `Index(..., engine="shard")` for local SDK usage
-- `voyager-index-server` for HTTP deployments
+- `colsearch-server` for HTTP deployments
 - `docs/guides/shard-engine.md` for engine internals and admin operations
 - `docs/guides/max-performance-reference-api.md` for CPU/GPU tuning and worker guidance
 
@@ -26,7 +26,7 @@ Use:
 - `int8`, `fp8`, and `roq4` shard scoring modes
 - dense BM25 hybrid search with `rrf` or `tabu`
 - multimodal preprocessing and collection flows
-- optional Latence graph augmentation as an additive premium lane when `voyager-index[latence-graph]` is installed
+- optional Latence graph augmentation as an additive premium lane when `colsearch[latence-graph]` is installed
 
 The production story is:
 
@@ -45,28 +45,28 @@ Operational sequence:
 
 ### CPU-first
 
-- install `voyager-index[full]` for the complete CPU-safe public surface, or `voyager-index[server,shard]` for the lean shard/API profile
+- install `colsearch[full]` for the complete CPU-safe public surface, or `colsearch[server,shard]` for the lean shard/API profile
 - keep `router_device="cpu"`
 - use exact scoring
 - scale QPS with `WORKERS=4` or `WORKERS=8` on a single host
-- add `voyager-index[shard,shard-native]` or `voyager-index[native]` when you want the Rust shard CPU fast-path installed from PyPI
+- add `colsearch[shard,shard-native]` or `colsearch[native]` when you want the Rust shard CPU fast-path installed from PyPI
 
 ### GPU streamed
 
-- install `voyager-index[full,gpu]` or `voyager-index[server,shard,gpu]`
+- install `colsearch[full,gpu]` or `colsearch[server,shard,gpu]`
 - use `transfer_mode="pinned"` or `transfer_mode="double_buffered"`
 - enable `quantization_mode` when you want GPU-side acceleration
 - for `compression="roq4"`, the shard assets persist `roq_codes` and `roq_meta` alongside offsets and IDs
 
 ### GPU corpus
 
-- install `voyager-index[full,gpu]` or `voyager-index[server,shard,gpu]`
+- install `colsearch[full,gpu]` or `colsearch[server,shard,gpu]`
 - preload the corpus into VRAM when it fits
 - report GPU-corpus numbers separately from streamed numbers
 
 ### Optional Latence graph plane
 
-- install `voyager-index[full]` or `voyager-index[server,shard,latence-graph]`
+- install `colsearch[full]` or `colsearch[server,shard,latence-graph]`
 - keep `graph_mode="off"` as the safe baseline and enable `auto` or `force` per workflow
 - graph data comes from Latence graph data derived from the customer corpus and linked back to collection targets through the sidecar sync path
 - use `query_payload` to steer graph policy on vector-only HTTP routes such as shard search
@@ -79,13 +79,13 @@ Operational sequence:
 export HOST=0.0.0.0
 export PORT=8080
 export WORKERS=4
-export VOYAGER_INDEX_PATH=/data/voyager-index
-voyager-index-server
+export COLSEARCH_INDEX_PATH=/data/colsearch
+colsearch-server
 ```
 
 ## Operational Checklist
 
-- keep every worker on the same `VOYAGER_INDEX_PATH`
+- keep every worker on the same `COLSEARCH_INDEX_PATH`
 - put TLS, auth, and request policy in front of the reference API
 - use `/health` for liveness and `/ready` for degraded-state checks
 - prefer base64 request payloads for dense and multivector traffic

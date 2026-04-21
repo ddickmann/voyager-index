@@ -1,5 +1,5 @@
 import numpy as np
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
 
 def benchmark_binary_recall():
     """Validate recall for 1-bit quantization (32x compression)."""

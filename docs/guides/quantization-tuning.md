@@ -1,7 +1,7 @@
 # Quantization tuning guide
 
 This page is the single source of truth for choosing and tuning a quantization
-codec in `voyager-index`. It covers (a) the codec decision matrix, (b) the
+codec in `colsearch`. It covers (a) the codec decision matrix, (b) the
 SOTA default for `RROQ158`, (c) the per-dim `group_size` recipe table,
 (d) when to override the default, and (e) the closing retrospective on the
 outlier-rescue investigation we explored and dropped.
@@ -118,7 +118,7 @@ Pin to `Rroq158Config(group_size=64)` if any of:
   same on dim=128 and dim=64 (gs=64 divides both with no fallback).
 
 ```python
-from voyager_index._internal.inference.shard_engine.serving_config import (
+from colsearch._internal.inference.shard_engine.serving_config import (
     BuildConfig, Compression,
 )
 

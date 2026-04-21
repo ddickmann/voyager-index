@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from voyager_index import TRITON_AVAILABLE, ColPaliConfig, ColPaliEngine, fast_colbert_scores
-from voyager_index.server import create_app
+from colsearch import TRITON_AVAILABLE, ColPaliConfig, ColPaliEngine, fast_colbert_scores
+from colsearch.server import create_app
 
 
 def benchmark_maxsim(device: str, queries: int, docs: int, tokens: int, dim: int) -> dict:

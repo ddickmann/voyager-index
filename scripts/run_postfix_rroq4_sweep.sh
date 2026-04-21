@@ -3,7 +3,9 @@
 # Each per-dataset jsonl is concatenated into the combined output at the end.
 set -euo pipefail
 
-cd /workspace/voyager-index
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 mkdir -p reports/postfix_rroq4_riem_per_dataset
 
 OUT_COMBINED=reports/beir_postfix_rroq4_riem_cpu.jsonl

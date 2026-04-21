@@ -1,9 +1,9 @@
 """
-Advanced feature tour for the voyager-index reference API.
+Advanced feature tour for the colsearch reference API.
 
 Run the reference server first:
 
-    voyager-index-server
+    colsearch-server
 
 Then execute:
 
@@ -111,7 +111,7 @@ def _optimizer_vector_payload(vectors: Any) -> dict[str, Any]:
 
 
 def _configure_logger(log_level: str, log_file: str | None = None) -> logging.Logger:
-    logger = logging.getLogger("voyager_index.feature_tour")
+    logger = logging.getLogger("colsearch.feature_tour")
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     logger.handlers.clear()
     logger.propagate = False
@@ -553,7 +553,7 @@ def run_feature_tour(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the voyager-index reference API feature tour.")
+    parser = argparse.ArgumentParser(description="Run the colsearch reference API feature tour.")
     parser.add_argument("--base-url", default=BASE_URL, help="Reference API base URL")
     parser.add_argument("--prefix", default="feature-tour", help="Collection prefix for the demo run")
     parser.add_argument("--output-json", default=None, help="Optional path to write the JSON report")

@@ -1,43 +1,43 @@
-# Voyager Index OSS Foundation
+# ColSearch OSS Foundation
 
-This document defines the supported OSS surface for `voyager-index`.
+This document defines the supported OSS surface for `colsearch`.
 
 ## Public Python Surface
 
-Supported public imports live under `voyager_index`:
+Supported public imports live under `colsearch`:
 
-- `voyager_index.BM25Config`
-- `voyager_index.FusionConfig`
-- `voyager_index.IndexConfig`
-- `voyager_index.Neo4jConfig`
-- `voyager_index.ColbertIndex`
-- `voyager_index.SearchPipeline`
-- `voyager_index.ColPaliEngine`
-- `voyager_index.ColPaliConfig`
-- `voyager_index.MultiModalEngine`
-- `voyager_index.TRITON_AVAILABLE`
-- `voyager_index.DEFAULT_MULTIMODAL_MODEL`
-- `voyager_index.DEFAULT_MULTIMODAL_MODEL_SPEC`
-- `voyager_index.MultimodalModelSpec`
-- `voyager_index.fast_colbert_scores`
-- `voyager_index.roq_maxsim_1bit`
-- `voyager_index.roq_maxsim_2bit`
-- `voyager_index.roq_maxsim_4bit`
-- `voyager_index.roq_maxsim_8bit`
-- `voyager_index.SUPPORTED_MULTIMODAL_MODELS`
-- `voyager_index.VllmPoolingProvider`
+- `colsearch.BM25Config`
+- `colsearch.FusionConfig`
+- `colsearch.IndexConfig`
+- `colsearch.Neo4jConfig`
+- `colsearch.ColbertIndex`
+- `colsearch.SearchPipeline`
+- `colsearch.ColPaliEngine`
+- `colsearch.ColPaliConfig`
+- `colsearch.MultiModalEngine`
+- `colsearch.TRITON_AVAILABLE`
+- `colsearch.DEFAULT_MULTIMODAL_MODEL`
+- `colsearch.DEFAULT_MULTIMODAL_MODEL_SPEC`
+- `colsearch.MultimodalModelSpec`
+- `colsearch.fast_colbert_scores`
+- `colsearch.roq_maxsim_1bit`
+- `colsearch.roq_maxsim_2bit`
+- `colsearch.roq_maxsim_4bit`
+- `colsearch.roq_maxsim_8bit`
+- `colsearch.SUPPORTED_MULTIMODAL_MODELS`
+- `colsearch.VllmPoolingProvider`
 
 Imports through `src.*`, `inference.*`, `kernels.*`, or `latence.*` should be
 treated as internal or legacy paths, not the OSS contract.
 
 ## Namespace And Packaging Boundary
 
-- `voyager_index.*` is the supported public namespace
-- `voyager_index._internal.*` is packaged implementation detail and may change
+- `colsearch.*` is the supported public namespace
+- `colsearch._internal.*` is packaged implementation detail and may change
 - `src.*` is not a supported or shipped Python namespace
-- the reference service CLI is `voyager-index-server`, exposed through `voyager_index.server`
-- the package is published to PyPI as `voyager-index`; `pip install voyager-index` is the recommended install path
-- `pip install "voyager-index[full]"` is the canonical full public CPU install profile
+- the reference service CLI is `colsearch-server`, exposed through `colsearch.server`
+- the package is published to PyPI as `colsearch`; `pip install colsearch` is the recommended install path
+- `pip install "colsearch[full]"` is the canonical full public CPU install profile
 - source checkout plus local install is the contributor and development alternative
 
 ## Supported Foundation Capabilities
@@ -56,8 +56,8 @@ treated as internal or legacy paths, not the OSS contract.
   - `collfm2`
   - `colqwen3`
   - `nemotron_colembed`
-- reference FastAPI service under `voyager_index.server`, with deploy assets under `deploy/reference-api/`
-- the `voyager-index-server` CLI entrypoint under `voyager_index.server`
+- reference FastAPI service under `colsearch.server`, with deploy assets under `deploy/reference-api/`
+- the `colsearch-server` CLI entrypoint under `colsearch.server`
 - filter-aware multi-vector routing via `GemSegment.set_doc_payloads()` and `search(filter=...)`
 - optional GPU-accelerated qCH proxy scoring via `GpuQchScorer` (requires PyTorch; Triton optional)
 - self-healing mutable graph segments via `PyMutableGemSegment.heal()` and `needs_healing()`
@@ -68,7 +68,7 @@ treated as internal or legacy paths, not the OSS contract.
 
 The supported OSS default is:
 
-- local and restart-safe, with collections persisted under `VOYAGER_INDEX_PATH`
+- local and restart-safe, with collections persisted under `COLSEARCH_INDEX_PATH`
 - exact-by-default for late-interaction and multimodal scoring through Triton FP16 MaxSim
 - optional INT8 as the main speed-oriented profile where the fused Triton path is already mature
 - FP8 as experimental until it is native end-to-end rather than dequantized back to FP16

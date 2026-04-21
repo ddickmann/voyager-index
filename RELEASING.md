@@ -1,4 +1,4 @@
-# Releasing voyager-index
+# Releasing colsearch
 
 This project now has one release narrative:
 
@@ -22,14 +22,14 @@ Make sure these are true:
 
 The release surface should match this install matrix:
 
-- `voyager-index[full]`
-- `voyager-index[full,gpu]`
-- `voyager-index[shard]`
-- `voyager-index[shard,shard-native]`
-- `voyager-index[server,shard]`
-- `voyager-index[server,shard,solver]`
-- `voyager-index[server,shard,native]`
-- `voyager-index[server,shard,latence-graph]`
+- `colsearch[full]`
+- `colsearch[full,gpu]`
+- `colsearch[shard]`
+- `colsearch[shard,shard-native]`
+- `colsearch[server,shard]`
+- `colsearch[server,shard,solver]`
+- `colsearch[server,shard,native]`
+- `colsearch[server,shard,latence-graph]`
 
 Supported public native packages:
 
@@ -73,8 +73,8 @@ python benchmarks/oss_reference_benchmark.py --device cpu --points 16 --top-k 3
 6. Rehearse clean installs from built artifacts, including:
 
 ```bash
-pip install "voyager-index[full]==0.X.Y"
-pip install "voyager-index[full,gpu]==0.X.Y"
+pip install "colsearch[full]==0.X.Y"
+pip install "colsearch[full,gpu]==0.X.Y"
 ```
 
 7. Commit the version and changelog changes.
@@ -89,8 +89,8 @@ gh release create v0.X.Y --title "0.X.Y" --notes-file CHANGELOG.md
 11. Verify the published packages:
 
 ```bash
-pip install voyager-index==0.X.Y
-python -c "import voyager_index; print(voyager_index.__version__)"
+pip install colsearch==0.X.Y
+python -c "import colsearch; print(colsearch.__version__)"
 ```
 
 Also verify the supported native projects when they are part of the release:
@@ -132,4 +132,4 @@ release immediately.
 ## Prerequisites
 
 - GitHub CLI authenticated for release creation
-- PyPI trusted publisher configured for `voyager-index`, `latence-shard-engine`, and `latence-solver`
+- PyPI trusted publisher configured for `colsearch`, `latence-shard-engine`, and `latence-solver`

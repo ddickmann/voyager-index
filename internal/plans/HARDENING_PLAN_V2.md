@@ -40,8 +40,8 @@ the first 8 bytes after `doc_id` as `(n_vecs, dim)` for any non-DELETE op. This 
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/wal.py` (WalOp enum, _write_entry, _parse_entry)
-- `voyager_index/_internal/inference/shard_engine/manager.py` (_replay_wal, upsert_payload)
+- `colsearch/_internal/inference/shard_engine/wal.py` (WalOp enum, _write_entry, _parse_entry)
+- `colsearch/_internal/inference/shard_engine/manager.py` (_replay_wal, upsert_payload)
 
 ### Required Changes
 
@@ -79,8 +79,8 @@ Additionally:
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (search_multivector, save)
-- `voyager_index/_internal/inference/shard_engine/scorer.py` (score_candidates)
+- `colsearch/_internal/inference/shard_engine/manager.py` (search_multivector, save)
+- `colsearch/_internal/inference/shard_engine/scorer.py` (score_candidates)
 
 ### Required Changes
 
@@ -106,7 +106,7 @@ tombstones set. Deleted documents are returned as if they still exist.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (retrieve)
+- `colsearch/_internal/inference/shard_engine/manager.py` (retrieve)
 
 ### Required Changes
 
@@ -130,8 +130,8 @@ causing a `TypeError` at runtime.
 
 ### Files
 
-- `voyager_index/index.py` (search_batch)
-- `voyager_index/_internal/inference/shard_engine/manager.py` (search_batch)
+- `colsearch/index.py` (search_batch)
+- `colsearch/_internal/inference/shard_engine/manager.py` (search_batch)
 
 ### Required Changes
 
@@ -160,7 +160,7 @@ torn/inconsistent (unlike the DENSE path which closes the engine first).
 
 ### Files
 
-- `voyager_index/_internal/server/api/service.py` (_begin_collection_mutation, _restore_collection_from_backup)
+- `colsearch/_internal/server/api/service.py` (_begin_collection_mutation, _restore_collection_from_backup)
 
 ### Required Changes
 
@@ -184,7 +184,7 @@ When `ann_backend = "faiss_ivfpq_ip"`, the built `IndexIVFPQ` uses FAISS default
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/lemur_router.py` (_rebuild_ann, _load_if_present)
+- `colsearch/_internal/inference/shard_engine/lemur_router.py` (_rebuild_ann, _load_if_present)
 
 ### Required Changes
 
@@ -208,7 +208,7 @@ When `ann_backend = "faiss_ivfpq_ip"`, the built `IndexIVFPQ` uses FAISS default
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/scorer.py` (brute_force_maxsim)
+- `colsearch/_internal/inference/shard_engine/scorer.py` (brute_force_maxsim)
 
 ### Required Changes
 
@@ -262,7 +262,7 @@ skipped. Effective CI coverage is minimal.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (_evaluate_filter)
+- `colsearch/_internal/inference/shard_engine/manager.py` (_evaluate_filter)
 
 ### Required Changes
 
@@ -286,7 +286,7 @@ When a document is upserted (exists in sealed AND memtable), it is counted twice
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (get_statistics, total_vectors)
+- `colsearch/_internal/inference/shard_engine/manager.py` (get_statistics, total_vectors)
 
 ### Required Changes
 
@@ -312,8 +312,8 @@ When a document is upserted (exists in sealed AND memtable), it is counted twice
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (delete, add_multidense)
-- `voyager_index/_internal/inference/shard_engine/lemur_router.py` (delete_docs, add_or_update_docs)
+- `colsearch/_internal/inference/shard_engine/manager.py` (delete, add_multidense)
+- `colsearch/_internal/inference/shard_engine/lemur_router.py` (delete_docs, add_or_update_docs)
 
 ### Required Changes
 
@@ -340,7 +340,7 @@ preload then scores zero vectors, which is hard to detect.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (_load_sealed_vectors)
+- `colsearch/_internal/inference/shard_engine/manager.py` (_load_sealed_vectors)
 
 ### Required Changes
 
@@ -367,8 +367,8 @@ The "full corpus on GPU" claim is only true for the sealed snapshot at preload t
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/scorer.py` (PreloadedGpuCorpus)
-- `voyager_index/_internal/inference/shard_engine/manager.py` (_try_gpu_preload)
+- `colsearch/_internal/inference/shard_engine/scorer.py` (PreloadedGpuCorpus)
+- `colsearch/_internal/inference/shard_engine/manager.py` (_try_gpu_preload)
 
 ### Required Changes
 
@@ -397,9 +397,9 @@ The "full corpus on GPU" claim is only true for the sealed snapshot at preload t
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/scorer.py` (score_all_docs_topk, score_roq4_topk)
-- `voyager_index/_internal/inference/shard_engine/shard_store.py` (build, _decode_embeddings)
-- `voyager_index/_internal/inference/shard_engine/manager.py` (search_multivector)
+- `colsearch/_internal/inference/shard_engine/scorer.py` (score_all_docs_topk, score_roq4_topk)
+- `colsearch/_internal/inference/shard_engine/shard_store.py` (build, _decode_embeddings)
+- `colsearch/_internal/inference/shard_engine/manager.py` (search_multivector)
 
 ### Required Changes
 
@@ -433,8 +433,8 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/server/api/routes.py`
-- `voyager_index/_internal/server/api/service.py`
+- `colsearch/_internal/server/api/routes.py`
+- `colsearch/_internal/server/api/service.py`
 
 ### Required Changes
 
@@ -464,7 +464,7 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/inference/index_core/hybrid_manager.py`
+- `colsearch/_internal/inference/index_core/hybrid_manager.py`
 - `docs/guides/shard-engine.md`
 
 ### Required Changes
@@ -526,7 +526,7 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/wal.py`
+- `colsearch/_internal/inference/shard_engine/wal.py`
 
 ### Required Changes
 
@@ -556,8 +556,8 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/shard_store.py`
-- `voyager_index/_internal/inference/shard_engine/config.py`
+- `colsearch/_internal/inference/shard_engine/shard_store.py`
+- `colsearch/_internal/inference/shard_engine/config.py`
 
 ### Required Changes
 
@@ -593,8 +593,8 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/lemur_router.py`
-- `voyager_index/_internal/inference/shard_engine/config.py`
+- `colsearch/_internal/inference/shard_engine/lemur_router.py`
+- `colsearch/_internal/inference/shard_engine/config.py`
 
 ### Required Changes
 
@@ -625,9 +625,9 @@ Qdrant-style nested ops). This can silently drop valid results.
 
 ### Files
 
-- `voyager_index/_internal/server/api/models.py`
-- `voyager_index/_internal/server/api/service.py`
-- `voyager_index/_internal/server/api/routes.py`
+- `colsearch/_internal/server/api/models.py`
+- `colsearch/_internal/server/api/service.py`
+- `colsearch/_internal/server/api/routes.py`
 
 ### Required Changes
 
@@ -652,8 +652,8 @@ the router or scorer. Callers may assume HNSW/IVF behavior that is not implement
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/manager.py` (search_multivector)
-- `voyager_index/_internal/inference/shard_engine/lemur_router.py` (route)
+- `colsearch/_internal/inference/shard_engine/manager.py` (search_multivector)
+- `colsearch/_internal/inference/shard_engine/lemur_router.py` (route)
 
 ### Required Changes
 
@@ -712,8 +712,8 @@ the router or scorer. Callers may assume HNSW/IVF behavior that is not implement
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/memtable.py`
-- `voyager_index/_internal/inference/shard_engine/compaction.py`
+- `colsearch/_internal/inference/shard_engine/memtable.py`
+- `colsearch/_internal/inference/shard_engine/compaction.py`
 
 ### Required Changes
 
@@ -738,7 +738,7 @@ few documents. For selective access patterns, this is O(shard_size) not O(reques
 
 ### Files
 
-- `voyager_index/_internal/inference/shard_engine/shard_store.py` (fetch_docs, load_docs_from_shard)
+- `colsearch/_internal/inference/shard_engine/shard_store.py` (fetch_docs, load_docs_from_shard)
 
 ### Required Changes
 

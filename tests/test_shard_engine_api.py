@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index.index import Index, IndexBuilder
+from colsearch.index import Index, IndexBuilder
 
 
 def _make_corpus(n_docs: int = 100, dim: int = 128, min_tok: int = 10, max_tok: int = 50):

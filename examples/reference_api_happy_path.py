@@ -1,9 +1,9 @@
 """
-End-to-end happy-path reference API example for voyager-index.
+End-to-end happy-path reference API example for colsearch.
 
 Run the reference server first:
 
-    voyager-index-server
+    colsearch-server
 """
 
 from __future__ import annotations

@@ -12,17 +12,17 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine.config import (
     AnnBackend,
     Compression,
     SearchConfig,
 )
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.memtable import MemTable
-from voyager_index._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
+from colsearch._internal.inference.shard_engine.memtable import MemTable
+from colsearch._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
 
 HAS_CUDA = torch.cuda.is_available()
 DEVICE = "cuda" if HAS_CUDA else "cpu"
@@ -82,7 +82,7 @@ class TestAllocateIds:
 class TestGpuCorpusMapping:
     @pytest.mark.skipif(not HAS_CUDA, reason="CUDA required")
     def test_score_candidates_with_missing_ids(self, tmp_dir):
-        from voyager_index._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
+        from colsearch._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
         dim = 64
         n_docs = 20
         vecs = [np.random.randn(16, dim).astype(np.float32) for _ in range(n_docs)]
@@ -98,7 +98,7 @@ class TestGpuCorpusMapping:
 
     @pytest.mark.skipif(not HAS_CUDA, reason="CUDA required")
     def test_score_candidates_all_missing(self, tmp_dir):
-        from voyager_index._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
+        from colsearch._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
         dim = 64
         vecs = [np.random.randn(16, dim).astype(np.float32) for _ in range(5)]
         corpus = PreloadedGpuCorpus(vecs, [0, 1, 2, 3, 4], dim, device="cuda")
@@ -270,7 +270,7 @@ class TestIndexApiGaps:
 
 class TestShardStoreValidation:
     def test_build_validates_dims(self, tmp_dir):
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         store = ShardStore(tmp_dir / "store")
         vecs = np.random.randn(10, 32).astype(np.float16)
         with pytest.raises(ValueError, match="incompatible with dim"):
@@ -284,7 +284,7 @@ class TestShardStoreValidation:
             )
 
     def test_build_validates_length_mismatch(self, tmp_dir):
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         store = ShardStore(tmp_dir / "store")
         vecs = np.random.randn(10, 64).astype(np.float16)
         with pytest.raises(ValueError, match="doc_offsets"):
@@ -434,7 +434,7 @@ class TestCriticalFixVerification:
     def test_fix20_wal_update_payload_roundtrip(self, tmp_dir):
         """Evidence: UPDATE_PAYLOAD entries are correctly written, parsed,
         and replayed — payload survives WAL round-trip."""
-        from voyager_index._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
+        from colsearch._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
         tmp_dir.mkdir(parents=True, exist_ok=True)
         wal_path = tmp_dir / "fix20.wal"
 
@@ -596,7 +596,7 @@ class TestCriticalFixVerification:
     def test_fix24_journal_backup_completeness(self, tmp_dir):
         """Evidence: the SHARD branch in _begin_collection_mutation
         copies the entire shard/ directory (not just 4 files)."""
-        import voyager_index._internal.server.api.service as svc_module
+        import colsearch._internal.server.api.service as svc_module
         import inspect
         source = inspect.getsource(svc_module.SearchService._begin_collection_mutation)
 
@@ -623,7 +623,7 @@ class TestCriticalFixVerification:
         except ImportError:
             pytest.skip("faiss not available")
 
-        from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
+        from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
 
         lemur_dir = tmp_dir / "lemur_nprobe_test"
         lemur_dir.mkdir(parents=True, exist_ok=True)
@@ -675,7 +675,7 @@ class TestCriticalFixVerification:
     def test_fix26_brute_force_empty_input(self, tmp_dir):
         """Evidence: brute_force_maxsim with empty doc_ids returns
         empty lists instead of crashing with torch.cat([])."""
-        from voyager_index._internal.inference.shard_engine.scorer import brute_force_maxsim
+        from colsearch._internal.inference.shard_engine.scorer import brute_force_maxsim
         query = torch.randn(8, 64)
         ids, scores = brute_force_maxsim(query, [], [], dim=64, device="cpu")
         assert ids == []
@@ -891,7 +891,7 @@ class TestHighFixVerification:
 
     def test_fix32_gpu_corpus_refresh(self, tmp_dir):
         """Evidence: PreloadedGpuCorpus.refresh() updates doc_ids and tensors."""
-        from voyager_index._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
+        from colsearch._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
 
         dim = 32
         device = "cuda" if HAS_CUDA else "cpu"
@@ -921,7 +921,7 @@ class TestHighFixVerification:
 
     def test_fix33_roq4_cpu_no_crash(self, tmp_dir):
         """Evidence: score_roq4_topk on CPU returns empty results, no crash."""
-        from voyager_index._internal.inference.shard_engine.scorer import score_roq4_topk
+        from colsearch._internal.inference.shard_engine.scorer import score_roq4_topk
         ids, scores = score_roq4_topk(
             query_codes=torch.zeros(1, 8, 4, dtype=torch.uint8),
             query_meta=torch.zeros(1, 8, 4, dtype=torch.float32),
@@ -936,7 +936,7 @@ class TestHighFixVerification:
 
     def test_fix33_manifest_fallback_to_fp16(self, tmp_dir):
         """Evidence: build with ROQ4 but no roq_doc_codes => manifest says fp16."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         store_dir = tmp_dir / "store33"
         store = ShardStore(store_dir)
         n_docs = 10
@@ -966,7 +966,7 @@ class TestHighFixVerification:
     def test_fix34_no_double_filter(self):
         """Evidence: shard search branch in service.py does not call _matches_filter."""
         import inspect
-        import voyager_index._internal.server.api.service as svc_module
+        import colsearch._internal.server.api.service as svc_module
         source = inspect.getsource(svc_module.SearchService.search)
 
         shard_section_start = source.index("runtime.kind == CollectionKind.SHARD")
@@ -982,7 +982,7 @@ class TestHighFixVerification:
     def test_fix34_checkpoint_returns_actual_wal_count(self, tmp_dir):
         """Evidence: checkpoint_collection returns actual WAL count, not hardcoded 0."""
         import inspect
-        import voyager_index._internal.server.api.service as svc_module
+        import colsearch._internal.server.api.service as svc_module
         source = inspect.getsource(svc_module.SearchService.checkpoint_collection)
         assert '"wal_entries_after": 0' not in source, \
             "checkpoint should return actual WAL count, not hardcoded 0"
@@ -994,7 +994,7 @@ class TestHighFixVerification:
 
     def test_fix35_hybrid_rejects_3d(self, tmp_dir):
         """Evidence: HybridSearchManager.index() raises ValueError on 3D arrays."""
-        from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+        from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
         hm = HybridSearchManager(
             shard_path=tmp_dir / "hybrid35",
             dim=32,
@@ -1015,7 +1015,7 @@ class TestHighFixVerification:
     def test_fix36_index_api_coverage(self, tmp_dir):
         """Evidence: Index.delete and Index.scroll exist and are callable
         on the shard engine at the public API level."""
-        from voyager_index.index import Index
+        from colsearch.index import Index
         dim = 64
         idx = Index(str(tmp_dir / "idx36"), dim=dim, engine="shard",
                      n_shards=4, lemur_epochs=2, k_candidates=50)
@@ -1032,7 +1032,7 @@ class TestHighFixVerification:
 
     def test_fix36_http_routes_exist(self):
         """Evidence: scroll, retrieve, search/batch routes are registered."""
-        import voyager_index._internal.server.api.routes as routes_module
+        import colsearch._internal.server.api.routes as routes_module
         source = inspect.getsource(routes_module)
         assert "/collections/{name}/scroll" in source
         assert "/collections/{name}/retrieve" in source
@@ -1064,7 +1064,7 @@ class TestMediumLowFixVerification:
     def test_fix37_parse_entry_unknown_op_warning(self, tmp_dir, caplog):
         """Evidence: _parse_entry logs warning on unknown op byte."""
         import struct, json, zlib
-        from voyager_index._internal.inference.shard_engine.wal import (
+        from colsearch._internal.inference.shard_engine.wal import (
             WAL_MAGIC, WAL_VERSION, HEADER_FMT, WalReader,
         )
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -1135,7 +1135,7 @@ class TestMediumLowFixVerification:
 
     def test_fix38_negative_shard_assignment_rejected(self, tmp_dir):
         """Evidence: build() rejects shard_assignments with negative values."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         tmp_dir.mkdir(parents=True, exist_ok=True)
         store = ShardStore(tmp_dir / "store38a")
         vecs = np.random.randn(16, 64).astype(np.float16)
@@ -1151,7 +1151,7 @@ class TestMediumLowFixVerification:
 
     def test_fix38_duplicate_doc_ids_rejected(self, tmp_dir):
         """Evidence: build() rejects duplicate doc_ids."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         tmp_dir.mkdir(parents=True, exist_ok=True)
         store = ShardStore(tmp_dir / "store38b")
         vecs = np.random.randn(16, 64).astype(np.float16)
@@ -1167,7 +1167,7 @@ class TestMediumLowFixVerification:
 
     def test_fix38_n_shards_lt_1_rejected(self, tmp_dir):
         """Evidence: build() rejects n_shards < 1."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         tmp_dir.mkdir(parents=True, exist_ok=True)
         store = ShardStore(tmp_dir / "store38c")
         vecs = np.random.randn(8, 64).astype(np.float16)
@@ -1183,13 +1183,13 @@ class TestMediumLowFixVerification:
 
     def test_fix38_manifest_has_version(self, tmp_dir):
         """Evidence: StoreManifest has a version field."""
-        from voyager_index._internal.inference.shard_engine.shard_store import StoreManifest
+        from colsearch._internal.inference.shard_engine.shard_store import StoreManifest
         assert hasattr(StoreManifest, "__dataclass_fields__")
         assert "version" in StoreManifest.__dataclass_fields__
 
     def test_fix38_load_shard_roq4_needs_safetensors(self, tmp_dir):
         """Evidence: load_shard_roq4 raises ImportError when safetensors unavailable."""
-        from voyager_index._internal.inference.shard_engine import shard_store as ss_mod
+        from colsearch._internal.inference.shard_engine import shard_store as ss_mod
 
         tmp_dir.mkdir(parents=True, exist_ok=True)
         store_dir = tmp_dir / "store38e"
@@ -1206,7 +1206,7 @@ class TestMediumLowFixVerification:
 
     def test_fix39_router_state_default_flat(self):
         """Evidence: RouterState.ann_backend defaults to 'faiss_flat_ip'."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import RouterState
+        from colsearch._internal.inference.shard_engine.lemur_router import RouterState
         state = RouterState()
         assert state.ann_backend == "faiss_flat_ip"
 
@@ -1214,7 +1214,7 @@ class TestMediumLowFixVerification:
         """Evidence: _load_if_present syncs self.ann_backend from state."""
         source = inspect.getsource(
             __import__(
-                "voyager_index._internal.inference.shard_engine.lemur_router",
+                "colsearch._internal.inference.shard_engine.lemur_router",
                 fromlist=["LemurRouter"],
             ).LemurRouter._load_if_present
         )
@@ -1222,20 +1222,20 @@ class TestMediumLowFixVerification:
 
     def test_fix39_no_redundant_branch_in_add_or_update(self):
         """Evidence: add_or_update_docs has no if/else around _rebuild_ann."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
+        from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
         source = inspect.getsource(LemurRouter.add_or_update_docs)
         rebuild_calls = source.count("self._rebuild_ann()")
         assert rebuild_calls == 1, f"Expected exactly 1 _rebuild_ann() call, found {rebuild_calls}"
 
     def test_fix39_no_lazy_search_lock(self):
         """Evidence: _search has no lazy init of _search_lock."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
+        from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
         source = inspect.getsource(LemurRouter._search)
         assert "hasattr" not in source or "_search_lock" not in source.split("hasattr")[1][:50]
 
     def test_fix39_thread_safe_gpu_resources(self):
         """Evidence: _get_gpu_resources uses a lock."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
+        from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
         source = inspect.getsource(LemurRouter._get_gpu_resources)
         assert "_gpu_res_lock" in source
 
@@ -1245,14 +1245,14 @@ class TestMediumLowFixVerification:
 
     def test_fix40_search_request_has_ef_nprobes(self):
         """Evidence: SearchRequest accepts ef and n_probes fields."""
-        from voyager_index._internal.server.api.models import SearchRequest
+        from colsearch._internal.server.api.models import SearchRequest
         fields = SearchRequest.model_fields
         assert "ef" in fields
         assert "n_probes" in fields
 
     def test_fix40_collection_info_shard_fields(self):
         """Evidence: CollectionInfo has n_shards, k_candidates, total_tokens."""
-        from voyager_index._internal.server.api.models import CollectionInfo
+        from colsearch._internal.server.api.models import CollectionInfo
         fields = CollectionInfo.model_fields
         assert "n_shards" in fields
         assert "k_candidates" in fields
@@ -1260,7 +1260,7 @@ class TestMediumLowFixVerification:
 
     def test_fix40_structured_error_response(self):
         """Evidence: _raise_service_error uses ErrorResponse model."""
-        import voyager_index._internal.server.api.routes as routes_mod
+        import colsearch._internal.server.api.routes as routes_mod
         source = inspect.getsource(routes_mod._raise_service_error)
         assert "ErrorResponse" in source
 
@@ -1324,7 +1324,7 @@ class TestMediumLowFixVerification:
 
     def test_fix43_compaction_task_metric_names(self, tmp_dir):
         """Evidence: CompactionTask.run() returns memtable_docs_at_sync key."""
-        from voyager_index._internal.inference.shard_engine.compaction import CompactionTask
+        from colsearch._internal.inference.shard_engine.compaction import CompactionTask
         dim = 64
         config = ShardEngineConfig(n_shards=4, dim=dim, lemur_epochs=2, k_candidates=50)
         mgr = ShardSegmentManager(tmp_dir, config=config, device="cpu")
@@ -1351,7 +1351,7 @@ class TestMediumLowFixVerification:
 
     def test_fix44_fetch_docs_docstring_mentions_shard_size(self):
         """Evidence: fetch_docs docstring mentions O(shard_size)."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         docstring = ShardStore.fetch_docs.__doc__
         assert "shard_size" in docstring.lower() or "O(shard" in docstring
 
@@ -1373,14 +1373,14 @@ class TestMediumLowFixVerification:
 
     def test_fix45_fits_on_gpu_bfloat16(self):
         """Evidence: fits_on_gpu handles bfloat16 via dtype.itemsize."""
-        from voyager_index._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
+        from colsearch._internal.inference.shard_engine.scorer import PreloadedGpuCorpus
         source = inspect.getsource(PreloadedGpuCorpus.fits_on_gpu)
         assert "itemsize" in source, "fits_on_gpu should use dtype.itemsize"
         assert "(2 if" not in source, "fits_on_gpu should not hardcode dtype sizes"
 
     def test_fix45_candidate_plan_renamed(self):
         """Evidence: CandidatePlan field is post_tombstone_count, not raw_candidate_count."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import CandidatePlan
+        from colsearch._internal.inference.shard_engine.lemur_router import CandidatePlan
         fields = [f.name for f in CandidatePlan.__dataclass_fields__.values()]
         assert "post_tombstone_count" in fields
         assert "raw_candidate_count" not in fields
@@ -1401,7 +1401,7 @@ class TestMediumLowFixVerification:
 
     def test_fix45_manager_docstring_updated(self):
         """Evidence: manager.py module docstring mentions WAL, retrieve, scroll."""
-        import voyager_index._internal.inference.shard_engine.manager as mgr_mod
+        import colsearch._internal.inference.shard_engine.manager as mgr_mod
         docstring = mgr_mod.__doc__
         assert "WAL" in docstring
         assert "retrieve" in docstring
@@ -1415,7 +1415,7 @@ class TestMediumLowFixVerification:
 
     def test_fix45_rebuild_ann_deletes_old_index(self):
         """Evidence: _rebuild_ann explicitly deletes old index."""
-        from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
+        from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
         source = inspect.getsource(LemurRouter._rebuild_ann)
         assert "old_index" in source
         assert "del old_index" in source
@@ -1470,7 +1470,7 @@ class TestProductionFeatureGaps:
 
     def test_feat103_compaction_emits_metric(self, tmp_dir):
         """Evidence: CompactionTask.run() calls _emit_metric('compaction', ...)."""
-        from voyager_index._internal.inference.shard_engine.compaction import CompactionTask
+        from colsearch._internal.inference.shard_engine.compaction import CompactionTask
         source = inspect.getsource(CompactionTask.run)
         assert "_emit_metric" in source
         assert '"compaction"' in source
@@ -1481,14 +1481,14 @@ class TestProductionFeatureGaps:
 
     def test_feat22_checkpoint_manager_exists(self):
         """Evidence: ShardCheckpointManager class importable."""
-        from voyager_index._internal.inference.shard_engine.checkpoint import ShardCheckpointManager
+        from colsearch._internal.inference.shard_engine.checkpoint import ShardCheckpointManager
         assert hasattr(ShardCheckpointManager, "save")
         assert hasattr(ShardCheckpointManager, "load")
         assert hasattr(ShardCheckpointManager, "clear")
 
     def test_feat22_checkpoint_roundtrip(self, tmp_dir):
         """Evidence: save + load round-trips memtable data."""
-        from voyager_index._internal.inference.shard_engine.checkpoint import ShardCheckpointManager
+        from colsearch._internal.inference.shard_engine.checkpoint import ShardCheckpointManager
 
         ckpt = ShardCheckpointManager(tmp_dir)
         docs = {0: np.random.randn(5, 32).astype(np.float32),
@@ -1601,7 +1601,7 @@ class TestProductionFeatureGaps:
 
     def test_feat26_manifest_uses_atomic_write(self):
         """Evidence: StoreManifest.save uses atomic_json_write."""
-        from voyager_index._internal.inference.shard_engine.shard_store import StoreManifest
+        from colsearch._internal.inference.shard_engine.shard_store import StoreManifest
         source = inspect.getsource(StoreManifest.save)
         assert "atomic_json_write" in source
 
@@ -1642,33 +1642,33 @@ class TestProductionFeatureGaps:
 
     def test_feat43_bm25s_available_flag(self):
         """Evidence: hybrid_manager has _BM25S_AVAILABLE flag."""
-        from voyager_index._internal.inference.index_core import hybrid_manager
+        from colsearch._internal.inference.index_core import hybrid_manager
         assert hasattr(hybrid_manager, "_BM25S_AVAILABLE")
 
     def test_feat43_legacy_bm25_import(self):
         """Evidence: hybrid_manager imports LegacyBM25Engine."""
-        from voyager_index._internal.inference.index_core import hybrid_manager
+        from colsearch._internal.inference.index_core import hybrid_manager
         assert hasattr(hybrid_manager, "LegacyBM25Engine")
 
     def test_feat43_rebuild_has_fallback(self):
         """Evidence: rebuild_sparse_state has LegacyBM25Engine fallback path."""
-        from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+        from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
         source = inspect.getsource(HybridSearchManager.rebuild_sparse_state)
         assert "LegacyBM25Engine" in source
 
     def test_feat43_search_handles_legacy(self):
         """Evidence: search() checks _legacy_bm25 for sparse results."""
-        from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
+        from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
         source = inspect.getsource(HybridSearchManager.search)
         assert "_legacy_bm25" in source
 
     def test_feat43_fallback_used_when_bm25s_missing(self):
         """Evidence: with bm25s mocked as unavailable, rebuild falls back to LegacyBM25Engine."""
-        import voyager_index._internal.inference.index_core.hybrid_manager as hm
+        import colsearch._internal.inference.index_core.hybrid_manager as hm
         orig = hm._BM25S_AVAILABLE
         try:
             hm._BM25S_AVAILABLE = False
-            from voyager_index._internal.inference.engines.bm25 import BM25Engine as LBM25
+            from colsearch._internal.inference.engines.bm25 import BM25Engine as LBM25
             engine = LBM25()
             engine.index_documents(["hello world", "foo bar"], [0, 1])
             results = engine.search("hello", top_k=1)
@@ -1683,7 +1683,7 @@ class TestProductionFeatureGaps:
 
     def test_feat54_pipeline_dense_engine_param(self):
         """Evidence: SearchPipeline.__init__ accepts dense_engine with shard default."""
-        from voyager_index._internal.inference.search_pipeline import SearchPipeline
+        from colsearch._internal.inference.search_pipeline import SearchPipeline
         sig = inspect.signature(SearchPipeline.__init__)
         assert "dense_engine" in sig.parameters
         default = sig.parameters["dense_engine"].default
@@ -1691,13 +1691,13 @@ class TestProductionFeatureGaps:
 
     def test_feat54_pipeline_passes_dense_engine(self):
         """Evidence: SearchPipeline passes dense_engine to HybridSearchManager."""
-        from voyager_index._internal.inference.search_pipeline import SearchPipeline
+        from colsearch._internal.inference.search_pipeline import SearchPipeline
         source = inspect.getsource(SearchPipeline.__init__)
         assert "dense_engine=dense_engine" in source
 
     def test_feat54_pipeline_config_stored(self):
         """Evidence: SearchPipeline stores dense_engine in config."""
-        from voyager_index._internal.inference.search_pipeline import SearchPipeline
+        from colsearch._internal.inference.search_pipeline import SearchPipeline
         source = inspect.getsource(SearchPipeline.__init__)
         assert '"dense_engine"' in source
 
@@ -1707,13 +1707,13 @@ class TestProductionFeatureGaps:
 
     def test_feat104_page_cache_method_exists(self):
         """Evidence: ShardStore has page_cache_residency method."""
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         assert hasattr(ShardStore, "page_cache_residency")
 
     def test_feat104_returns_dict_or_none(self, tmp_dir):
         """Evidence: page_cache_residency returns dict on Linux, None otherwise."""
         import sys
-        from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+        from colsearch._internal.inference.shard_engine.shard_store import ShardStore
         store = ShardStore(tmp_dir)
         result = store.page_cache_residency()
         if sys.platform == "linux":

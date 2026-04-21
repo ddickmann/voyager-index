@@ -1,9 +1,9 @@
-# ColBERT Search with voyager-index
+# ColBERT Search with colsearch
 
 ## Overview
 
 [ColBERT](https://arxiv.org/abs/2004.12832) produces multi-vector document
-representations where each token gets its own embedding. `voyager-index`
+representations where each token gets its own embedding. `colsearch`
 supports these multivector documents through the shard engine, which is the
 mainline production path in this repo.
 
@@ -11,7 +11,7 @@ mainline production path in this repo.
 
 ```python
 import numpy as np
-from voyager_index import Index
+from colsearch import Index
 
 DIM = 128  # ColBERT default
 
@@ -48,7 +48,7 @@ with Index("colbert_index", dim=DIM, engine="shard", n_shards=64, k_candidates=5
 from colbert import Searcher
 
 # Encode your query and documents with ColBERT
-# Then pass the embeddings to voyager-index
+# Then pass the embeddings to colsearch
 
 query_embs = model.encode_query("What is late interaction?")
 doc_embs = [model.encode_doc(doc) for doc in documents]

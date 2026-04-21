@@ -1,6 +1,6 @@
 # Reference API Tutorial
 
-This is the shortest HTTP-only path through the shipped `voyager-index`
+This is the shortest HTTP-only path through the shipped `colsearch`
 reference API.
 
 Read this first if you want:
@@ -17,12 +17,12 @@ Then continue with:
 ## 1. Install
 
 ```bash
-pip install "voyager-index[full]"
-pip install "voyager-index[full,gpu]"
-pip install "voyager-index[server,shard]"
-pip install "voyager-index[server,shard,solver]"  # adds Tabu Search solver
-pip install "voyager-index[server,shard,native]"  # adds both public native wheels
-pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
+pip install "colsearch[full]"
+pip install "colsearch[full,gpu]"
+pip install "colsearch[server,shard]"
+pip install "colsearch[server,shard,solver]"  # adds Tabu Search solver
+pip install "colsearch[server,shard,native]"  # adds both public native wheels
+pip install "colsearch[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 
 The `server` extra includes the supported document-rendering stack for
@@ -42,13 +42,13 @@ Without it, graph-aware search requests fall back to the OSS retrieval path.
 Local development:
 
 ```bash
-voyager-index-server
+colsearch-server
 ```
 
 Single-host production-style start:
 
 ```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
+HOST=0.0.0.0 WORKERS=4 colsearch-server
 ```
 
 OpenAPI:
@@ -81,7 +81,7 @@ Insert points with the preferred base64 transport:
 ```python
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 body = {
     "points": [
@@ -110,7 +110,7 @@ Search with dense + BM25 fusion:
 ```python
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 response = requests.post(
     "http://127.0.0.1:8080/collections/tutorial-dense/search",
@@ -178,7 +178,7 @@ Insert and query multivectors:
 ```python
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 doc_vectors = [[1, 0, 0, 0], [1, 0, 0, 0]]
 
@@ -244,7 +244,7 @@ Insert and search patch embeddings:
 ```python
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 page_vectors = [[1, 0, 0, 0], [1, 0, 0, 0]]
 
@@ -333,7 +333,7 @@ Shard search is vector-only over HTTP:
 import numpy as np
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 query = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
 

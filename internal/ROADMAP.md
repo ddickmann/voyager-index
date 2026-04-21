@@ -1,6 +1,6 @@
-# voyager-index Roadmap
+# colsearch Roadmap
 
-This document captures the forward-looking plan for voyager-index, organized
+This document captures the forward-looking plan for colsearch, organized
 by priority tier.  Items here are **acknowledged gaps** in production readiness
 or differentiation that require external resources (datasets, compute, larger
 engineering effort) beyond what can be addressed in a single session.

@@ -34,8 +34,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ddickmann/voyager-index"
-Repository = "https://github.com/ddickmann/voyager-index"
+Homepage = "https://github.com/ddickmann/colsearch"
+Repository = "https://github.com/ddickmann/colsearch"
 
 [tool.maturin]
 # Build with Python bindings and CPU backend by default

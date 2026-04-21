@@ -9,15 +9,15 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index._internal.inference.shard_engine import ShardSegmentManager
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine import ShardSegmentManager
+from colsearch._internal.inference.shard_engine.config import (
     Compression,
     RouterType,
     StorageLayout,
 )
-from voyager_index._internal.inference.shard_engine.manager import ShardEngineConfig
-from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
-from voyager_index._internal.inference.shard_engine.scorer import (
+from colsearch._internal.inference.shard_engine.manager import ShardEngineConfig
+from colsearch._internal.inference.shard_engine.shard_store import ShardStore
+from colsearch._internal.inference.shard_engine.scorer import (
     _get_maxsim,
     brute_force_maxsim,
     score_all_docs_topk,

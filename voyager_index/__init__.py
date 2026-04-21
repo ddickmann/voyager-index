@@ -1,107 +1,69 @@
 """
-Public OSS API for voyager-index.
+Compatibility shim for the renamed package.
+
+`voyager_index` was renamed to `colsearch` in 0.2.0. This shim eagerly walks
+the on-disk `colsearch` package tree at import time and aliases every
+submodule under the matching `voyager_index.<sub>` name in `sys.modules`,
+so that `import voyager_index.X.Y` resolves to the *exact same module
+object* as `colsearch.X.Y` (no duplicate enums or classes). A single
+`DeprecationWarning` is emitted on first import so callers can migrate.
+The shim will be removed in 0.3.0.
 """
 
 from __future__ import annotations
 
-from importlib import import_module
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
-from typing import Any
+import importlib as _importlib
+import pkgutil as _pkgutil
+import sys as _sys
+import warnings as _warnings
+from typing import Any as _Any
 
-try:
-    __version__: str = _pkg_version("voyager-index")
-except PackageNotFoundError:
-    __version__ = "0+local"
+import colsearch as _colsearch
+from colsearch import __all__ as _all
+from colsearch import __version__ as __version__  # noqa: F401
 
-_EXPORTS = {
-    "Index": ("voyager_index.index", "Index"),
-    "IndexBuilder": ("voyager_index.index", "IndexBuilder"),
-    "SearchResult": ("voyager_index.index", "SearchResult"),
-    "ScrollPage": ("voyager_index.index", "ScrollPage"),
-    "IndexStats": ("voyager_index.index", "IndexStats"),
-    "BM25Config": ("voyager_index.config", "BM25Config"),
-    "FusionConfig": ("voyager_index.config", "FusionConfig"),
-    "IndexConfig": ("voyager_index.config", "IndexConfig"),
-    "Neo4jConfig": ("voyager_index.config", "Neo4jConfig"),
-    # Re-export the shard-engine `Compression` enum so the documented form
-    # `from voyager_index import Compression; ...compression=Compression.RROQ158`
-    # works without users reaching into the `_internal` namespace.
-    "Compression": (
-        "voyager_index._internal.inference.shard_engine.serving_config",
-        "Compression",
-    ),
-    "TRITON_AVAILABLE": ("voyager_index.kernels", "TRITON_AVAILABLE"),
-    "fast_colbert_scores": ("voyager_index.kernels", "fast_colbert_scores"),
-    "roq_maxsim_1bit": ("voyager_index.kernels", "roq_maxsim_1bit"),
-    "roq_maxsim_2bit": ("voyager_index.kernels", "roq_maxsim_2bit"),
-    "roq_maxsim_4bit": ("voyager_index.kernels", "roq_maxsim_4bit"),
-    "roq_maxsim_8bit": ("voyager_index.kernels", "roq_maxsim_8bit"),
-    "DEFAULT_MULTIMODAL_MODEL": ("voyager_index.multimodal", "DEFAULT_MULTIMODAL_MODEL"),
-    "DEFAULT_MULTIMODAL_MODEL_SPEC": ("voyager_index.multimodal", "DEFAULT_MULTIMODAL_MODEL_SPEC"),
-    "MultimodalModelSpec": ("voyager_index.multimodal", "MultimodalModelSpec"),
-    "SUPPORTED_MULTIMODAL_MODELS": ("voyager_index.multimodal", "SUPPORTED_MULTIMODAL_MODELS"),
-    "VllmPoolingProvider": ("voyager_index.multimodal", "VllmPoolingProvider"),
-    "ColPaliConfig": ("voyager_index.search", "ColPaliConfig"),
-    "ColPaliEngine": ("voyager_index.search", "ColPaliEngine"),
-    "MultiModalEngine": ("voyager_index.search", "MultiModalEngine"),
-    "ColbertIndex": ("voyager_index.search", "ColbertIndex"),
-    "RENDERABLE_SOURCE_SUFFIXES": ("voyager_index.preprocessing", "RENDERABLE_SOURCE_SUFFIXES"),
-    "SearchPipeline": ("voyager_index.search", "SearchPipeline"),
-    "enumerate_renderable_documents": ("voyager_index.preprocessing", "enumerate_renderable_documents"),
-    "render_documents": ("voyager_index.preprocessing", "render_documents"),
-    "VectorPayload": ("voyager_index.transport", "VectorPayload"),
-    "decode_payload": ("voyager_index.transport", "decode_payload"),
-    "encode_roq_payload": ("voyager_index.transport", "encode_roq_payload"),
-    "encode_vector_payload": ("voyager_index.transport", "encode_vector_payload"),
-}
+_warnings.warn(
+    "The `voyager_index` package has been renamed to `colsearch`. "
+    "Update your imports to `from colsearch import ...`. "
+    "The `voyager_index` alias is a compatibility shim that will be removed in 0.3.0.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
-def __getattr__(name: str) -> Any:
-    if name not in _EXPORTS:
-        raise AttributeError(f"module 'voyager_index' has no attribute {name!r}")
-    module_name, attr_name = _EXPORTS[name]
-    value = getattr(import_module(module_name), attr_name)
-    globals()[name] = value
-    return value
+def _alias_submodules() -> None:
+    """Discover every `colsearch.*` submodule on disk and alias it under
+    `voyager_index.*` in `sys.modules`. Modules that fail to import (e.g. due
+    to an optional dependency) are silently skipped — they will simply be
+    unavailable through the shim until their dependency is installed, at
+    which point the user can `import colsearch.<sub>` directly."""
+
+    # Always alias the top-level package itself.
+    _sys.modules.setdefault("voyager_index", _sys.modules[__name__])
+
+    # Walk colsearch's submodule tree from disk. Each successfully-imported
+    # submodule becomes both `colsearch.X` and `voyager_index.X`.
+    for module_info in _pkgutil.walk_packages(_colsearch.__path__, prefix="colsearch."):
+        target = module_info.name
+        try:
+            module = _importlib.import_module(target)
+        except Exception:
+            # Optional-dep modules (e.g. fastapi/pydantic-only paths) may
+            # fail to import in lean environments; that's fine.
+            continue
+        alias = "voyager_index." + target[len("colsearch.") :]
+        _sys.modules[alias] = module
+
+
+_alias_submodules()
+
+
+__all__ = list(_all)
+
+
+def __getattr__(name: str) -> _Any:
+    return getattr(_colsearch, name)
 
 
 def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + list(__all__) + ["__version__"])
-
-
-__all__ = [
-    "Index",
-    "IndexBuilder",
-    "SearchResult",
-    "ScrollPage",
-    "IndexStats",
-    "BM25Config",
-    "Compression",
-    "FusionConfig",
-    "IndexConfig",
-    "Neo4jConfig",
-    "TRITON_AVAILABLE",
-    "fast_colbert_scores",
-    "roq_maxsim_1bit",
-    "roq_maxsim_2bit",
-    "roq_maxsim_4bit",
-    "roq_maxsim_8bit",
-    "DEFAULT_MULTIMODAL_MODEL",
-    "DEFAULT_MULTIMODAL_MODEL_SPEC",
-    "MultimodalModelSpec",
-    "SUPPORTED_MULTIMODAL_MODELS",
-    "VllmPoolingProvider",
-    "ColPaliConfig",
-    "ColPaliEngine",
-    "MultiModalEngine",
-    "ColbertIndex",
-    "RENDERABLE_SOURCE_SUFFIXES",
-    "SearchPipeline",
-    "enumerate_renderable_documents",
-    "render_documents",
-    "VectorPayload",
-    "decode_payload",
-    "encode_roq_payload",
-    "encode_vector_payload",
-]
+    return sorted(set(list(globals().keys()) + list(__all__) + ["__version__"]))

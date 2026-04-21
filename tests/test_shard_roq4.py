@@ -9,12 +9,12 @@ import numpy as np
 import pytest
 import torch
 
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.config import Compression
-from voyager_index._internal.inference.shard_engine.scorer import (
+from colsearch._internal.inference.shard_engine.config import Compression
+from colsearch._internal.inference.shard_engine.scorer import (
     _get_roq_maxsim,
     score_roq4_topk,
 )
@@ -40,7 +40,7 @@ def tmp_dir():
 
 ROQ_AVAILABLE = False
 try:
-    from voyager_index._internal.inference.quantization.rotational import (
+    from colsearch._internal.inference.quantization.rotational import (
         RotationalQuantizer,
         RoQConfig,
     )

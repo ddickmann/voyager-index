@@ -1,6 +1,6 @@
 # Scaling Shard Collections
 
-This guide covers the supported shard-first scaling path in `voyager-index`.
+This guide covers the supported shard-first scaling path in `colsearch`.
 Use it when you need to choose between CPU exact serving, streamed GPU serving,
 or a GPU-corpus deployment on a single machine.
 
@@ -91,7 +91,7 @@ Recommended defaults:
 Start with:
 
 ```python
-from voyager_index import Index
+from colsearch import Index
 
 idx = Index(
     "/data/my-index",
@@ -131,7 +131,7 @@ For the reference API on a single machine:
 
 - start with `WORKERS=4`
 - move to `WORKERS=8` only after checking CPU saturation, IO pressure, and GPU memory contention
-- keep every worker on the same `VOYAGER_INDEX_PATH`
+- keep every worker on the same `COLSEARCH_INDEX_PATH`
 
 Mutations remain durable because the server coordinates collection revisions and
 WAL-backed writes across workers on the same host.

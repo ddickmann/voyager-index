@@ -8,7 +8,7 @@
 > the new default). The trick is *not* a new quantizer — it's the
 > geometry the quantizer sits on. Code, kernels, and the full benchmark
 > sweep are open in
-> [`voyager-index`](https://github.com/lightonai/voyager-index).
+> [`colsearch`](https://github.com/lightonai/colsearch).
 >
 > If you have ever shipped a ColBERT, PLAID, or generic late-interaction
 > system into production and stared at your SSD bill, this post is for
@@ -356,7 +356,7 @@ architecture, and the same dispatch / fallback path. Switching is
 one flag:
 
 ```python
-from voyager_index import BuildConfig, Compression
+from colsearch import BuildConfig, Compression
 
 config = BuildConfig(compression=Compression.RROQ4_RIEM)
 
@@ -431,9 +431,9 @@ for the full retrospective.
 ## Reproducing it
 
 Everything in this post is open. The codec lives in
-[`voyager_index/_internal/inference/quantization/rroq158.py`](../../voyager_index/_internal/inference/quantization/rroq158.py),
+[`colsearch/_internal/inference/quantization/rroq158.py`](../../colsearch/_internal/inference/quantization/rroq158.py),
 the Triton kernel in
-[`voyager_index/_internal/inference/triton_roq_rroq158.py`](../../voyager_index/_internal/inference/triton_roq_rroq158.py),
+[`colsearch/_internal/inference/triton_roq_rroq158.py`](../../colsearch/_internal/inference/triton_roq_rroq158.py),
 and the Rust SIMD kernel in
 [`latence-shard-engine/src/fused_rroq158.rs`](../../latence-shard-engine/src/fused_rroq158.rs).
 The math derivation is in
@@ -446,8 +446,8 @@ and the table renderer is
 To rerun the sweep on your host:
 
 ```bash
-git clone https://github.com/lightonai/voyager-index
-cd voyager-index
+git clone https://github.com/lightonai/colsearch
+cd colsearch
 pip install -e '.[dev]'
 python benchmarks/beir_2026q2_full_sweep.py \
     --output reports/beir_2026q2/sweep.jsonl
@@ -480,7 +480,7 @@ Three things, in roughly increasing order of ambition:
    (production-K microbench: 19.21 → 14.98 ms p50, +28% docs/s) by
    amortising the byte→fp32 nibble unpack across query tokens — the
    per-stage diagnostic
-   ([`benchmarks/diag_rroq4_riem_breakdown.py`](https://github.com/lightonai/voyager-index/blob/main/benchmarks/diag_rroq4_riem_breakdown.py))
+   ([`benchmarks/diag_rroq4_riem_breakdown.py`](https://github.com/lightonai/colsearch/blob/main/benchmarks/diag_rroq4_riem_breakdown.py))
    pinned the Rust kernel at ~58% of CPU wall-clock so this is the
    highest-leverage line. Next-largest gains are likely in (a) AVX-512 /
    VPSHUFB nibble-level packing, (b) avoiding the remaining per-query
@@ -495,7 +495,7 @@ Three things, in roughly increasing order of ambition:
    ~0.5 NDCG@10 gap on rroq4_riem with no disk-cost regression.
 
 Issues and PRs welcome on
-[`voyager-index`](https://github.com/lightonai/voyager-index).
+[`colsearch`](https://github.com/lightonai/colsearch).
 
 ---
 

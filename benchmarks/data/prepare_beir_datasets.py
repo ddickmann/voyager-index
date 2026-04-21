@@ -1,5 +1,5 @@
 """
-Prepare individual BEIR dataset NPZ files for the voyager-index benchmark suite.
+Prepare individual BEIR dataset NPZ files for the colsearch benchmark suite.
 
 Encodes 6 standard BEIR datasets with GTE-ModernColBERT-v1 (128-dim multi-vector)
 and saves per-dataset NPZ files with doc embeddings, query embeddings, and qrels.
@@ -258,7 +258,7 @@ def prepare_dataset(name: str, spec: dict, batch_size: int = 32, cache_dir: Path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare BEIR datasets for voyager-index benchmarks")
+    parser = argparse.ArgumentParser(description="Prepare BEIR datasets for colsearch benchmarks")
     parser.add_argument("--datasets", nargs="*", default=list(BEIR_DATASETS.keys()),
                         help="Datasets to prepare (default: all)")
     parser.add_argument("--batch-size", type=int, default=32)

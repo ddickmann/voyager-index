@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import numpy as np
 import torch
 
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
@@ -342,10 +342,10 @@ def test_default_compression_is_rroq158() -> None:
     rroq4_riem stays available as the opt-in no-quality-loss lane.
     Existing fp16/rroq158/rroq4_riem indexes on disk are unaffected
     because the manifest carries the build-time codec."""
-    from voyager_index._internal.inference.shard_engine._manager.common import (
+    from colsearch._internal.inference.shard_engine._manager.common import (
         ShardEngineConfig as _SEC,
     )
-    from voyager_index._internal.inference.shard_engine.serving_config import (
+    from colsearch._internal.inference.shard_engine.serving_config import (
         BuildConfig,
         Compression,
     )

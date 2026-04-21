@@ -223,9 +223,9 @@ check("gem_index/Cargo.toml exists", cargo_toml.exists())
 print("\n--- 7. Python File Size Validation ---")
 
 PY_FILE_PATHS = {
-    "index.py": ROOT / "voyager_index" / "index.py",
-    "gem_manager.py": ROOT / "voyager_index" / "_internal" / "inference" / "index_core" / "gem_manager.py",
-    "gem_wal.py": ROOT / "voyager_index" / "_internal" / "inference" / "index_core" / "gem_wal.py",
+    "index.py": ROOT / "colsearch" / "index.py",
+    "gem_manager.py": ROOT / "colsearch" / "_internal" / "inference" / "index_core" / "gem_manager.py",
+    "gem_wal.py": ROOT / "colsearch" / "_internal" / "inference" / "index_core" / "gem_wal.py",
     "gem_segment_manager.py": ROOT / "research" / "legacy" / "python_runtime" / "inference" / "index_core" / "gem_segment_manager.py",
 }
 
@@ -313,9 +313,9 @@ check("WS-1.6: VisitedSet reuse/pool pattern",
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 print("\n--- 9. Python Production Readiness ---")
 
-gem_mgr = ROOT / "voyager_index" / "_internal" / "inference" / "index_core" / "gem_manager.py"
-index_py = ROOT / "voyager_index" / "index.py"
-wal_py = ROOT / "voyager_index" / "_internal" / "inference" / "index_core" / "gem_wal.py"
+gem_mgr = ROOT / "colsearch" / "_internal" / "inference" / "index_core" / "gem_manager.py"
+index_py = ROOT / "colsearch" / "index.py"
+wal_py = ROOT / "colsearch" / "_internal" / "inference" / "index_core" / "gem_wal.py"
 
 # WS-3.3: Locks on should_seal, flush, get_statistics
 if gem_mgr.exists():

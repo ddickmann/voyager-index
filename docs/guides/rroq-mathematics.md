@@ -2,7 +2,7 @@
 
 > **Audience.** Practitioners and reviewers who want to understand *why* the
 > 1.58-bit and 4-bit Riemannian rotational quantization codecs in
-> `voyager-index` work, and what they extend over the original RaBitQ paper.
+> `colsearch` work, and what they extend over the original RaBitQ paper.
 > The exposition is self-contained: only inner products, the chain rule on
 > the unit sphere, and the Walsh–Hadamard transform are assumed.
 
@@ -24,10 +24,10 @@ This document covers, in order:
 
 Concrete kernel code lives in:
 
-- `voyager_index/_internal/inference/quantization/rroq158.py`
-- `voyager_index/_internal/inference/quantization/rroq4_riem.py`
-- `voyager_index/_internal/inference/triton_roq_rroq158.py`
-- `voyager_index/_internal/inference/triton_roq_rroq4_riem.py`
+- `colsearch/_internal/inference/quantization/rroq158.py`
+- `colsearch/_internal/inference/quantization/rroq4_riem.py`
+- `colsearch/_internal/inference/triton_roq_rroq158.py`
+- `colsearch/_internal/inference/triton_roq_rroq4_riem.py`
 - `latence-shard-engine/src/fused_rroq158.rs`
 - `latence-shard-engine/src/fused_rroq4_riem.rs`
 
@@ -303,7 +303,7 @@ group of 32 coordinates.** That's the ~4× throughput vs FP16 we observe
 in the BEIR sweep.
 
 The implementation is split between
-`voyager_index/_internal/inference/triton_roq_rroq158.py` (GPU) and
+`colsearch/_internal/inference/triton_roq_rroq158.py` (GPU) and
 `latence-shard-engine/src/fused_rroq158.rs` (CPU AVX2/AVX512). Both
 kernels are validated bit-equivalent up to fp32 rounding by
 `tests/test_rroq158_kernel.py`.
@@ -368,9 +368,9 @@ and is the value used by the
 production sweep that populates the README BEIR table. For corpora
 under 8192 unique tokens the build path auto-shrinks K to the largest
 feasible power of two and logs a warning (see
-[`choose_effective_rroq158_k`](../../voyager_index/_internal/inference/quantization/rroq158.py)
+[`choose_effective_rroq158_k`](../../colsearch/_internal/inference/quantization/rroq158.py)
 and the `k_requested` / `k_effective` runtime fallback in
-[`_manager/search.py`](../../voyager_index/_internal/inference/shard_engine/_manager/search.py)).
+[`_manager/search.py`](../../colsearch/_internal/inference/shard_engine/_manager/search.py)).
 
 ---
 
@@ -543,9 +543,9 @@ include it, so the rroq158 row reflects honest single-codec behavior.
 - Khattab, Zaharia (2020). *ColBERT: Efficient and Effective Passage
   Search via Contextualized Late Interaction over BERT.* SIGIR 2020.
   (MaxSim formulation.)
-- The `voyager-index` codec implementation:
-  [`rroq158.py`](../../voyager_index/_internal/inference/quantization/rroq158.py),
-  [`rroq4_riem.py`](../../voyager_index/_internal/inference/quantization/rroq4_riem.py),
-  [`triton_roq_rroq158.py`](../../voyager_index/_internal/inference/triton_roq_rroq158.py),
+- The `colsearch` codec implementation:
+  [`rroq158.py`](../../colsearch/_internal/inference/quantization/rroq158.py),
+  [`rroq4_riem.py`](../../colsearch/_internal/inference/quantization/rroq4_riem.py),
+  [`triton_roq_rroq158.py`](../../colsearch/_internal/inference/triton_roq_rroq158.py),
   [`fused_rroq158.rs`](../../latence-shard-engine/src/fused_rroq158.rs),
   [`fused_rroq4_riem.rs`](../../latence-shard-engine/src/fused_rroq4_riem.rs).

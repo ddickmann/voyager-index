@@ -6,6 +6,54 @@ reads in release order again.
 
 ## Unreleased
 
+## 0.2.0 — Rename to `colsearch`
+
+This release renames the project from `voyager-index` to `colsearch`. The PyPI
+package is now `colsearch` (`pip install colsearch`), the GitHub repository is
+`ddickmann/colsearch` (the old `ddickmann/voyager-index` URL auto-redirects),
+and the on-disk Python package is `colsearch` with an importable
+`colsearch-server` entry point.
+
+The repositioning underlying the rename: the project now stands as a
+**production search category** for late-interaction retrieval — single-node
+ColBERT/ColPali at production quality, with a 1.58-bit kernel at 40 B/token
+that beats FastPlaid by 3.12× geomean on H100 (BEIR-8). See
+[`benchmarks/competitive_benchmark.md`](benchmarks/competitive_benchmark.md)
+and the new README tagline.
+
+### Compatibility
+
+- `pip install voyager-index` users: install `colsearch` instead. The
+  legacy distribution will not be republished after `0.1.6`.
+- `import voyager_index` keeps working in `0.2.x` via a thin shim that
+  emits a `DeprecationWarning` on first import and then aliases every
+  `voyager_index.X.Y` submodule to the canonical `colsearch.X.Y` module
+  in `sys.modules` (so `isinstance` and enum identity continue to hold).
+  The shim will be removed in `0.3.0`.
+- The `voyager-index-server` console script is retained as an alias for
+  `colsearch-server` for the `0.2.x` cycle.
+- The `VOYAGER_INDEX_PATH` environment variable is still honoured by the
+  reference server but emits a one-line deprecation warning. Migrate to
+  `COLSEARCH_INDEX_PATH`.
+- `VOYAGER_BENCH_CPU_TIME_BUDGET_S` is honoured but `COLSEARCH_BENCH_CPU_TIME_BUDGET_S`
+  is the new canonical name (the bench reads the colsearch name first and
+  falls back to the legacy name).
+- Other `VOYAGER_*` env vars (e.g. `VOYAGER_RROQ158_N_THREADS`,
+  `VOYAGER_RROQ158_USE_B1_FUSED`) are unchanged in `0.2.0` to avoid breaking
+  ops scripts. They will be renamed to the `COLSEARCH_*` namespace in a
+  future release with a transitional fallback.
+- Docker image: `latence/colsearch` (was `latence/voyager-zero`); the
+  reference Dockerfile builds `colsearch:latest`.
+- Kubernetes manifests under `deploy/k8s/` ship the new `colsearch`
+  namespace and labels — adjust your overlays accordingly.
+
+### Provenance
+
+- Historical artefacts under `reports/`, `validation-reports/`, `research/`,
+  `notebooks/`, and `benchmarks/_smoke_*.py` / `benchmarks/_diag_*.py`
+  retain their original `voyager-index 0.1.x` labels and SHAs. Rewriting
+  them retroactively would falsify the audit trail.
+
 ## 0.1.6 — RROQ158 SOTA Default at `group_size=128`
 
 This release promotes the dim-aware `Rroq158Config(group_size=128)` lane to the

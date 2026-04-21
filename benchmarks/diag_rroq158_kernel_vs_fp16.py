@@ -29,19 +29,19 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.beir_benchmark import load_beir_npz, evaluate  # noqa: E402
-from voyager_index._internal.inference.quantization.rroq158 import (  # noqa: E402
+from colsearch._internal.inference.quantization.rroq158 import (  # noqa: E402
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,
     get_cached_fwht_rotator,
     pack_doc_codes_to_int32_words,
 )
-from voyager_index._internal.inference.quantization.rroq4_riem import (  # noqa: E402
+from colsearch._internal.inference.quantization.rroq4_riem import (  # noqa: E402
     Rroq4RiemConfig,
     encode_query_for_rroq4_riem,
     encode_rroq4_riem,
 )
-from voyager_index._internal.inference.quantization.rroq4_riem import (  # noqa: E402
+from colsearch._internal.inference.quantization.rroq4_riem import (  # noqa: E402
     get_cached_fwht_rotator as get_cached_fwht_rotator_riem,
 )
 
@@ -123,7 +123,7 @@ def rroq158_maxsim_topk_gpu(
 ) -> tuple[list[list[int]], dict]:
     """Encode the corpus once with rroq158, then for each query score against
     ALL docs using the Triton kernel. No LEMUR routing."""
-    from voyager_index._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
+    from colsearch._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
 
     cfg = Rroq158Config(K=rroq158_k, group_size=32, seed=seed)
     log.info("rroq158 encoding %d tokens, K=%d", all_vectors.shape[0], rroq158_k)
@@ -215,7 +215,7 @@ def rroq4_riem_maxsim_topk_gpu(
     top_k: int, device: str, k_centroids: int = 8192,
     group_size: int = 32, seed: int = 42,
 ) -> tuple[list[list[int]], dict]:
-    from voyager_index._internal.kernels.triton_roq_rroq4_riem import (
+    from colsearch._internal.kernels.triton_roq_rroq4_riem import (
         roq_maxsim_rroq4_riem,
     )
 

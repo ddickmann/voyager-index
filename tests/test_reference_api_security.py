@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from voyager_index._internal.server.api.service import SearchService, ValidationError
-from voyager_index._internal.server.api.models import CreateCollectionRequest
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.server.api.service import SearchService, ValidationError
+from colsearch._internal.server.api.models import CreateCollectionRequest
+from colsearch._internal.server.main import create_app
 
 
 def _create_client(index_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
@@ -91,7 +91,7 @@ def test_delete_collection_failure_restores_collection(tmp_path: Path) -> None:
                 raise OSError("forced delete failure")
             return original_rmtree(path, *args, **kwargs)
 
-        with patch("voyager_index._internal.server.api.service.shutil.rmtree", side_effect=guarded_rmtree):
+        with patch("colsearch._internal.server.api.service.shutil.rmtree", side_effect=guarded_rmtree):
             failed = client.delete("/collections/docs")
 
         info = client.get("/collections/docs/info")

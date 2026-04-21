@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
-from voyager_index._internal.inference.search_pipeline import SearchPipeline
+from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
+from colsearch._internal.inference.search_pipeline import SearchPipeline
 
 
 def test_search_pipeline_supports_sparse_only_text_queries(tmp_path: Path) -> None:

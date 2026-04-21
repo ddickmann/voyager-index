@@ -14,9 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from voyager_index._internal.inference.shard_engine.config import AnnBackend
-from voyager_index._internal.inference.shard_engine.manager import ShardEngineConfig, ShardSegmentManager
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.inference.shard_engine.config import AnnBackend
+from colsearch._internal.inference.shard_engine.manager import ShardEngineConfig, ShardSegmentManager
+from colsearch._internal.server.main import create_app
 
 
 def _make_corpus(

@@ -1,28 +1,35 @@
-# voyager-index vs FastPlaid — Competitive Benchmark (BEIR-8, H100)
+# colsearch vs FastPlaid — Competitive Benchmark (BEIR-8, H100)
 
 > **Status (2026-04-21):** apples-to-apples re-bench complete. All 8 BEIR
 > corpora at the **full FastPlaid-published cardinalities** (fixed in
-> v7); voyager numbers measured fresh on this H100 with `n_eval=500`
+> v7); colsearch numbers measured fresh on this H100 with `n_eval=500`
 > queries per dataset (statistically equivalent to the full BEIR query
 > set within ±2 % QPS noise floor). FastPlaid numbers are taken
 > directly from the [FastPlaid README](https://github.com/lightonai/fast-plaid#-benchmarks)
 > on the same hardware class (H100), so the QPS column is comparable
 > hardware-for-hardware.
 
+> **Heritage.** This benchmark was generated under the project's previous
+> name (`voyager-index`); the run identifiers in
+> `reports/fast_plaid_head_to_head/results_v7.jsonl` and the CLI flags
+> below (e.g. `voyager_fp16`, `voyager_rroq158_gs128`) are kept stable
+> for provenance, even though the project is now `colsearch`. They map
+> 1:1 to colsearch's `fp16` and `rroq158_gs128` lanes.
+
 ## TL;DR
 
-| Lane | voyager `fp16` GPU geomean | voyager `rroq158_gs128` GPU geomean | FastPlaid GPU geomean | voyager `fp16/gpu` vs FastPlaid (per-DS geomean) |
+| Lane | colsearch `fp16` GPU geomean | colsearch `rroq158_gs128` GPU geomean | FastPlaid GPU geomean | colsearch `fp16/gpu` vs FastPlaid (per-DS geomean) |
 | --- | ---: | ---: | ---: | ---: |
 | BEIR-8 | **446.7 QPS** | **294.4 QPS** | 143.2 QPS | **3.12× faster** |
 
-- `voyager_fp16/gpu` beats FastPlaid GPU on **8 / 8** BEIR-8 datasets
+- colsearch `fp16/gpu` beats FastPlaid GPU on **8 / 8** BEIR-8 datasets
   (per-DS speedup ranges from **1.24×** on `quora` to **8.20×** on
   `nfcorpus`).
-- `voyager_rroq158_gs128/gpu` beats FastPlaid GPU on **6 / 8**, loses
+- colsearch `rroq158_gs128/gpu` beats FastPlaid GPU on **6 / 8**, loses
   on `trec-covid` (0.89×) and `webis-touche2020` (0.82×) where the
   rroq158 multi-tier kernel pays more per-tier dispatch overhead than
   fp16 — see Caveats. Net per-DS geomean: **2.06×** vs FastPlaid.
-- `voyager_rroq158_gs128` quantises the per-token vectors **6.4×**
+- colsearch `rroq158_gs128` quantises the per-token vectors **6.4×**
   smaller than fp16 and recovers within ≤ 4 NDCG@10 points on every
   BEIR-8 dataset; on `webis-touche2020` it actually *beats* fp16
   (0.288 vs 0.285).
@@ -31,7 +38,7 @@
 
 ## GPU lane (single-client, sequential queries — same methodology FastPlaid publishes)
 
-| Dataset | n_docs | **voyager `fp16/gpu`** | **voyager `rroq158_gs128/gpu`** | FastPlaid GPU | fp16/gpu vs FP | rroq158/gpu vs FP |
+| Dataset | n_docs | **colsearch `fp16/gpu`** | **colsearch `rroq158_gs128/gpu`** | FastPlaid GPU | fp16/gpu vs FP | rroq158/gpu vs FP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | arguana | 8 674 | **1 233.7** | **461.8** | 155.3 | **7.95×** | **2.97×** |
 | fiqa | 57 638 | **316.7** | **357.5** | 146.6 | **2.16×** | **2.44×** |
@@ -62,10 +69,10 @@ on `trec-covid` / `webis-touche2020` — see Caveats for why.
 
 FastPlaid publishes a CPU lane for the BEIR-6 in their first table
 but not for `trec-covid` / `webis-touche2020`. Same single-client,
-sequential methodology as GPU — voyager runs 8 worker threads on the
+sequential methodology as GPU — colsearch runs 8 worker threads on the
 native Rust SIMD path, FastPlaid is single-threaded by default.
 
-| Dataset | n_docs | **voyager `fp16/cpu`** (8w) | **voyager `rroq158/cpu`** (8w) | FastPlaid CPU | fp16/cpu vs FP | rroq158/cpu vs FP |
+| Dataset | n_docs | **colsearch `fp16/cpu`** (8w) | **colsearch `rroq158/cpu`** (8w) | FastPlaid CPU | fp16/cpu vs FP | rroq158/cpu vs FP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | arguana | 8 674 | 10.0 | **20.0** | 17.4 | 0.57× | **1.15×** |
 | fiqa | 57 638 | 5.0 | 11.1 | 17.6 | 0.28× | 0.63× |
@@ -77,7 +84,7 @@ native Rust SIMD path, FastPlaid is single-threaded by default.
 | webis-touche2020 | 382 545 | 16.3 | 2.2 | (not published) | n/a | n/a |
 | **geomean (BEIR-6)** | — | 15.1 | 23.8 | 17.2 | 0.88× | **1.39×** |
 
-CPU is mixed and honest: `voyager_fp16/cpu` *loses* the geomean to
+CPU is mixed and honest: colsearch `fp16/cpu` *loses* the geomean to
 FastPlaid CPU (**0.88×**); the fp16 CPU lane was never the focus of
 this PR. The `rroq158/cpu` Rust SIMD path wins the geomean
 (**1.39×**) and is the recommended CPU production lane — popcount
@@ -96,12 +103,12 @@ is honest but not what production runs).
 `rroq158_gs128` quantises the per-token vectors at **6.4×**
 compression vs fp16 and recovers within ≤ 4 NDCG points across the
 BEIR-8 — most datasets see ≤ 1 point delta. The FastPlaid column
-shows the ColBERTv2-trained baseline FastPlaid publishes; voyager
+shows the ColBERTv2-trained baseline FastPlaid publishes; colsearch
 uses `GTE-ModernColBERT-v1` (the same model FastPlaid's PyLate Quick
 Start ships with, but a different trained checkpoint), so the row is
 *quality* comparable but not weight-identical.
 
-| Dataset | voyager `fp16` | voyager `rroq158_gs128` | FastPlaid (published) |
+| Dataset | colsearch `fp16` | colsearch `rroq158_gs128` | FastPlaid (published) |
 | --- | ---: | ---: | ---: |
 | arguana | 0.378 | 0.344 | 0.350 |
 | fiqa | 0.467 | 0.444 | 0.451 |
@@ -112,11 +119,11 @@ Start ships with, but a different trained checkpoint), so the row is
 | trec-covid | 0.818 | 0.787 | 0.83 |
 | webis-touche2020 | 0.285 | 0.288 | 0.24 |
 
-`voyager_fp16/gpu` matches or beats FastPlaid's published NDCG@10 on
+colsearch `fp16/gpu` matches or beats FastPlaid's published NDCG@10 on
 **5 of 8** datasets (arguana, fiqa, quora, webis-touche2020, and
 ≈ on nfcorpus / scifact within ±0.001), and is within 1.2 NDCG
 points on the remaining `trec-covid` (0.818 vs 0.83) and `scidocs`
-(0.187 vs 0.191). On `webis-touche2020` voyager `fp16` is **+4.5 pts**
+(0.187 vs 0.191). On `webis-touche2020` colsearch `fp16` is **+4.5 pts**
 and `rroq158` is **+4.8 pts** vs FastPlaid because the new
 full-corpus fast path (see §3 below) skips LEMUR routing on the GPU
 lane and exposes the true exact-MaxSim ceiling.
@@ -132,10 +139,10 @@ lane and exposes the true exact-MaxSim ceiling.
 | Embedding model | [`lightonai/GTE-ModernColBERT-v1`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1), 128-d per-token, fp16 |
 | Top-k | 10 (NDCG@10) |
 | PyTorch | 2.9.0 + CUDA 12.8 |
-| voyager-index | this PR (`benchmarks/fast-plaid-head-to-head` after the H100 push) |
+| colsearch | this PR (`benchmarks/fast-plaid-head-to-head` after the H100 push) |
 | FastPlaid (reference) | 1.4.6.290 — numbers cited from [their README](https://github.com/lightonai/fast-plaid#-benchmarks); not re-timed on this box |
 
-Same per-token embeddings flow into voyager's `fp16` and `rroq158`
+Same per-token embeddings flow into colsearch's `fp16` and `rroq158`
 lanes (we don't change the embedding model between codecs — only the
 indexing engine and scoring path differ). The FastPlaid NDCG row
 above uses the ColBERTv2 trained checkpoint that FastPlaid published
@@ -149,7 +156,7 @@ The numbers above are produced by the optimisations on this PR (also
 documented inline in the source as `audit_*` / `Fix-*` markers):
 
 1. **Triton kernel int64-pointer fix** — the multi-tier MaxSim kernel
-   in [`triton_maxsim.py`](../voyager_index/_internal/kernels/triton_maxsim.py)
+   in [`triton_maxsim.py`](../colsearch/_internal/kernels/triton_maxsim.py)
    now casts both `tl.program_id` axes to `tl.int64` immediately, so
    the `doc_idx * d_batch_stride` arithmetic does not wrap when the
    per-tier doc tensor exceeds 2³¹ elements (e.g. `webis-touche2020`'s
@@ -158,7 +165,7 @@ documented inline in the source as `audit_*` / `Fix-*` markers):
    `T=512`.
 
 2. **Autotune-aware warmup** — `warmup_maxsim` in
-   [`scorer.py`](../voyager_index/_internal/inference/shard_engine/scorer.py)
+   [`scorer.py`](../colsearch/_internal/inference/shard_engine/scorer.py)
    now compiles each `(S, T, H)` combo at a representative `B=1024`
    (was `B=4`), so Triton's autotune picks configs that scale to the
    real per-tier batch sizes the runtime hits. On `webis-touche2020`
@@ -225,9 +232,9 @@ python benchmarks/data/prepare_beir_datasets.py \
   --datasets arguana fiqa nfcorpus quora scidocs scifact trec-covid webis-touche2020 \
   --batch-size 64
 
-# 2. Run the voyager-only competitive bench (this table)
+# 2. Run the colsearch-only competitive bench (this table)
 RROQ158_KMEANS_BACKEND=fast \
-VOYAGER_BENCH_CPU_TIME_BUDGET_S=300 \
+COLSEARCH_BENCH_CPU_TIME_BUDGET_S=300 \
 python benchmarks/fast_plaid_head_to_head.py \
   --libraries voyager_fp16 voyager_rroq158_gs128 \
   --modes gpu cpu \
@@ -247,7 +254,7 @@ Per-row JSONL lives at
 [`reports/fast_plaid_head_to_head/results_v7.jsonl`](../reports/fast_plaid_head_to_head/results_v7.jsonl)
 (32 rows, one per `(dataset, library, mode)` cell). The summary JSON
 at [`summary_v7.json`](../reports/fast_plaid_head_to_head/summary_v7.json)
-carries the env block (driver, CUDA, voyager + FastPlaid versions).
+carries the env block (driver, CUDA, colsearch + FastPlaid versions).
 
 ---
 

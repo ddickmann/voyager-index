@@ -33,7 +33,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import latence_shard_engine as eng
-from voyager_index._internal.inference.quantization.rroq158 import (
+from colsearch._internal.inference.quantization.rroq158 import (
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,
