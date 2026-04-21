@@ -1670,12 +1670,55 @@ fn rroq4_riem_score_batch<'py>(
     Ok(PyArray1::from_vec_bound(py, scores))
 }
 
+/// Test/benchmarking helper: force the rroq158 backend tier to "scalar",
+/// "x86v3", or "auto". Returns the actually-selected tier as a string.
+///
+/// "auto" resets the cached backend so the next call to `select_backend`
+/// detects CPU features fresh and picks the best available tier.
+///
+/// Intended for parity tests and microbenchmarks that need to A/B
+/// compare AVX-512 VPOPCNTDQ vs scalar `popcntq`. Not for production.
+#[pyfunction]
+#[allow(non_snake_case)]
+fn _rroq158_force_backend_for_tests(name: &str) -> PyResult<String> {
+    use fused_rroq158::{
+        _force_scalar_backend_for_tests, _reset_backend_for_tests,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use fused_rroq158::_force_x86v3_backend_for_tests;
+    match name {
+        "scalar" => {
+            _force_scalar_backend_for_tests();
+            Ok("scalar".to_string())
+        }
+        "x86v3" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                _force_x86v3_backend_for_tests();
+                Ok("x86v3".to_string())
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                Err(PyValueError::new_err("x86v3 backend not available on non-x86_64"))
+            }
+        }
+        "auto" => {
+            _reset_backend_for_tests();
+            Ok("auto".to_string())
+        }
+        other => Err(PyValueError::new_err(format!(
+            "unknown backend '{other}': expected 'scalar', 'x86v3', or 'auto'"
+        ))),
+    }
+}
+
 #[pymodule]
 fn latence_shard_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ShardIndex>()?;
     m.add_class::<metadata::MetadataStore>()?;
     m.add_function(wrap_pyfunction!(rroq158_score_batch, m)?)?;
     m.add_function(wrap_pyfunction!(rroq4_riem_score_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(_rroq158_force_backend_for_tests, m)?)?;
     Ok(())
 }
 

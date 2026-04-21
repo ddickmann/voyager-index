@@ -545,6 +545,12 @@ class ShardSegmentManagerSearchMixin:
                     query_bits=4,
                     rotator=meta.get("rotator"),
                     skip_qc_table=on_cuda,
+                    # On the GPU dispatch path no rayon Rust scorer
+                    # follows, so the per-query 0.5 ms BLAS thread cap is
+                    # pure overhead -- skip it. CPU dispatch keeps the
+                    # cap (default True) to protect the rayon kernel
+                    # that follows.
+                    cap_blas_threads=not on_cuda,
                 )
                 qp = torch.from_numpy(q_inputs["q_planes"][None, :, :, :])
                 qm = torch.from_numpy(q_inputs["q_meta"][None, :, :])

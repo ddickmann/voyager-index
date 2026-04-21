@@ -73,7 +73,12 @@ def _fused_maxsim_pairwise_kernel(
     Grid: (BATCH_SIZE,)
     """
     # --- Program ID & Offsets ---
-    batch_idx = tl.program_id(0)
+    # Cast to int64 immediately. Triton uses int32 for pointer arithmetic
+    # by default; `batch_idx * d_batch_stride` overflows int32 once the
+    # batched docs tensor exceeds ~2^31 elements (e.g. B>32k @ T=512, H=128
+    # — trec-covid's largest tier hits B=59k). Overflow → wrapped pointer
+    # → cudaErrorIllegalAddress on the next load.
+    batch_idx = tl.program_id(0).to(tl.int64)
 
     # --- Pointers to the current query and document ---
     q_batch_ptr = Q_PTR + batch_idx * q_batch_stride
@@ -197,8 +202,14 @@ def _fused_maxsim_query_tiled_kernel(
     Query-optimized tiling: one query per kernel, process DOCS_PER_KERNEL documents.
     Key optimization: Query embeddings loaded ONCE and reused across all documents.
     """
-    q_idx = tl.program_id(0)
-    doc_tile_idx = tl.program_id(1)
+    # Cast to int64 immediately. Triton's default int32 pointer arithmetic
+    # overflows when the document tensor exceeds ~2^31 elements
+    # (e.g. B>32k @ T=512, H=128 → trec-covid's T=512 tier with B=59k).
+    # Without this cast, `doc_idx * d_batch_stride` wraps and the kernel
+    # reads garbage memory → cudaErrorIllegalAddress on the very first
+    # autotune launch.
+    q_idx = tl.program_id(0).to(tl.int64)
+    doc_tile_idx = tl.program_id(1).to(tl.int64)
 
     doc_start = doc_tile_idx * DOCS_PER_KERNEL
 

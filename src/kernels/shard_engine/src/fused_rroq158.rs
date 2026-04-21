@@ -77,6 +77,36 @@ unsafe fn popc_x86(x: u32) -> u32 {
     core::arch::x86_64::_popcnt32(x as i32) as u32
 }
 
+// ─────────────────── AVX-512 VPOPCNTDQ batched popcount ───────────────────
+//
+// On Sapphire Rapids / Ice Lake-server / Tiger Lake / Zen 4+ the
+// `vpopcntd` instruction (CPUID flag AVX512_VPOPCNTDQ + AVX512F)
+// computes the population count of 16 32-bit lanes in a single µop on
+// port 5. That's 16 popcounts per cycle vs. 4 per cycle for scalar
+// `popcntq` (one per integer ALU port × 4 ports), so a ~4× improvement
+// at the inner-loop popcount level.
+//
+// Verified availability of the feature is mandatory: this function is
+// only ever called from `#[target_feature(enable = "avx512f,
+// avx512vpopcntdq")]`-gated callers, and `select_backend()` only
+// selects the X86V4 backend after a runtime
+// `is_x86_feature_detected!("avx512vpopcntdq")` check. On AVX2-only
+// hosts (e.g. the published-benchmark RTX A5000 box, Skylake-class
+// CPUs) the dispatcher falls through to the existing `popcnt` path
+// transparently.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512vpopcntdq")]
+#[inline]
+#[allow(dead_code)] // shape-generic helper retained for future SIMD callers
+unsafe fn popc_x86_v4(words: &[u32; 16]) -> [u32; 16] {
+    use core::arch::x86_64::*;
+    let v = _mm512_loadu_si512(words.as_ptr() as *const __m512i);
+    let p = _mm512_popcnt_epi32(v);
+    let mut out = [0u32; 16];
+    _mm512_storeu_si512(out.as_mut_ptr() as *mut __m512i, p);
+    out
+}
+
 // ─────────────────── shared inner loop ───────────────────
 //
 // The body is parameterised on a popcount function so we can compile it once
@@ -318,6 +348,183 @@ unsafe fn score_pair_x86v3(
     )
 }
 
+/// Score one (q, doc) pair on the AVX-512 VPOPCNTDQ fast lane.
+///
+/// Specialised for the production rroq158 shape (`dim=128`, `n_words=4`,
+/// `n_groups=1`, `query_bits=4`, `group_words=4`). For any other shape
+/// we fall back to the scalar-popcnt `score_pair_x86v3` path so this
+/// tier never blocks unusual configurations.
+///
+/// SIMD strategy at the production shape:
+///
+///   - Per doc-token `j`: load the 4-word ternary planes (`sign[j, 0..4]`
+///     and `nz[j, 0..4]`) once, AND them into `pos[w] = sign & nz` and
+///     `neg[w] = !sign & nz`, broadcast both 128-bit fragments to all
+///     four 128-bit lanes of a 512-bit register (`vbroadcasti32x4`).
+///   - Hoist the doc-side `s_g = popcount(pos) - popcount(neg)` once
+///     per `j` using scalar `popcnt`.
+///   - Per query-token `i` (inner loop): load the 16 contiguous int32
+///     query bit-planes for this token (`q_planes[i, k=0..4, w=0..4]`)
+///     into a single 512-bit register, AND with `pos_bcast` and
+///     `neg_bcast`, run two `vpopcntd` instructions, subtract,
+///     multiply by per-bit weights `[1,1,1,1, 2,2,2,2, 4,4,4,4, 8,8,8,8]`,
+///     and reduce-add to recover `d_g`.
+///
+/// The math is bit-identical to `score_pair_body`: both compute
+/// `d_g = sum_{k,w} (1<<k) * (popcount(pos & q[k, w]) - popcount(neg & q[k, w]))`.
+/// SIMD only changes how many popcounts execute per cycle, not their
+/// values, so parity tests against the scalar path are exact.
+///
+/// SAFETY: caller must ensure the host has popcnt + avx2 + bmi2 + fma +
+/// avx512f + avx512vpopcntdq (verified once per process via
+/// `select_backend`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "popcnt,avx2,bmi2,fma,avx512f,avx512vpopcntdq")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_pair_x86v4(
+    q_planes_qa: &[i32],
+    q_meta_qa: &[f32],
+    qc_table_qa: &[f32],
+    q_mask_qa: Option<&[f32]>,
+    docs_sign_d: &[i32],
+    docs_nz_d: &[i32],
+    docs_scl_d: &[f32],
+    docs_cid_d: &[i32],
+    docs_cos_d: &[f32],
+    docs_sin_d: &[f32],
+    docs_mask_d: Option<&[f32]>,
+    big_s: usize,
+    big_t: usize,
+    n_words: usize,
+    n_groups: usize,
+    group_words: usize,
+    query_bits: usize,
+    big_k: usize,
+) -> f32 {
+    // Fast lane only handles the production shape. Everything else falls
+    // through to the v3 (scalar popcnt) path so we never regress on
+    // non-default configurations.
+    if !(n_groups == 1 && group_words == 4 && query_bits == 4 && n_words == 4) {
+        return score_pair_x86v3(
+            q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+            docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+            docs_cos_d, docs_sin_d, docs_mask_d,
+            big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+        );
+    }
+
+    use core::arch::x86_64::*;
+
+    // Per-bit weights for `d_g` reduction, laid out to match the lane
+    // ordering produced by `_mm512_loadu_si512(q_planes[i, ...])` —
+    // namely `[k=0,w=0..3 | k=1,w=0..3 | k=2,w=0..3 | k=3,w=0..3]` —
+    // because q_planes is stored (S, query_bits, n_words) row-major and
+    // the inner two axes (`query_bits=4`, `n_words=4`) flatten to 16
+    // contiguous int32 per token.
+    let weights = _mm512_setr_epi32(
+        1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 8, 8, 8, 8,
+    );
+
+    // Cheap up-front mask check: if every active query-token is masked,
+    // we can exit early.
+    let q_mask_active: Option<usize> = q_mask_qa.map(|qm| {
+        qm.iter().take(big_s).filter(|&&v| v > 0.0).count()
+    });
+    if matches!(q_mask_active, Some(0)) {
+        return 0.0;
+    }
+
+    let mut max_sim: Vec<f32> = vec![f32::NEG_INFINITY; big_s];
+
+    for j in 0..big_t {
+        if let Some(dm) = docs_mask_d {
+            if dm[j] <= 0.0 {
+                continue;
+            }
+        }
+
+        // Load doc-side sign and nz (4 int32 = 128 bits) for this token.
+        let sign_ptr = docs_sign_d.as_ptr().add(j * 4) as *const __m128i;
+        let nz_ptr = docs_nz_d.as_ptr().add(j * 4) as *const __m128i;
+        let ds_v = _mm_loadu_si128(sign_ptr);
+        let dn_v = _mm_loadu_si128(nz_ptr);
+        let pos_v = _mm_and_si128(ds_v, dn_v);
+        let neg_v = _mm_andnot_si128(ds_v, dn_v);
+
+        // Doc-side `s_g = popcount(pos) - popcount(neg)`. Done with
+        // hardware popcnt on the four 32-bit lanes; cheaper than a
+        // SIMD popcnt + horizontal reduction at this width.
+        let s_g_pos = _popcnt32(_mm_extract_epi32::<0>(pos_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<1>(pos_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<2>(pos_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<3>(pos_v)) as i32;
+        let s_g_neg = _popcnt32(_mm_extract_epi32::<0>(neg_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<1>(neg_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<2>(neg_v)) as i32
+            + _popcnt32(_mm_extract_epi32::<3>(neg_v)) as i32;
+        let s_g = (s_g_pos - s_g_neg) as f32;
+
+        // Broadcast pos/neg 128-bit fragment to all four 128-bit lanes
+        // of a 512-bit register so the inner loop's `_mm512_and_si512`
+        // pairs each of the 4 query bit-planes with the right doc word.
+        let pos_512 = _mm512_broadcast_i32x4(pos_v);
+        let neg_512 = _mm512_broadcast_i32x4(neg_v);
+
+        let cid = docs_cid_d[j] as usize;
+        let cos_j = docs_cos_d[j];
+        let sin_j = docs_sin_d[j];
+        let d_scale = docs_scl_d[j]; // n_groups == 1 → single scalar per token
+
+        // Strides per query-token: i*16 = i * (query_bits * n_words).
+        for i in 0..big_s {
+            if let Some(qm) = q_mask_qa {
+                if qm[i] <= 0.0 {
+                    continue;
+                }
+            }
+            let q_scale = q_meta_qa[i * 2];
+            let q_offset = q_meta_qa[i * 2 + 1];
+
+            let q_ptr = q_planes_qa.as_ptr().add(i * 16) as *const __m512i;
+            let q_v = _mm512_loadu_si512(q_ptr);
+
+            // 16 popcounts in two `vpopcntd` instructions (port 5
+            // throughput on SPR/ICX/Tiger Lake/Zen 4+ = 1/cycle each):
+            //   m_pc[lane] = popcount(pos[w] & q_planes[i, k, w])
+            //   c_pc[lane] = popcount(neg[w] & q_planes[i, k, w])
+            // for lane = k*4 + w, k ∈ 0..4, w ∈ 0..4.
+            let m_andd = _mm512_and_si512(pos_512, q_v);
+            let c_andd = _mm512_and_si512(neg_512, q_v);
+            let m_pc = _mm512_popcnt_epi32(m_andd);
+            let c_pc = _mm512_popcnt_epi32(c_andd);
+
+            // d_g = sum_{k, w} (1<<k) * (m - c)
+            let diff = _mm512_sub_epi32(m_pc, c_pc);
+            let weighted = _mm512_mullo_epi32(diff, weights);
+            let d_g = _mm512_reduce_add_epi32(weighted) as f32;
+
+            // Single-group residual: resi = d_scale * (q_offset * s_g + q_scale * d_g)
+            let resi = d_scale * (q_offset * s_g + q_scale * d_g);
+            let qc = qc_table_qa[i * big_k + cid];
+            let est = cos_j * qc + sin_j * resi;
+
+            // SAFETY: i < big_s and max_sim has length big_s.
+            let slot = max_sim.get_unchecked_mut(i);
+            if est > *slot {
+                *slot = est;
+            }
+        }
+    }
+
+    let mut total: f32 = 0.0;
+    for &v in max_sim.iter() {
+        if v > f32::NEG_INFINITY {
+            total += v;
+        }
+    }
+    total
+}
+
 // ─────────────────── runtime feature dispatch ───────────────────
 //
 // We do the CPU feature detection once per process and cache the result in
@@ -329,6 +536,8 @@ const BACKEND_UNINIT: u8 = 0;
 const BACKEND_SCALAR: u8 = 1;
 #[cfg(target_arch = "x86_64")]
 const BACKEND_X86V3: u8 = 2;
+#[cfg(target_arch = "x86_64")]
+const BACKEND_X86V4: u8 = 3;
 
 static BACKEND: AtomicU8 = AtomicU8::new(BACKEND_UNINIT);
 
@@ -341,11 +550,22 @@ fn select_backend() -> u8 {
     let chosen: u8 = {
         #[cfg(target_arch = "x86_64")]
         {
-            if std::is_x86_feature_detected!("popcnt")
+            // x86-64-v4: hardware popcnt + AVX2 + BMI2 + FMA + AVX-512F +
+            // AVX-512 VPOPCNTDQ. Available on Sapphire Rapids /
+            // Ice Lake-server / Tiger Lake-/Alder Lake-mobile / Zen 4+.
+            // Older AVX2-only hosts (Skylake-class, Zen 1-3, the published
+            // benchmark RTX A5000 box) fall through to the v3 path
+            // unchanged.
+            let v3 = std::is_x86_feature_detected!("popcnt")
                 && std::is_x86_feature_detected!("avx2")
                 && std::is_x86_feature_detected!("bmi2")
-                && std::is_x86_feature_detected!("fma")
-            {
+                && std::is_x86_feature_detected!("fma");
+            let v4 = v3
+                && std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("avx512vpopcntdq");
+            if v4 {
+                BACKEND_X86V4
+            } else if v3 {
                 BACKEND_X86V3
             } else {
                 BACKEND_SCALAR
@@ -358,6 +578,15 @@ fn select_backend() -> u8 {
     };
     BACKEND.store(chosen, Ordering::Relaxed);
     chosen
+}
+
+/// Force the v3 (popcnt + AVX2) backend regardless of detected CPU features.
+/// Test-only utility used by parity tests to compare v3 vs v4 paths on
+/// hosts that support AVX-512 VPOPCNTDQ.
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub fn _force_x86v3_backend_for_tests() {
+    BACKEND.store(BACKEND_X86V3, Ordering::Relaxed);
 }
 
 /// Reset the cached backend selection. Test-only utility.
@@ -397,7 +626,22 @@ fn score_pair_dispatch(
 ) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
-        if select_backend() == BACKEND_X86V3 {
+        let backend = select_backend();
+        if backend == BACKEND_X86V4 {
+            // SAFETY: BACKEND_X86V4 is only set when popcnt + avx2 + bmi2 +
+            // fma + avx512f + avx512vpopcntdq are all runtime-detected,
+            // which is the precondition of score_pair_x86v4. The v4 entry
+            // also self-falls-back to v3 for non-default shapes.
+            return unsafe {
+                score_pair_x86v4(
+                    q_planes_qa, q_meta_qa, qc_table_qa, q_mask_qa,
+                    docs_sign_d, docs_nz_d, docs_scl_d, docs_cid_d,
+                    docs_cos_d, docs_sin_d, docs_mask_d,
+                    big_s, big_t, n_words, n_groups, group_words, query_bits, big_k,
+                )
+            };
+        }
+        if backend == BACKEND_X86V3 {
             // SAFETY: BACKEND_X86V3 is only set when popcnt+avx2+bmi2+fma are
             // all runtime-detected, which is the precondition of
             // score_pair_x86v3.
@@ -706,5 +950,118 @@ mod tests {
 
         // Only token 1 contributes: cos=1.0, qc=5.0, sin*resi=0 ⇒ 5.0.
         assert!((s - 5.0).abs() < 1e-5);
+    }
+
+    /// Parity: AVX-512 VPOPCNTDQ tier matches the v3 (scalar `popcntq`)
+    /// tier on the production rroq158 shape (dim=128, n_groups=1,
+    /// group_words=4, query_bits=4) for a deterministic random fixture.
+    ///
+    /// Skipped on hosts without AVX-512 VPOPCNTDQ. Otherwise runs the
+    /// whole `score_batch` pipeline through the dispatcher with the
+    /// backend forced first to v4, then to v3, and asserts bit-exact
+    /// score equality on `(B, S)` pairs.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86v4_matches_x86v3_on_production_shape() {
+        if !std::is_x86_feature_detected!("avx512vpopcntdq")
+            || !std::is_x86_feature_detected!("avx512f")
+        {
+            eprintln!("skipping x86v4 parity test: AVX-512 VPOPCNTDQ unavailable");
+            return;
+        }
+
+        // Production rroq158 shape: dim=128 (n_words=4), group_size=128
+        // (n_groups=1, group_words=4), query_bits=4. K=8 keeps qc_table
+        // tiny so we don't need a real centroid table.
+        let big_s = 8;
+        let big_t = 12;
+        let big_a = 1;
+        let big_b = 4;
+        let n_words = 4;
+        let n_groups = 1;
+        let _group_words = 4; // implied by n_words / n_groups; kept for clarity
+        let query_bits = 4;
+        let big_k = 8;
+
+        // Deterministic LCG so we don't pull in `rand` as a dev-dep.
+        let mut state: u64 = 0xdead_beef_1234_5678;
+        let mut next = || -> u32 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+
+        let q_planes: Vec<i32> = (0..big_a * big_s * query_bits * n_words)
+            .map(|_| next() as i32)
+            .collect();
+        let q_meta: Vec<f32> = (0..big_a * big_s * 2)
+            .map(|_| ((next() % 1000) as f32 - 500.0) / 500.0)
+            .collect();
+        let qc_table: Vec<f32> = (0..big_a * big_s * big_k)
+            .map(|_| ((next() % 1000) as f32 - 500.0) / 500.0)
+            .collect();
+        let docs_sign: Vec<i32> = (0..big_b * big_t * n_words)
+            .map(|_| next() as i32)
+            .collect();
+        let docs_nz: Vec<i32> = (0..big_b * big_t * n_words)
+            .map(|_| next() as i32)
+            .collect();
+        let docs_scl: Vec<f32> = (0..big_b * big_t * n_groups)
+            .map(|_| ((next() % 1000) as f32) / 1000.0 + 0.1)
+            .collect();
+        let docs_cid: Vec<i32> = (0..big_b * big_t)
+            .map(|_| (next() as i32).rem_euclid(big_k as i32))
+            .collect();
+        let docs_cos: Vec<f32> = (0..big_b * big_t)
+            .map(|_| ((next() % 1000) as f32) / 1000.0)
+            .collect();
+        let docs_sin: Vec<f32> = (0..big_b * big_t)
+            .map(|_| ((next() % 1000) as f32) / 1000.0)
+            .collect();
+
+        // Force v4, capture scores.
+        super::_reset_backend_for_tests();
+        // BACKEND will be initialised to v4 by select_backend() since the
+        // host has AVX-512 VPOPCNTDQ at this point in the test.
+        assert_eq!(super::select_backend(), super::BACKEND_X86V4);
+        let mut out_v4 = vec![0.0f32; big_a * big_b];
+        score_batch(
+            &q_planes, &q_meta, &qc_table, None,
+            &docs_sign, &docs_nz, &docs_scl, &docs_cid,
+            &docs_cos, &docs_sin, None,
+            big_a, big_b, big_s, big_t, n_words, n_groups, query_bits, big_k,
+            Some(1),
+            &mut out_v4,
+        );
+
+        // Force v3, capture scores.
+        super::_reset_backend_for_tests();
+        super::_force_x86v3_backend_for_tests();
+        assert_eq!(super::select_backend(), super::BACKEND_X86V3);
+        let mut out_v3 = vec![0.0f32; big_a * big_b];
+        score_batch(
+            &q_planes, &q_meta, &qc_table, None,
+            &docs_sign, &docs_nz, &docs_scl, &docs_cid,
+            &docs_cos, &docs_sin, None,
+            big_a, big_b, big_s, big_t, n_words, n_groups, query_bits, big_k,
+            Some(1),
+            &mut out_v3,
+        );
+
+        // Reset for any subsequent tests in the suite.
+        super::_reset_backend_for_tests();
+
+        // Bit-exact: identical bit operations + identical fp32 reduction
+        // order (same `(j outer, i inner, k inner-inner, w inner-most)`
+        // accumulation order). The only difference between v3 and v4 is
+        // *which* CPU instruction performs the popcount; the final f32
+        // sum-of-max-sims is identical.
+        for d in 0..big_b {
+            assert_eq!(
+                out_v4[d].to_bits(),
+                out_v3[d].to_bits(),
+                "v4 vs v3 mismatch at d={d}: v4={} v3={}",
+                out_v4[d], out_v3[d],
+            );
+        }
     }
 }

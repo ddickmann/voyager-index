@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -62,6 +63,28 @@ BEIR_DATASETS: Dict[str, Dict[str, Any]] = {
         "qrels_repo": "mteb/scifact",
         "expected_docs": 5_183,
     },
+    # Added 2026-04-20 to enable the BEIR-8 head-to-head against FastPlaid
+    # (`benchmarks/fast_plaid_head_to_head.py`). Both datasets are large
+    # (171k / 382k docs) and their CPU-only `prepare_beir_datasets.py`
+    # encode pass takes a noticeable chunk of wall-time on a workstation;
+    # use `python benchmarks/data/prepare_beir_datasets.py --datasets
+    # trec-covid webis-touche2020 --batch-size 64` on the GPU box where
+    # the head-to-head will run.
+    "trec-covid": {
+        "corpus_repo": "BeIR/trec-covid",
+        "corpus_config": None,
+        "qrels_repo": "mteb/trec-covid",
+        "expected_docs": 171_332,
+    },
+    "webis-touche2020": {
+        "corpus_repo": "BeIR/webis-touche2020",
+        "corpus_config": None,
+        # 2026-04: `mteb/webis-touche2020` is gated/private (HF 401), so use
+        # the canonical BeIR-side qrels repo, which exposes the same
+        # (query-id, corpus-id, score) schema under a `test` split.
+        "qrels_repo": "BeIR/webis-touche2020-qrels",
+        "expected_docs": 382_545,
+    },
 }
 
 
@@ -108,11 +131,23 @@ def load_beir_split(
             qrel_pairs.setdefault(qid, {})[cid] = score
             referenced_cids.add(cid)
 
-    # Only keep corpus docs referenced in qrels (critical for large corpora like quora)
-    all_cids = sorted(cid for cid in corpus_id_to_text if cid in referenced_cids)
-    if len(all_cids) < len(corpus_id_to_text):
-        log.info("  Filtered corpus from %d to %d docs (qrels-referenced only)",
-                 len(corpus_id_to_text), len(all_cids))
+    # By default keep the FULL corpus so the benchmark mirrors the
+    # public BEIR cardinalities (e.g. quora=522 931). Set
+    # ``BEIR_QRELS_FILTER=1`` to opt back into the qrels-only subset for
+    # quick smoke-tests on small VRAM. The full corpus is required to
+    # report apples-to-apples numbers vs PLAID / FastPlaid public
+    # benchmarks (quora full ~522 k docs).
+    qrels_filter = os.environ.get("BEIR_QRELS_FILTER", "0") == "1"
+    if qrels_filter:
+        all_cids = sorted(cid for cid in corpus_id_to_text if cid in referenced_cids)
+        if len(all_cids) < len(corpus_id_to_text):
+            log.info("  Filtered corpus from %d to %d docs (qrels-referenced only; BEIR_QRELS_FILTER=1)",
+                     len(corpus_id_to_text), len(all_cids))
+    else:
+        all_cids = sorted(corpus_id_to_text.keys())
+        unreferenced = len(all_cids) - sum(1 for c in all_cids if c in referenced_cids)
+        log.info("  Keeping full corpus: %d docs (%d not in qrels; set BEIR_QRELS_FILTER=1 to subset)",
+                 len(all_cids), unreferenced)
     cid_to_idx = {cid: i for i, cid in enumerate(all_cids)}
     doc_texts = [corpus_id_to_text[cid] for cid in all_cids]
 

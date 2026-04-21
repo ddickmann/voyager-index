@@ -170,6 +170,24 @@ brute-force codec-fidelity overlap (top-10 / 20 / 50 / 100 vs FP16 — the
 rroq158 quality story disaggregated below the rank-aggregate metric)
 live in [docs/benchmarks.md](docs/benchmarks.md).
 
+#### Reproducible head-to-head against FastPlaid
+
+A single-command benchmark runs voyager-index `rroq158 gs=128` (the
+v0.1.6 SOTA default) against [FastPlaid](https://github.com/lightonai/fast-plaid)
+on FastPlaid's published BEIR-8 matrix using **identical per-token
+embeddings** for both libraries (so the comparison varies only the
+indexing/scoring engine, not the encoder model). Tutorial — including
+the recommended single-H100 cloud setup —
+[`docs/benchmarks/fast-plaid-head-to-head.md`](docs/benchmarks/fast-plaid-head-to-head.md);
+script [`benchmarks/fast_plaid_head_to_head.py`](benchmarks/fast_plaid_head_to_head.py).
+Quick smoke (one small dataset, ~30 s on H100):
+
+```bash
+pip install fast-plaid pylate
+python benchmarks/data/prepare_beir_datasets.py --datasets nfcorpus
+python benchmarks/fast_plaid_head_to_head.py --datasets nfcorpus
+```
+
 #### Default: RROQ-1.58 (Riemannian 1.58-bit ternary, K=8192)
 
 `Compression.RROQ158` is the **default codec for newly built indexes**

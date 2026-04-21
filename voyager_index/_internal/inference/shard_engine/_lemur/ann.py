@@ -113,9 +113,25 @@ class LemurRouterAnnMixin:
             feats_np = self._as_numpy_float32_contiguous(feats)
             if use_lock is None:
                 use_lock = self._gpu_index_active
-            if use_lock:
-                with self._search_lock:
-                    return self._index.search(feats_np, k)
-            return self._index.search(feats_np, k)
+            n_queries = int(feats_np.shape[0])
+            # Cap FAISS OMP threads to the number of queries (clamped to 8).
+            # Online single-query latency on a CPU IVFPQ over a few-thousand-
+            # vector router index is dominated by 64-thread fork/join sync;
+            # forcing a small thread count drops route() from ~85 ms p50
+            # to ~0.5 ms p50 on H100 (64-core box). Indexing paths that run
+            # FAISS train/add are not affected because they use the FAISS
+            # APIs directly, not _search.
+            target_threads = max(1, min(n_queries, 8))
+            prev_threads = faiss.omp_get_max_threads()
+            try:
+                if target_threads != prev_threads:
+                    faiss.omp_set_num_threads(target_threads)
+                if use_lock:
+                    with self._search_lock:
+                        return self._index.search(feats_np, k)
+                return self._index.search(feats_np, k)
+            finally:
+                if target_threads != prev_threads:
+                    faiss.omp_set_num_threads(prev_threads)
         return self._index.search(feats, k)
 

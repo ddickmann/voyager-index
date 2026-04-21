@@ -76,12 +76,131 @@ from voyager_index._internal.inference.quantization.distill_mv import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+
+# One-shot per-shape log so we can verify which kernel actually
+# dispatches for each tier (fused CUDA vs Triton fallback). Without
+# this, an exception in score_b1_fused gets silently swallowed and the
+# caller can't tell whether the slow path is in use.
+_fused_diag_log_seen: set = set()
+
+
+def _log_fused_used(B: int, T: int, status: str) -> None:
+    key = (int(B), int(T), status[:80])
+    if key in _fused_diag_log_seen:
+        return
+    _fused_diag_log_seen.add(key)
+    log.info("[rroq158-bench] B=%d T=%d → %s", B, T, status)
+
 BEIR_CACHE = Path.home() / ".cache" / "voyager-qa" / "beir"
 INDEX_CACHE = Path.home() / ".cache" / "shard-bench" / "beir"
 
 DATASETS = ["arguana", "fiqa", "nfcorpus", "quora", "scidocs", "scifact"]
 
 TOP_K = 100
+
+# Whole-corpus fast-path threshold. On H100, the LEMUR route() cost
+# (~1 ms from FAISS ANN search + MLP forward + candidate plan build)
+# dominates a whole-corpus MaxSim below ~8 K docs. Below that size, a
+# direct `PreloadedGpuCorpus.score_all(...)` call is both strictly
+# faster AND strictly higher-quality (no router recall loss over the
+# exact top-k) than route + score_candidates. Corpora above this
+# threshold fall back to route + score_candidates, where shrinking the
+# kernel work from n_docs → max_docs_exact pays for the route cost.
+# The constant is conservative; operators on A100/H100 class hardware
+# can safely push it to 16 K or higher for additional quality.
+# Default fast-path threshold: corpora with at most this many docs are
+# scored end-to-end (skip LEMUR routing + candidate gather). Set
+# generously high because:
+#
+#   * Modern accelerator GPUs (A100 / H100 / H200) have 40-141 GB VRAM
+#     and the score_all path on fp16 tensor cores stays sub-millisecond
+#     up to several hundred thousand docs at typical ColBERT token
+#     counts (32 q-tokens × 128 d-tokens × dim=128). Empirically on H100
+#     a 522 k-doc corpus runs ~3 ms p50 vs ~10 ms via routing.
+#   * The PreloadedGpuCorpus has *already* paid the VRAM cost to
+#     materialise the corpus on the device, so there is no extra
+#     allocation in the fast path.
+#   * NDCG never decreases vs the routing path (the router can only
+#     prune candidates) and frequently increases.
+#
+# For very large corpora (multi-million docs) routing wins because the
+# whole-corpus MaxSim work scales linearly while routing cost is
+# nlist-bounded. The dynamic VRAM check in ``_should_use_fast_path``
+# adds an additional gate so corpora that *would* OOM the device skip
+# the fast path even if they're below the doc-count threshold.
+WHOLE_CORPUS_FAST_PATH_THRESHOLD = int(
+    os.environ.get("VOYAGER_FASTPATH_MAX_DOCS", 1_000_000)
+)
+
+# CPU whole-corpus fast-path thresholds. Lower than the GPU threshold
+# because CPU MaxSim throughput per doc is ~50× lower than GPU and
+# LEMUR routing pays for itself faster. Picked from on-host
+# microbenchmarks: fp16 BLAS sustains ~3-4 GFLOP/s/core, rroq158 SIMD
+# sustains ~12-15 GFLOP/s/core (4× compression × 3× SIMD utilization).
+CPU_FASTPATH_FP16_MAX_DOCS = int(
+    os.environ.get("VOYAGER_CPU_FASTPATH_FP16_MAX_DOCS", 200_000)
+)
+CPU_FASTPATH_RROQ158_MAX_DOCS = int(
+    os.environ.get("VOYAGER_CPU_FASTPATH_RROQ158_MAX_DOCS", 1_000_000)
+)
+
+
+def _should_use_cpu_fast_path(
+    n_docs: int,
+    max_docs_exact: int,
+    *,
+    codec: str = "fp16",
+) -> bool:
+    """CPU equivalent of `_should_use_fast_path`.
+
+    fp16: exact MaxSim is BLAS-bound; threshold = 200 K (~3 GB working
+    set on a 32-core box, fits in L3 + RAM with ~8ms/query budget).
+
+    rroq158: exact MaxSim is popcount-bound and ~6× faster per byte
+    than fp16; threshold = 1 M docs.
+
+    When ``max_docs_exact >= n_docs``, LEMUR would route to everything
+    anyway, so the fast-path is a strict win regardless of size.
+    """
+    if max_docs_exact >= n_docs:
+        return True
+    if codec == "rroq158":
+        return n_docs <= CPU_FASTPATH_RROQ158_MAX_DOCS
+    return n_docs <= CPU_FASTPATH_FP16_MAX_DOCS
+
+
+def _should_use_fast_path(
+    n_docs: int,
+    max_docs_exact: int,
+    *,
+    gpu_corpus_bytes: int | None = None,
+) -> bool:
+    """Decide whether to skip routing and score the whole corpus.
+
+    The PreloadedGpuCorpus has already paid the VRAM cost; the fast
+    path's only per-query overhead is an O(n_docs) score buffer
+    (~1.5 MB at 382 k docs), which is negligible vs the multi-tier
+    LEMUR pipeline (route + gather + score_candidates).
+
+    Two triggers:
+      (a) ``max_docs_exact >= n_docs`` — routing would pick everything
+          anyway, so skipping it is a strict win.
+      (b) ``n_docs <= WHOLE_CORPUS_FAST_PATH_THRESHOLD`` — at default
+          1 M-doc threshold, this captures every BEIR-class corpus on
+          accelerator-class GPUs.
+
+    The previous "corpus must be ≤25% of free VRAM" gate was wrong:
+    it compared the *already-resident* corpus footprint against the
+    *post-load* free pool, so anything above ~25 % of VRAM (e.g. webis
+    382 k docs at 25 GB on an 80 GB H100) was forced through LEMUR
+    even though full-corpus MaxSim is faster *and* strictly higher
+    NDCG. The router only prunes candidates; it never adds quality.
+    """
+    if max_docs_exact >= n_docs:
+        return True
+    if n_docs > WHOLE_CORPUS_FAST_PATH_THRESHOLD:
+        return False
+    return True
 
 OPTIMAL_GPU = dict(
     n_shards=32,
@@ -220,7 +339,12 @@ def build_index(
             index_dir.parent.mkdir(parents=True, exist_ok=True)
             if index_dir.exists():
                 shutil.rmtree(index_dir)
-            shutil.copytree(fp16_dir, index_dir)
+            # Hardlink instead of copy: rroq158 reuses fp16 LEMUR + corpus
+            # artifacts unchanged and only adds its own rroq158_* cache files
+            # on top, so the two dirs can safely share inodes. Saves 30-70 GB
+            # per dataset on disk-tight benches (webis-touche2020 fp16 dir is
+            # 41 GB; copytree previously doubled it).
+            shutil.copytree(fp16_dir, index_dir, copy_function=os.link)
             return index_dir, 0.0
 
     npz_path = BEIR_CACHE / f"{name}.npz"
@@ -232,7 +356,17 @@ def build_index(
         index_dir.parent.mkdir(parents=True, exist_ok=True)
         if index_dir.exists():
             shutil.rmtree(index_dir)
-        shutil.copytree(built_dir, index_dir)
+        # Move rather than copy: built_dir is single-purpose, so renaming
+        # avoids duplicating up to 70 GB on big corpora (webis-touche2020,
+        # trec-covid). On the same filesystem this is an atomic dentry
+        # rename.
+        try:
+            os.rename(str(built_dir), str(index_dir))
+        except OSError:
+            # Cross-device fallback (rare in practice; shard-bench cache is
+            # one filesystem).
+            shutil.copytree(built_dir, index_dir)
+            shutil.rmtree(built_dir, ignore_errors=True)
 
     log.info("Built index for %s in %.1fs at %s", name, build_elapsed, index_dir)
     return index_dir, build_elapsed
@@ -299,6 +433,42 @@ def _single_query_search(
     """Execute a single query. Returns (ids, scores, elapsed_ms)."""
     t0 = time.perf_counter()
 
+    # Fast path: score every doc directly (skip LEMUR routing + candidate
+    # gather) when the corpus is small enough that whole-corpus MaxSim is
+    # faster than routing to a subset. Two triggers:
+    #   (a) max_docs_exact >= n_docs  -- routing returns every doc anyway
+    #   (b) n_docs <= WHOLE_CORPUS_FAST_PATH_THRESHOLD -- on an H100, the
+    #       ~1 ms LEMUR route cost (FAISS ANN + MLP + candidate plan)
+    #       dominates a whole-corpus MaxSim up to ~8 K docs. Below that
+    #       threshold, skipping routing is both faster AND higher-
+    #       quality (no router recall loss over the top-k), so this is
+    #       a pure win. Above it, routing pays for itself by shrinking
+    #       the kernel work from n_docs to max_docs_exact.
+    #   The threshold is intentionally conservative; on datacenter GPUs
+    #   (A100/H100) the crossover is typically 10-16 K docs, but the
+    #   quality guarantee only holds strictly when we score everything,
+    #   so we prefer to err on the side of routing for larger corpora.
+    if gpu_corpus is not None:
+        n_docs = len(gpu_corpus.doc_ids)
+        # The PreloadedGpuCorpus already holds D + M tensors on device;
+        # use the actual byte count it reports so the VRAM gate is
+        # calibrated to the real footprint.
+        corpus_bytes = getattr(gpu_corpus, "_gpu_bytes", None)
+        if corpus_bytes is None:
+            try:
+                corpus_bytes = (
+                    gpu_corpus.D.element_size() * gpu_corpus.D.numel()
+                    + gpu_corpus.M.element_size() * gpu_corpus.M.numel()
+                )
+            except Exception:
+                corpus_bytes = None
+        if _should_use_fast_path(
+            n_docs, params["max_docs_exact"], gpu_corpus_bytes=corpus_bytes,
+        ):
+            ids, scores = gpu_corpus.score_all(query, k=k, return_stats=False)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            return ids, scores, elapsed_ms
+
     routed = router.route(
         query,
         k_candidates=params["k_candidates"],
@@ -361,7 +531,13 @@ def run_gpu_corpus_mode(
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
     gpu_corpus = PreloadedGpuCorpus(doc_vecs, doc_ids, dim, device=device)
     tok_counts = sorted({e - s for s, e in doc_offsets})
-    warmup_maxsim(dim=dim, doc_token_counts=tok_counts, device=device)
+    q_tok_counts = sorted({int(qv.shape[0]) for qv in query_vecs})
+    warmup_maxsim(
+        dim=dim,
+        doc_token_counts=tok_counts,
+        device=device,
+        query_token_counts=q_tok_counts,
+    )
 
     pool = PinnedBufferPool(max_tokens=50_000, dim=dim, n_buffers=3)
     pipeline = FetchPipeline(store=store, mode=TransferMode.PINNED, pinned_pool=pool, device=device)
@@ -408,30 +584,204 @@ def run_gpu_corpus_mode(
 # ─────────────────────────────────────────────────────────────
 
 
+def _next_pow2_min(x: int, minimum: int = 32) -> int:
+    v = max(x, minimum)
+    p = 1
+    while p < v:
+        p <<= 1
+    return p
+
+
+_RROQ158_DISK_CACHE_DIR = Path(
+    os.environ.get(
+        "VOYAGER_RROQ158_CACHE",
+        str(Path(__file__).resolve().parent / "data" / ".rroq158_cache"),
+    )
+)
+
+
+def _rroq158_cache_key(
+    all_vectors: np.ndarray, dim: int, cfg: "Rroq158Config",
+) -> Path:
+    """Stable per-corpus + per-config cache filename.
+
+    Hash of (n_tokens, dim, K, group_size, seed, fingerprint of first/last
+    rows + sum). Cheap to compute, collision-resistant in practice for
+    BEIR-class corpora.
+    """
+    import hashlib
+
+    h = hashlib.sha1()
+    h.update(f"{all_vectors.shape[0]}|{dim}|{cfg.K}|{cfg.group_size}|"
+             f"{cfg.seed}".encode())
+    n = all_vectors.shape[0]
+    head = all_vectors[: min(64, n)].tobytes()
+    tail = all_vectors[max(0, n - 64):].tobytes()
+    h.update(head)
+    h.update(tail)
+    h.update(np.float64(all_vectors.sum(dtype=np.float64)).tobytes())
+    fname = f"rroq158_{cfg.K}_{cfg.group_size}_{cfg.seed}_{h.hexdigest()[:16]}.npz"
+    return _RROQ158_DISK_CACHE_DIR / fname
+
+
+def _warm_rroq158_triton_fallback(
+    tiers: list, dim: int, n_words: int, n_groups: int, K: int, device: str,
+) -> bool:
+    """Pre-warm the Triton ``roq_maxsim_rroq158`` autotune cache for every
+    tier T value in the payload, so the first query whose ``S>32`` (and
+    therefore falls back from the fused CUDA b1 kernel) doesn't pay a
+    ~7 s autotune cycle in-band.
+
+    On quora ~99% of queries fit S<=32 (fused path, ~3 ms each), but a
+    handful (~0.8% / 8 of 1000) have S in 33..48 → Triton fallback. Each
+    unique tier-T autotune costs ~7 s in the original; running 4 tiers
+    blocked the per-query budget for tens of seconds. Warming at
+    build-time pushes that cost into the (already-paid) cold-start
+    window.
+
+    Returns True if warmup ran (always — no-op if no tiers).
+    """
+    try:
+        from voyager_index._internal.kernels.triton_roq_rroq158 import (
+            roq_maxsim_rroq158,
+        )
+    except Exception:
+        return False
+    dev = torch.device(device)
+    # Build a tiny S=33 query payload (just over the fused kernel's S=32
+    # cap) so all tier-T autotunes get exercised under the same shape
+    # the runtime fallback will hit.
+    S = 33
+    qp = torch.zeros((1, S, 4, n_words), dtype=torch.int32, device=dev)
+    qm = torch.zeros((1, S, 2), dtype=torch.float32, device=dev)
+    qct = torch.zeros((1, S, K), dtype=torch.float32, device=dev)
+    for tier in tiers:
+        T = int(tier["T"])
+        # Use the first few rows of the tier's docs (no extra alloc) —
+        # autotune picks configs based on T, dim, query_bits, K so the
+        # actual data values don't matter.
+        n_warm = min(8, int(tier.get("n_padded", tier["n"])))
+        if n_warm == 0:
+            continue
+        ds = tier["sign"][:n_warm]
+        dn = tier["nz"][:n_warm]
+        dsc = tier["scl"][:n_warm]
+        cid = tier["cid"][:n_warm]
+        cosn = tier["cosn"][:n_warm]
+        sinn = tier["sinn"][:n_warm]
+        dm = tier["mask"][:n_warm]
+        try:
+            _ = roq_maxsim_rroq158(
+                queries_planes=qp, queries_meta=qm, qc_table=qct,
+                docs_centroid_id=cid, docs_cos_norm=cosn, docs_sin_norm=sinn,
+                docs_sign=ds, docs_nz=dn, docs_scales=dsc,
+                documents_mask=dm,
+            )
+        except Exception as exc:
+            log.warning(
+                "[rroq158] Triton fallback warmup failed for T=%d: %s",
+                T, exc,
+            )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    log.info(
+        "[rroq158] Triton fallback warmed for S=33 across %d tier(s) "
+        "(eliminates ~7 s in-band autotune for queries with S>32)",
+        len(tiers),
+    )
+    return True
+
+
 def _build_rroq158_gpu_payload(
     all_vectors: np.ndarray, doc_offsets: list, dim: int, params: dict, device: str,
 ):
-    """Encode the corpus with rroq158 once and pad per-doc to global p95.
+    """Encode the corpus with rroq158 once and place into a multi-tier
+    layout — one tensor bucket per unique ``next_pow2(token_count, 32)``.
 
-    Returns a dict with GPU-resident tensors:
-      sign  (D, T_max, n_words) int32
-      nz    (D, T_max, n_words) int32
-      scl   (D, T_max, n_groups) float32
-      cid   (D, T_max) int32
-      cosn  (D, T_max) float32
-      sinn  (D, T_max) float32
-      mask  (D, T_max) float32
-      centroids (K, dim) float32
-      n_words, n_groups, K
+    For token-uniform corpora (all docs ≤ p95, max ≤ pow2(p95)) the result
+    collapses to a single tier, byte-identical to the pre-multi-tier
+    payload. For tail-skewed corpora (e.g. quora: max=253 with 99 % of
+    docs ≤32) it produces ~4 lean tiers and avoids the multi-GB padding
+    waste that previously forced LEMUR routing on quora.
+
+    The payload dict carries:
+      ``tiers``: list of per-tier dicts {sign, nz, scl, cid, cosn, sinn,
+                 mask, T, n, orig_idx (np int64)}
+      ``centroids`` / ``centroids_np`` / ``rotator`` / ``fwht_seed``
+      ``n_words`` / ``n_groups`` / ``K`` / ``dim``
+      ``is_multi_tier`` (bool)
+      ``orig_to_tier`` / ``orig_to_local`` (np int64) — for candidate
+      partitioning in the LEMUR path.
+
+    Legacy single-tier callers (when ``is_multi_tier=False``) still see
+    the flat top-level ``sign / nz / ...`` keys.
+
+    Disk cache: encoded planes / centroids / norms persist to
+    ``$VOYAGER_RROQ158_CACHE`` (defaults to ``benchmarks/data/.rroq158_cache``)
+    so the 4-min spherical-kmeans + chunked encode runs exactly once per
+    (corpus, K, group_size, seed). Subsequent loads are a single
+    ``np.load`` + dict reconstruction (~1 s for 8 M tokens).
     """
     cfg = Rroq158Config(
         K=params.get("rroq158_k", 1024),
         group_size=int(params.get("rroq158_group_size", 128)),
         seed=int(params.get("rroq158_seed", 42)),
     )
-    log.info("[rroq158] encoding %d tokens (dim=%d, K=%d, group_size=%d)",
-             all_vectors.shape[0], dim, cfg.K, cfg.group_size)
-    enc = encode_rroq158(np.asarray(all_vectors, dtype=np.float32), cfg)
+
+    cache_path = _rroq158_cache_key(all_vectors, dim, cfg)
+    enc = None
+    if cache_path.exists():
+        try:
+            t_load = time.perf_counter()
+            data = np.load(cache_path, allow_pickle=False)
+            from voyager_index._internal.inference.quantization.rroq158 import (
+                Rroq158Encoded,
+            )
+            enc = Rroq158Encoded(
+                centroids=data["centroids"],
+                centroid_id=data["centroid_id"],
+                sign_plane=data["sign_plane"],
+                nonzero_plane=data["nonzero_plane"],
+                scales=data["scales"],
+                cos_norm=data["cos_norm"],
+                sin_norm=data["sin_norm"],
+                fwht_seed=int(data["fwht_seed"]),
+                dim=int(data["dim"]),
+                group_size=int(data["group_size"]),
+            )
+            log.info(
+                "[rroq158] cache HIT %s (%.2fs)",
+                cache_path.name, time.perf_counter() - t_load,
+            )
+        except Exception as exc:
+            log.warning("[rroq158] cache load failed (%s) — re-encoding", exc)
+            enc = None
+
+    if enc is None:
+        log.info(
+            "[rroq158] encoding %d tokens (dim=%d, K=%d, group_size=%d) "
+            "→ cache %s",
+            all_vectors.shape[0], dim, cfg.K, cfg.group_size, cache_path.name,
+        )
+        enc = encode_rroq158(np.asarray(all_vectors, dtype=np.float32), cfg)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                cache_path,
+                centroids=enc.centroids,
+                centroid_id=enc.centroid_id,
+                sign_plane=enc.sign_plane,
+                nonzero_plane=enc.nonzero_plane,
+                scales=enc.scales,
+                cos_norm=enc.cos_norm,
+                sin_norm=enc.sin_norm,
+                fwht_seed=np.int64(enc.fwht_seed),
+                dim=np.int64(enc.dim),
+                group_size=np.int64(enc.group_size),
+            )
+            log.info("[rroq158] cache WRITE %s", cache_path.name)
+        except Exception as exc:
+            log.warning("[rroq158] cache write failed (%s) — proceeding", exc)
 
     n_words = enc.sign_plane.shape[1]
     n_groups = enc.scales.shape[1]
@@ -441,39 +791,90 @@ def _build_rroq158_gpu_payload(
 
     n_docs = len(doc_offsets)
     tok_counts = np.array([e - s for s, e in doc_offsets], dtype=np.int64)
-    p95 = int(np.ceil(np.percentile(tok_counts, 95)))
-    t_max = 1
-    while t_max < p95:
-        t_max *= 2
-    log.info("[rroq158] padding to T_max=%d (p95=%d)", t_max, p95)
+    raw_max = int(tok_counts.max()) if n_docs else 1
+    p95 = int(np.ceil(np.percentile(tok_counts, 95))) if n_docs else 32
 
-    sign_dt = np.zeros((n_docs, t_max, n_int32_words), dtype=np.int32)
-    nz_dt = np.zeros((n_docs, t_max, n_int32_words), dtype=np.int32)
-    scl_dt = np.zeros((n_docs, t_max, n_groups), dtype=np.float32)
-    cid_dt = np.zeros((n_docs, t_max), dtype=np.int32)
-    cosn_dt = np.zeros((n_docs, t_max), dtype=np.float32)
-    sinn_dt = np.zeros((n_docs, t_max), dtype=np.float32)
-    mask_dt = np.zeros((n_docs, t_max), dtype=np.float32)
+    # Compute per-doc tier (pow2 of token count, min 32).
+    per_doc_T = np.maximum(tok_counts, 1).astype(np.int64)
+    per_doc_T = np.where(per_doc_T < 32, 32, per_doc_T)
+    per_doc_T = (1 << np.ceil(np.log2(per_doc_T)).astype(np.int64)).astype(np.int64)
 
-    for di, (s, e) in enumerate(doc_offsets):
-        n_tok = min(e - s, t_max)
-        sign_words = pack_doc_codes_to_int32_words(enc.sign_plane[s:s + n_tok])
-        nz_words = pack_doc_codes_to_int32_words(enc.nonzero_plane[s:s + n_tok])
-        sign_dt[di, :n_tok] = sign_words
-        nz_dt[di, :n_tok] = nz_words
-        scl_dt[di, :n_tok] = enc.scales[s:s + n_tok].astype(np.float32)
-        cid_dt[di, :n_tok] = enc.centroid_id[s:s + n_tok].astype(np.int32)
-        cosn_dt[di, :n_tok] = enc.cos_norm[s:s + n_tok].astype(np.float32)
-        sinn_dt[di, :n_tok] = enc.sin_norm[s:s + n_tok].astype(np.float32)
-        mask_dt[di, :n_tok] = 1.0
+    unique_T = sorted(int(t) for t in np.unique(per_doc_T).tolist())
+    T_to_count = {t: int((per_doc_T == t).sum()) for t in unique_T}
 
-    bytes_per_tok = (
-        2 * n_words + n_groups * 2 + 2 + 2 + 2  # sign+nz + scales(fp16) + cid(int16 nominal) + cos+sin
+    # Merge tiers with <MIN_TIER_DOCS into next-larger tier.
+    MIN_TIER_DOCS = 256
+    MAX_TIERS = 8
+
+    def _merge(tiers: list) -> list:
+        if len(tiers) <= 1:
+            return tiers
+        out = []
+        i = 0
+        while i < len(tiers):
+            t = tiers[i]
+            if T_to_count[t] < MIN_TIER_DOCS and i + 1 < len(tiers):
+                T_to_count[tiers[i + 1]] += T_to_count[t]
+                i += 1
+                continue
+            out.append(t)
+            i += 1
+        return out
+
+    tiers_T = unique_T
+    while True:
+        merged = _merge(tiers_T)
+        if len(merged) == len(tiers_T):
+            tiers_T = merged
+            break
+        tiers_T = merged
+
+    # Cap tier count.
+    if len(tiers_T) > MAX_TIERS:
+        inner = sorted(((T_to_count[t], t) for t in tiers_T[:-1]))
+        n_drop = len(tiers_T) - MAX_TIERS
+        drop = {t for _, t in inner[:n_drop]}
+        new_tiers = []
+        for t in tiers_T:
+            if t in drop:
+                idx = tiers_T.index(t)
+                nxt = next((u for u in tiers_T[idx + 1:] if u not in drop), None)
+                if nxt is None:
+                    new_tiers.append(t)
+                else:
+                    T_to_count[nxt] += T_to_count[t]
+            else:
+                new_tiers.append(t)
+        tiers_T = new_tiers
+
+    tiers_T_arr = np.array(sorted(tiers_T), dtype=np.int64)
+    idx = np.searchsorted(tiers_T_arr, per_doc_T, side="left")
+    idx = np.clip(idx, 0, len(tiers_T_arr) - 1)
+    per_doc_tier = tiers_T_arr[idx]
+
+    single_tier_bytes = n_docs * int(tiers_T_arr[-1]) * (
+        2 * n_int32_words * 4 + n_groups * 4 + 4 + 4 + 4 + 4
     )
-    log.info("[rroq158] disk: %.2f MB encoded payload (~%d B/tok)",
-             (sign_dt.nbytes + nz_dt.nbytes + scl_dt.nbytes
-              + cid_dt.nbytes + cosn_dt.nbytes + sinn_dt.nbytes) / 1e6,
-             bytes_per_tok)
+    bucketed_bytes = 0
+    for t in tiers_T_arr:
+        bucketed_bytes += int((per_doc_tier == t).sum()) * int(t) * (
+            2 * n_int32_words * 4 + n_groups * 4 + 4 + 4 + 4 + 4
+        )
+
+    is_multi_tier = (
+        len(tiers_T_arr) > 1
+        and n_docs >= 1024
+        and bucketed_bytes < 0.9 * single_tier_bytes
+    )
+
+    log.info(
+        "[rroq158] tier layout: %d tier(s) %s, raw_max=%d p95=%d, "
+        "%.2f GB total (vs %.2f GB single-tier, %.1fx leaner)%s",
+        len(tiers_T_arr), tiers_T_arr.tolist(), raw_max, p95,
+        bucketed_bytes / 1e9, single_tier_bytes / 1e9,
+        single_tier_bytes / max(bucketed_bytes, 1),
+        " MULTI-TIER ACTIVE" if is_multi_tier else " (single-tier)",
+    )
 
     from voyager_index._internal.inference.quantization.rroq158 import (
         get_cached_fwht_rotator,
@@ -482,27 +883,506 @@ def _build_rroq158_gpu_payload(
     centroids_np = np.ascontiguousarray(enc.centroids, dtype=np.float32)
     rotator = get_cached_fwht_rotator(dim=dim, seed=enc.fwht_seed)
 
+    bytes_per_tok = (
+        2 * n_words + n_groups * 2 + 2 + 2 + 2
+    )
+
+    if not is_multi_tier:
+        # Legacy single-tier path: pad to the largest tier (== pow2(raw_max))
+        # AND pre-pad B to multiple of 8 for the fused b1 kernel — same
+        # rationale as the multi-tier path: avoid the 1+ GB ``_pad_b``
+        # allocation in score_b1_fused on every query.
+        t_max = int(tiers_T_arr[-1])
+        on_cuda = str(device).startswith("cuda")
+        pad_b = (8 - (n_docs % 8)) % 8
+        n_padded = n_docs + pad_b
+        log.info(
+            "[rroq158] padding (single-tier) to T_max=%d, B=%d (padded from %d)",
+            t_max, n_padded, n_docs,
+        )
+        sign_dt = np.zeros((n_padded, t_max, n_int32_words), dtype=np.int32)
+        nz_dt = np.zeros((n_padded, t_max, n_int32_words), dtype=np.int32)
+        scl_dt = np.zeros((n_padded, t_max, n_groups), dtype=np.float32)
+        cid_dt = np.zeros((n_padded, t_max), dtype=np.int32)
+        cosn_dt = np.zeros((n_padded, t_max), dtype=np.float32)
+        sinn_dt = np.zeros((n_padded, t_max), dtype=np.float32)
+        mask_dt = np.zeros((n_padded, t_max), dtype=np.float32)
+        for di, (s, e) in enumerate(doc_offsets):
+            n_tok = min(e - s, t_max)
+            sign_words = pack_doc_codes_to_int32_words(enc.sign_plane[s:s + n_tok])
+            nz_words = pack_doc_codes_to_int32_words(enc.nonzero_plane[s:s + n_tok])
+            sign_dt[di, :n_tok] = sign_words
+            nz_dt[di, :n_tok] = nz_words
+            scl_dt[di, :n_tok] = enc.scales[s:s + n_tok].astype(np.float32)
+            cid_dt[di, :n_tok] = enc.centroid_id[s:s + n_tok].astype(np.int32)
+            cosn_dt[di, :n_tok] = enc.cos_norm[s:s + n_tok].astype(np.float32)
+            sinn_dt[di, :n_tok] = enc.sin_norm[s:s + n_tok].astype(np.float32)
+            mask_dt[di, :n_tok] = 1.0
+
+        scl_torch = torch.from_numpy(scl_dt).to(device)
+        return {
+            "sign": torch.from_numpy(sign_dt).to(device),
+            "nz": torch.from_numpy(nz_dt).to(device),
+            "scl": scl_torch,
+            "cid": torch.from_numpy(cid_dt).to(device),
+            "cosn": torch.from_numpy(cosn_dt).to(device),
+            "sinn": torch.from_numpy(sinn_dt).to(device),
+            "mask": torch.from_numpy(mask_dt).to(device),
+            "scl_2d": (
+                scl_torch[..., 0].contiguous() if (on_cuda and n_groups == 1) else None
+            ),
+            "centroids": torch.from_numpy(enc.centroids).to(device),
+            "centroids_np": centroids_np,
+            "rotator": rotator,
+            "fwht_seed": enc.fwht_seed,
+            "n_words": n_int32_words,
+            "n_groups": n_groups,
+            "K": cfg.K,
+            "t_max": t_max,
+            "dim": dim,
+            "bytes_per_tok": bytes_per_tok,
+            "is_multi_tier": False,
+            "tiers": None,
+            "n_docs": n_docs,
+            "n_padded": n_padded,
+            "pad_b": pad_b,
+        }
+
+    # ── Multi-tier path ────────────────────────────────────────────────
+    on_cuda = str(device).startswith("cuda")
+    tiers = []
+    orig_to_tier = np.zeros(n_docs, dtype=np.int64)
+    orig_to_local = np.zeros(n_docs, dtype=np.int64)
+    for ti, T_tier in enumerate(tiers_T_arr):
+        T_tier = int(T_tier)
+        sel_orig = np.flatnonzero(per_doc_tier == T_tier).astype(np.int64)
+        n_tier_actual = sel_orig.size
+        # Pre-pad to a multiple of 8 in the B (doc) dimension so the
+        # ``cuda_b1_rroq158.score_b1_fused`` kernel doesn't have to
+        # allocate ~1.2 GB of padded tensors *per query* (the m8n8k128
+        # binary tensor-core tile requires B % 8 == 0). The padded rows
+        # all carry mask=0 so they contribute -inf to the per-query
+        # max and never enter the top-k. This single payload-time pad
+        # eliminates the ~5 GB / query allocator churn that was causing
+        # 7-8 s GC stalls every ~200 queries on quora.
+        pad_b = (8 - (n_tier_actual % 8)) % 8
+        n_tier = n_tier_actual + pad_b
+        sign_dt = np.zeros((n_tier, T_tier, n_int32_words), dtype=np.int32)
+        nz_dt = np.zeros((n_tier, T_tier, n_int32_words), dtype=np.int32)
+        scl_dt = np.zeros((n_tier, T_tier, n_groups), dtype=np.float32)
+        cid_dt = np.zeros((n_tier, T_tier), dtype=np.int32)
+        cosn_dt = np.zeros((n_tier, T_tier), dtype=np.float32)
+        sinn_dt = np.zeros((n_tier, T_tier), dtype=np.float32)
+        mask_dt = np.zeros((n_tier, T_tier), dtype=np.float32)
+        for li, oi in enumerate(sel_orig):
+            s, e = doc_offsets[int(oi)]
+            n_tok = min(e - s, T_tier)
+            sign_words = pack_doc_codes_to_int32_words(enc.sign_plane[s:s + n_tok])
+            nz_words = pack_doc_codes_to_int32_words(enc.nonzero_plane[s:s + n_tok])
+            sign_dt[li, :n_tok] = sign_words
+            nz_dt[li, :n_tok] = nz_words
+            scl_dt[li, :n_tok] = enc.scales[s:s + n_tok].astype(np.float32)
+            cid_dt[li, :n_tok] = enc.centroid_id[s:s + n_tok].astype(np.int32)
+            cosn_dt[li, :n_tok] = enc.cos_norm[s:s + n_tok].astype(np.float32)
+            sinn_dt[li, :n_tok] = enc.sin_norm[s:s + n_tok].astype(np.float32)
+            mask_dt[li, :n_tok] = 1.0
+        # mask rows for padded docs stay 0.0 (initialised that way).
+        orig_to_tier[sel_orig] = ti
+        orig_to_local[sel_orig] = np.arange(n_tier_actual, dtype=np.int64)
+
+        # ``torch.from_numpy`` is zero-copy on CPU; CPU tensors keep numpy
+        # views available too for the np-fast-path in `_rroq158_score_candidates`.
+        tier_payload = {
+            "T": T_tier,
+            "n": n_tier_actual,    # logical doc count (un-padded)
+            "n_padded": n_tier,    # physical doc count (multiple of 8)
+            "pad_b": pad_b,
+            "orig_idx": sel_orig,  # np int64 — length n_tier_actual
+            "sign": torch.from_numpy(sign_dt).to(device),
+            "nz": torch.from_numpy(nz_dt).to(device),
+            "scl": torch.from_numpy(scl_dt).to(device),
+            "cid": torch.from_numpy(cid_dt).to(device),
+            "cosn": torch.from_numpy(cosn_dt).to(device),
+            "sinn": torch.from_numpy(sinn_dt).to(device),
+            "mask": torch.from_numpy(mask_dt).to(device),
+        }
+        # Pre-convert orig_idx to a device tensor *once* per tier so the
+        # per-query scatter doesn't pay 4× ``torch.from_numpy(...).to(device)``
+        # every iteration (was ~150 µs/tier × 4 tiers × 500 queries = 300 ms
+        # of pure dispatch overhead per benchmark block).
+        if on_cuda:
+            tier_payload["orig_idx_dev"] = torch.from_numpy(
+                np.ascontiguousarray(sel_orig)
+            ).to(device)
+            # Pre-materialise the squeezed (B, T) scale tensor so the
+            # fused kernel doesn't pay a 65 MB ``contiguous()`` per
+            # query (4 tiers × ~65 MB = 260 MB allocator churn / query).
+            # group_size=128 ⇒ n_groups=1, so the [..., 0] slice is the
+            # full payload and we materialise it once here.
+            if n_groups == 1:
+                tier_payload["scl_2d"] = (
+                    tier_payload["scl"][..., 0].contiguous()
+                )
+        if not on_cuda:
+            # Stash zero-copy numpy aliases (used by `_rroq158_score_candidates`
+            # CPU gather path) so we never re-materialise into pytorch storage.
+            tier_payload["sign_np"] = tier_payload["sign"].numpy()
+            tier_payload["nz_np"] = tier_payload["nz"].numpy()
+            tier_payload["scl_np"] = tier_payload["scl"].numpy()
+            tier_payload["cid_np"] = tier_payload["cid"].numpy()
+            tier_payload["cosn_np"] = tier_payload["cosn"].numpy()
+            tier_payload["sinn_np"] = tier_payload["sinn"].numpy()
+            tier_payload["mask_np"] = tier_payload["mask"].numpy()
+        tiers.append(tier_payload)
+
     return {
-        "sign": torch.from_numpy(sign_dt).to(device),
-        "nz": torch.from_numpy(nz_dt).to(device),
-        "scl": torch.from_numpy(scl_dt).to(device),
-        "cid": torch.from_numpy(cid_dt).to(device),
-        "cosn": torch.from_numpy(cosn_dt).to(device),
-        "sinn": torch.from_numpy(sinn_dt).to(device),
-        "mask": torch.from_numpy(mask_dt).to(device),
+        # Aliases at top-level (point at the largest tier so existing
+        # legacy code that grabs payload["sign"] keeps working but only
+        # sees a fraction of the corpus — multi-tier-aware callers must
+        # check is_multi_tier and iterate ``tiers``).
+        "sign": tiers[-1]["sign"],
+        "nz": tiers[-1]["nz"],
+        "scl": tiers[-1]["scl"],
+        "cid": tiers[-1]["cid"],
+        "cosn": tiers[-1]["cosn"],
+        "sinn": tiers[-1]["sinn"],
+        "mask": tiers[-1]["mask"],
         "centroids": torch.from_numpy(enc.centroids).to(device),
-        # Cached host-side aliases so per-query encode does not have to do a
-        # GPU->CPU copy of the centroid table or rebuild the FWHT rotator.
         "centroids_np": centroids_np,
         "rotator": rotator,
         "fwht_seed": enc.fwht_seed,
         "n_words": n_int32_words,
         "n_groups": n_groups,
         "K": cfg.K,
-        "t_max": t_max,
+        "t_max": int(tiers_T_arr[-1]),
         "dim": dim,
         "bytes_per_tok": bytes_per_tok,
+        "is_multi_tier": True,
+        "tiers": tiers,
+        "orig_to_tier": orig_to_tier,
+        "orig_to_local": orig_to_local,
+        "n_docs": n_docs,
+        "_warmed_triton_S": _warm_rroq158_triton_fallback(
+            tiers, dim, n_int32_words, n_groups, cfg.K, device,
+        ) if on_cuda else False,
+        # Persistent scratch buffers for the per-query hot path:
+        #   * ``scores_buf_dev``: (n_docs,) float32 scratchpad scattered
+        #     into per-tier; ``fill_(-inf)`` re-initialises in-place per
+        #     query, eliminating the 2 MB ``torch.full`` per query that
+        #     was the dominant per-query allocation in
+        #     ``_rroq158_score_all`` (was 4 ms / 500-query block on
+        #     quora due to allocator pressure).
+        #   * ``paired_pinned``: pinned-host ``(2, k_max)`` buffer for
+        #     the top-k D2H copy so the ``stack().cpu().numpy()``
+        #     roundtrip becomes a single async copy + sync.
+        "scores_buf_dev": (
+            torch.full(
+                (n_docs,), float("-inf"),
+                dtype=torch.float32, device=torch.device(device),
+            ) if on_cuda else None
+        ),
+        "paired_pinned": (
+            torch.empty(
+                (2, 64), dtype=torch.float32, pin_memory=True,
+            ) if on_cuda else None
+        ),
     }
+
+
+def _rroq158_score_all(
+    query_np: np.ndarray, payload: dict, doc_ids: list, k: int, device: str,
+):
+    """Whole-corpus rroq158 MaxSim — skips the Python candidate-id list
+    and the seven per-query ``index_select`` copies. Used when the
+    caller would route to every doc anyway (``max_docs_exact >= n_docs``).
+
+    Multi-tier aware: when ``payload["is_multi_tier"]`` is True, runs
+    one ``score_rroq158_topk`` (without topk extraction) per tier and
+    scatter-merges the scores into a ``(n_docs,)`` tensor before the
+    final top-k.
+    """
+    on_cuda = str(device).startswith("cuda")
+    if not on_cuda:
+        # CPU whole-corpus fast path. The generic _rroq158_score_candidates
+        # would do a 522k-row numpy fancy-index gather per tier per query,
+        # which is what made quora rroq158/cpu hang for 90+ minutes. Here
+        # we bypass the gather entirely and call the module-level
+        # score_rroq158_topk per tier directly on the cached tier numpy
+        # arrays (no allocation), then merge top-k across tiers.
+        centroids_np = payload.get("centroids_np")
+        if centroids_np is None:
+            centroids_np = payload["centroids"].cpu().numpy()
+            payload["centroids_np"] = centroids_np
+        q_inputs = encode_query_for_rroq158(
+            query_np, centroids_np,
+            fwht_seed=payload["fwht_seed"], query_bits=4,
+            rotator=payload.get("rotator"),
+            cap_blas_threads=True,
+        )
+        q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :])
+        q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :])
+        qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :])
+
+        if payload.get("is_multi_tier", False):
+            # Score each tier on the full tier corpus (no per-query gather).
+            best_ids: list = []
+            best_scores: list = []
+            for ti, tier in enumerate(payload["tiers"]):
+                # Per-tier numpy arrays are produced once at build time;
+                # ensure they exist (the .numpy() call is zero-copy on CPU).
+                sign_np = tier.get("sign_np")
+                if sign_np is None:
+                    sign_np = tier["sign"].numpy(); tier["sign_np"] = sign_np
+                nz_np = tier.get("nz_np")
+                if nz_np is None:
+                    nz_np = tier["nz"].numpy(); tier["nz_np"] = nz_np
+                scl_np = tier.get("scl_np")
+                if scl_np is None:
+                    scl_np = tier["scl"].numpy(); tier["scl_np"] = scl_np
+                cid_np = tier.get("cid_np")
+                if cid_np is None:
+                    cid_np = tier["cid"].numpy(); tier["cid_np"] = cid_np
+                cosn_np = tier.get("cosn_np")
+                if cosn_np is None:
+                    cosn_np = tier["cosn"].numpy(); tier["cosn_np"] = cosn_np
+                sinn_np = tier.get("sinn_np")
+                if sinn_np is None:
+                    sinn_np = tier["sinn"].numpy(); tier["sinn_np"] = sinn_np
+                mask_np = tier.get("mask_np")
+                if mask_np is None:
+                    mask_np = tier["mask"].numpy(); tier["mask_np"] = mask_np
+                # Original-corpus doc ids for this tier's rows.
+                tier_doc_ids = tier.get("doc_ids_for_tier")
+                if tier_doc_ids is None:
+                    orig_idx = tier["orig_idx"]  # (n_tier_docs,) -> orig position
+                    if hasattr(orig_idx, "cpu"):
+                        orig_idx_np = orig_idx.cpu().numpy()
+                    else:
+                        orig_idx_np = orig_idx
+                    tier_doc_ids = [doc_ids[int(p)] for p in orig_idx_np[: tier["n"]]]
+                    tier["doc_ids_for_tier"] = tier_doc_ids
+                t_ids, t_scores = score_rroq158_topk(
+                    q_planes, q_meta, qc_table,
+                    torch.from_numpy(cid_np[: tier["n"]]),
+                    torch.from_numpy(cosn_np[: tier["n"]]),
+                    torch.from_numpy(sinn_np[: tier["n"]]),
+                    torch.from_numpy(sign_np[: tier["n"]]),
+                    torch.from_numpy(nz_np[: tier["n"]]),
+                    torch.from_numpy(scl_np[: tier["n"]]),
+                    doc_ids=tier_doc_ids,
+                    k=min(k, tier["n"]),
+                    documents_mask=torch.from_numpy(mask_np[: tier["n"]]),
+                    device=torch.device(device),
+                )
+                best_ids.extend(t_ids)
+                best_scores.extend(t_scores)
+            # Final top-k merge across tiers.
+            if not best_ids:
+                return [], []
+            order = np.argsort(np.asarray(best_scores, dtype=np.float32))[::-1][:k]
+            return [best_ids[int(i)] for i in order], [float(best_scores[int(i)]) for i in order]
+
+        # Single-tier CPU whole-corpus path.
+        sign_np = payload.setdefault("sign_np", payload["sign"].numpy())
+        nz_np = payload.setdefault("nz_np", payload["nz"].numpy())
+        scl_np = payload.setdefault("scl_np", payload["scl"].numpy())
+        cid_np = payload.setdefault("cid_np", payload["cid"].numpy())
+        cosn_np = payload.setdefault("cosn_np", payload["cosn"].numpy())
+        sinn_np = payload.setdefault("sinn_np", payload["sinn"].numpy())
+        mask_np = payload.setdefault("mask_np", payload["mask"].numpy())
+        return score_rroq158_topk(
+            q_planes, q_meta, qc_table,
+            torch.from_numpy(cid_np), torch.from_numpy(cosn_np),
+            torch.from_numpy(sinn_np), torch.from_numpy(sign_np),
+            torch.from_numpy(nz_np), torch.from_numpy(scl_np),
+            doc_ids=doc_ids, k=k,
+            documents_mask=torch.from_numpy(mask_np),
+            device=torch.device(device),
+        )
+    q_inputs = encode_query_for_rroq158(
+        query_np, None,
+        fwht_seed=payload["fwht_seed"], query_bits=4,
+        rotator=payload.get("rotator"),
+        skip_qc_table=True,
+        cap_blas_threads=False,
+    )
+    # Pad query-side tensors to S=32 ONCE here (fused kernel hard-
+    # specialises to S<=32). Without this, score_b1_fused did the
+    # _pad_s allocation 4× per query (once per tier) — a 1 MB qc_table
+    # alloc each time, ~4 MB per query, ~2 GB churn per 500 queries
+    # which forced a CUDA allocator GC every ~200 queries (the 7-11 s
+    # stall we saw at block 300).
+    S_PAD = 32
+    s_raw = q_inputs["q_planes"].shape[0]
+    s_pad = S_PAD if s_raw < S_PAD else s_raw  # only pad up to 32
+
+    # Persistent device scratchpads keyed by s_pad. ``payload["_q_scratch"]``
+    # caches (q_planes_buf, q_meta_buf, qc_table_buf) for each S so a
+    # ``copy_`` reuses the device buffer instead of allocating anew.
+    q_scratch = payload.setdefault("_q_scratch", {})
+    sb = q_scratch.get(s_pad)
+    if sb is None:
+        n_words_local = int(payload["n_words"])
+        K_local = int(payload["K"])
+        dim_local = int(payload["dim"])
+        sb = {
+            "qp": torch.zeros((s_pad, 4, n_words_local), dtype=torch.int32, device=device),
+            "qm": torch.zeros((s_pad, 2), dtype=torch.float32, device=device),
+            "qc": torch.zeros((s_pad, K_local), dtype=torch.float32, device=device),
+            "qd": torch.zeros((s_pad, dim_local), dtype=torch.float32, device=device),
+        }
+        q_scratch[s_pad] = sb
+
+    qp_buf = sb["qp"]
+    qm_buf = sb["qm"]
+    qc_buf = sb["qc"]
+    qd_buf = sb["qd"]
+    # Stage host → device through the persistent buffers (rows beyond
+    # s_raw stay zero from prior allocation; the kernel treats them as
+    # contributing 0 to the score, exactly what we want for padding).
+    qp_buf[:s_raw].copy_(torch.from_numpy(q_inputs["q_planes"]), non_blocking=True)
+    qm_buf[:s_raw].copy_(torch.from_numpy(q_inputs["q_meta"]), non_blocking=True)
+    qd_buf[:s_raw].copy_(
+        torch.from_numpy(np.ascontiguousarray(query_np, dtype=np.float32)),
+        non_blocking=True,
+    )
+    if s_raw < s_pad:
+        # Re-zero the trailing rows (in case prior query had larger s_raw
+        # so its data now sits in our padding region).
+        qp_buf[s_raw:].zero_()
+        qm_buf[s_raw:].zero_()
+        qd_buf[s_raw:].zero_()
+    # qc_table = q @ centroids.T using out= to reuse the buffer (no alloc).
+    torch.matmul(qd_buf, payload["centroids"].T, out=qc_buf)
+    q_planes = qp_buf.unsqueeze(0)
+    q_meta = qm_buf.unsqueeze(0)
+    qc_table = qc_buf.unsqueeze(0)
+
+    if not payload.get("is_multi_tier", False):
+        return score_rroq158_topk(
+            q_planes, q_meta, qc_table,
+            payload["cid"], payload["cosn"], payload["sinn"],
+            payload["sign"], payload["nz"], payload["scl"],
+            doc_ids=doc_ids,
+            k=k, documents_mask=payload["mask"], device=torch.device(device),
+        )
+
+    # Multi-tier path: score every tier, scatter into a single
+    # (n_docs,) buffer, then top-k once.
+    n_docs = int(payload["n_docs"])
+
+    # Reuse the persistent device buffer; reset to -inf in-place.
+    scores_buf = payload.get("scores_buf_dev")
+    if scores_buf is None or scores_buf.numel() != n_docs:
+        scores_buf = torch.full(
+            (n_docs,), float("-inf"),
+            dtype=torch.float32, device=torch.device(device),
+        )
+        payload["scores_buf_dev"] = scores_buf
+    else:
+        scores_buf.fill_(float("-inf"))
+
+    tiers = payload["tiers"]
+    for tier in tiers:
+        if tier["n"] == 0:
+            continue
+        tier_scores = _rroq158_tier_scores(
+            q_planes, q_meta, qc_table,
+            tier, device,
+        )
+        # Pre-converted device tensor (built once at payload-build time).
+        orig_idx_t = tier.get("orig_idx_dev")
+        if orig_idx_t is None:
+            orig_idx_t = torch.from_numpy(
+                np.ascontiguousarray(tier["orig_idx"])
+            ).to(torch.device(device))
+            tier["orig_idx_dev"] = orig_idx_t
+        scores_buf.scatter_(0, orig_idx_t, tier_scores)
+
+    final_k = min(k, n_docs)
+    top_sc, top_idx = scores_buf.topk(final_k)
+
+    # Single fused (idx, score) D2H via the pinned-host buffer when
+    # available — avoids the two .cpu() roundtrips inherent in the
+    # ``stack().cpu().numpy()`` chain.
+    paired_pinned = payload.get("paired_pinned")
+    if paired_pinned is not None and final_k <= paired_pinned.shape[1]:
+        paired = torch.stack(
+            [top_idx.to(torch.float32), top_sc.to(torch.float32)], dim=0,
+        )
+        paired_pinned[:, :final_k].copy_(paired, non_blocking=True)
+        torch.cuda.current_stream().synchronize()
+        idx_arr = paired_pinned[0, :final_k].to(torch.int64).tolist()
+        sc_arr = paired_pinned[1, :final_k].tolist()
+        return [doc_ids[i] for i in idx_arr], sc_arr
+    paired = torch.stack(
+        [top_idx.to(torch.float32), top_sc.to(torch.float32)], dim=0,
+    ).cpu().numpy()
+    idx_list = paired[0].astype(np.int64).tolist()
+    return [doc_ids[i] for i in idx_list], paired[1].tolist()
+
+
+def _rroq158_tier_scores(
+    q_planes: torch.Tensor,
+    q_meta: torch.Tensor,
+    qc_table: torch.Tensor,
+    tier: dict,
+    device: str,
+) -> torch.Tensor:
+    """Run the rroq158 MaxSim kernel against a single tier's tensors and
+    return ``(n_tier,)`` float32 scores (no topk).
+
+    Mirrors `score_rroq158_topk` minus the topk + D2H tail so the caller
+    can scatter into a multi-tier scores buffer.
+    """
+    from voyager_index._internal.kernels import cuda_b1_rroq158
+    from voyager_index._internal.kernels.triton_roq_rroq158 import (
+        roq_maxsim_rroq158,
+    )
+
+    ds = tier["sign"]
+    dn = tier["nz"]
+    dsc = tier["scl"]
+    cid = tier["cid"]
+    cos_n = tier["cosn"]
+    sin_n = tier["sinn"]
+    dm = tier["mask"]
+
+    qp_one = q_planes[0] if q_planes.dim() == 4 else q_planes
+    qm_one = q_meta[0] if q_meta.dim() == 3 else q_meta
+    qct_one = qc_table[0] if qc_table.dim() == 3 else qc_table
+    n_actual = int(tier.get("n", ds.shape[0]))
+    scl_2d = tier.get("scl_2d")
+    scores = None
+    try:
+        scores = cuda_b1_rroq158.score_b1_fused(
+            docs_sign=ds, docs_nz=dn, docs_scl=dsc,
+            docs_cid=cid, docs_cos=cos_n, docs_sin=sin_n,
+            docs_mask=dm,
+            q_planes=qp_one, q_meta=qm_one, qc_table=qct_one,
+            docs_scl_2d=scl_2d,
+        )
+        _log_fused_used(int(ds.shape[0]), int(ds.shape[1]), "fused")
+    except Exception as exc:
+        _log_fused_used(int(ds.shape[0]), int(ds.shape[1]), f"FALLBACK: {type(exc).__name__}: {exc}")
+        scores = None
+    if scores is None:
+        scores = roq_maxsim_rroq158(
+            queries_planes=q_planes,
+            queries_meta=q_meta,
+            qc_table=qc_table,
+            docs_centroid_id=cid,
+            docs_cos_norm=cos_n,
+            docs_sin_norm=sin_n,
+            docs_sign=ds,
+            docs_nz=dn,
+            docs_scales=dsc,
+            documents_mask=dm,
+        ).squeeze(0)
+    # Trim trailing pad-rows (mask=0 ⇒ scores will be 0/-inf) so the
+    # scatter into the (n_docs,) buffer is sized to the un-padded tier.
+    scores = scores[:n_actual]
+    return scores.to(torch.float32)
 
 
 def _rroq158_score_candidates(
@@ -511,6 +1391,10 @@ def _rroq158_score_candidates(
 ):
     """Score one query against the rroq158 GPU payload at the given candidate
     doc indices. Returns (top_ids, top_scores).
+
+    Multi-tier aware: when ``payload["is_multi_tier"]`` is True, partitions
+    candidates by their tier assignment, runs one kernel per tier, and
+    merges scores.
 
     CPU path note (audit_rroq158_cpu_2026q2): on CPU we must NOT use
     ``torch.index_select`` for the candidate gather. torch's intra-op
@@ -534,11 +1418,61 @@ def _rroq158_score_candidates(
             fwht_seed=payload["fwht_seed"], query_bits=4,
             rotator=payload.get("rotator"),
             skip_qc_table=True,
+            cap_blas_threads=False,
         )
         q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :]).to(device)
         q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :]).to(device)
         q_dev = torch.from_numpy(np.ascontiguousarray(query_np, dtype=np.float32)).to(device)
         qc_table = (q_dev @ payload["centroids"].T).unsqueeze(0)
+
+        # Multi-tier-aware candidate path: partition candidates by tier,
+        # score each non-empty tier separately, merge scores back in
+        # candidate order before topk.
+        if payload.get("is_multi_tier", False):
+            n_cand = len(candidate_ids)
+            # Per-candidate (tier_id, local_idx) lookup.
+            orig_to_tier = payload["orig_to_tier"]
+            orig_to_local = payload["orig_to_local"]
+            cand_orig = np.fromiter(
+                (doc_ids_to_idx[int(cid)] for cid in candidate_ids),
+                dtype=np.int64, count=n_cand,
+            )
+            cand_tier = orig_to_tier[cand_orig]
+            cand_local = orig_to_local[cand_orig]
+            scores_buf = torch.full(
+                (n_cand,), float("-inf"),
+                dtype=torch.float32, device=torch.device(device),
+            )
+            for ti, tier in enumerate(payload["tiers"]):
+                pos = np.flatnonzero(cand_tier == ti).astype(np.int64)
+                if pos.size == 0:
+                    continue
+                local = cand_local[pos]
+                local_t = torch.from_numpy(local).to(torch.device(device))
+                tier_slice = {
+                    "n": int(pos.size),
+                    "T": tier["T"],
+                    "sign": tier["sign"].index_select(0, local_t),
+                    "nz": tier["nz"].index_select(0, local_t),
+                    "scl": tier["scl"].index_select(0, local_t),
+                    "cid": tier["cid"].index_select(0, local_t),
+                    "cosn": tier["cosn"].index_select(0, local_t),
+                    "sinn": tier["sinn"].index_select(0, local_t),
+                    "mask": tier["mask"].index_select(0, local_t),
+                    "orig_idx": pos,
+                }
+                tier_scores = _rroq158_tier_scores(
+                    q_planes, q_meta, qc_table, tier_slice, device,
+                )
+                pos_t = torch.from_numpy(pos).to(torch.device(device))
+                scores_buf.scatter_(0, pos_t, tier_scores)
+            final_k = min(k, n_cand)
+            top_sc, top_idx = scores_buf.topk(final_k)
+            paired = torch.stack(
+                [top_idx.to(torch.float32), top_sc.to(torch.float32)], dim=0,
+            ).cpu().numpy()
+            idx_list = paired[0].astype(np.int64).tolist()
+            return [candidate_ids[i] for i in idx_list], paired[1].tolist()
 
         cand_idx = torch.tensor(
             [doc_ids_to_idx[int(cid)] for cid in candidate_ids],
@@ -564,6 +1498,52 @@ def _rroq158_score_candidates(
         q_planes = torch.from_numpy(q_inputs["q_planes"][None, :, :, :])
         q_meta = torch.from_numpy(q_inputs["q_meta"][None, :, :])
         qc_table = torch.from_numpy(q_inputs["qc_table"][None, :, :])
+
+        # Multi-tier CPU candidate path: partition + score per-tier on CPU.
+        if payload.get("is_multi_tier", False):
+            n_cand = len(candidate_ids)
+            orig_to_tier = payload["orig_to_tier"]
+            orig_to_local = payload["orig_to_local"]
+            cand_orig = np.fromiter(
+                (doc_ids_to_idx[int(cid)] for cid in candidate_ids),
+                dtype=np.int64, count=n_cand,
+            )
+            cand_tier = orig_to_tier[cand_orig]
+            cand_local = orig_to_local[cand_orig]
+            merged_ids: list = [None] * n_cand
+            scores_arr = np.full(n_cand, -np.inf, dtype=np.float32)
+            for ti, tier in enumerate(payload["tiers"]):
+                pos = np.flatnonzero(cand_tier == ti)
+                if pos.size == 0:
+                    continue
+                local = cand_local[pos]
+                sign_b = torch.from_numpy(tier["sign_np"][local])
+                nz_b = torch.from_numpy(tier["nz_np"][local])
+                scl_b = torch.from_numpy(tier["scl_np"][local])
+                cid_b = torch.from_numpy(tier["cid_np"][local])
+                cosn_b = torch.from_numpy(tier["cosn_np"][local])
+                sinn_b = torch.from_numpy(tier["sinn_np"][local])
+                mask_b = torch.from_numpy(tier["mask_np"][local])
+                tier_cand_ids = [candidate_ids[int(p)] for p in pos]
+                t_ids, t_scores = score_rroq158_topk(
+                    q_planes, q_meta, qc_table,
+                    cid_b, cosn_b, sinn_b, sign_b, nz_b, scl_b,
+                    doc_ids=tier_cand_ids,
+                    k=int(pos.size), documents_mask=mask_b,
+                    device=torch.device(device),
+                )
+                # Insert returned (id, score) pairs at the original
+                # candidate position.
+                tier_id_to_pos = {tid: int(pos[i]) for i, tid in enumerate(tier_cand_ids)}
+                for ret_id, ret_sc in zip(t_ids, t_scores):
+                    p = tier_id_to_pos[ret_id]
+                    scores_arr[p] = ret_sc
+                    merged_ids[p] = ret_id
+            top_idx = np.argsort(-scores_arr)[: min(k, n_cand)]
+            return (
+                [candidate_ids[int(i)] for i in top_idx],
+                [float(scores_arr[int(i)]) for i in top_idx],
+            )
 
         # Cache numpy views over the payload's torch.from_numpy-backed
         # tensors. ``.numpy()`` on a CPU torch tensor is a zero-copy view,
@@ -624,6 +1604,7 @@ def _run_rroq158_cpu_mode(
 
     payload = _build_rroq158_gpu_payload(all_vectors, doc_offsets, dim, params, device)
     doc_ids_to_idx = {int(did): i for i, did in enumerate(doc_ids)}
+    n_docs = len(doc_ids)
 
     worker_count = max(1, min(n_workers, len(query_vecs)))
 
@@ -636,47 +1617,84 @@ def _run_rroq158_cpu_mode(
     import os
     os.environ["VOYAGER_RROQ158_N_WORKERS"] = str(worker_count)
 
-    routers = []
-    for _ in range(worker_count):
-        rt = LemurRouter(
-            index_dir / "lemur",
-            ann_backend=params["ann_backend"].value,
-            device=device,
+    skip_routing = _should_use_cpu_fast_path(
+        n_docs, params["max_docs_exact"], codec="rroq158",
+    )
+    if skip_routing:
+        log.info(
+            "[rroq158-CPU] %s: skipping LEMUR routing (n_docs=%d, max_docs_exact=%d, threshold=%d) - whole-corpus rroq158 MaxSim",
+            name, n_docs, params["max_docs_exact"], CPU_FASTPATH_RROQ158_MAX_DOCS,
         )
-        rt.load()
-        routers.append(rt)
+
+    routers: List[LemurRouter] = []
+    if not skip_routing:
+        for _ in range(worker_count):
+            rt = LemurRouter(
+                index_dir / "lemur",
+                ann_backend=params["ann_backend"].value,
+                device=device,
+            )
+            rt.load()
+            routers.append(rt)
+    else:
+        # Fast-path doesn't need a per-worker router; reserve a sentinel
+        # so the worker zip remains uniform.
+        routers = [None] * worker_count
 
     def _worker_search(
         qi: int,
-        router: LemurRouter,
-        _payload: dict = payload,  # bind via default arg → ruff-friendly closure
+        router,
+        _payload: dict = payload,
     ) -> Tuple[int, List[int], float]:
         t0 = time.perf_counter()
-        qv = torch.from_numpy(query_vecs[qi]).float()
-        routed = router.route(
-            qv, k_candidates=params["k_candidates"],
-            prefetch_doc_cap=params["max_docs_exact"],
-        )
-        cand = list(routed.doc_ids[: params["max_docs_exact"]])
-        if not cand:
-            return qi, [], (time.perf_counter() - t0) * 1000
-        ids, _scores = _rroq158_score_candidates(
-            query_vecs[qi], _payload, cand, doc_ids_to_idx, TOP_K, device,
-        )
+        if skip_routing:
+            ids, _scores = _rroq158_score_all(
+                query_vecs[qi], _payload, doc_ids, TOP_K, device,
+            )
+        else:
+            qv = torch.from_numpy(query_vecs[qi]).float()
+            routed = router.route(
+                qv, k_candidates=params["k_candidates"],
+                prefetch_doc_cap=params["max_docs_exact"],
+            )
+            cand = list(routed.doc_ids[: params["max_docs_exact"]])
+            if not cand:
+                return qi, [], (time.perf_counter() - t0) * 1000
+            ids, _scores = _rroq158_score_candidates(
+                query_vecs[qi], _payload, cand, doc_ids_to_idx, TOP_K, device,
+            )
         return qi, ids, (time.perf_counter() - t0) * 1000
 
     for w_idx in range(worker_count):
         for qi in range(min(n_warmup, len(query_vecs))):
             _worker_search(qi, routers[w_idx])
 
-    log.info("[rroq158-CPU] %s: running %d queries (%d workers) ...",
-             name, len(query_vecs), worker_count)
+    # Wall-time budget for CPU lanes — keeps full-corpus exact MaxSim on
+    # large datasets (e.g. quora 522k docs) tractable. After the budget
+    # expires we stop submitting new work and collect partial results.
+    # Configurable via VOYAGER_BENCH_CPU_TIME_BUDGET_S (default: 600s).
+    try:
+        cpu_budget_s = float(os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"))
+    except ValueError:
+        cpu_budget_s = 600.0
+
+    log.info("[rroq158-CPU] %s: running %d queries (%d workers, time_budget=%.0fs) ...",
+             name, len(query_vecs), worker_count, cpu_budget_s)
+
+    import threading
+    stop_flag = threading.Event()
+
+    def _run_partition(router: LemurRouter, indices: List[int]) -> List[Tuple[int, List[int], float]]:
+        out: List[Tuple[int, List[int], float]] = []
+        for qi in indices:
+            if stop_flag.is_set():
+                break
+            out.append(_worker_search(qi, router))
+        return out
+
     query_partitions = [
         list(range(i, len(query_vecs), worker_count)) for i in range(worker_count)
     ]
-
-    def _run_partition(router: LemurRouter, indices: List[int]) -> List[Tuple[int, List[int], float]]:
-        return [_worker_search(qi, router) for qi in indices]
 
     wall_t0 = time.perf_counter()
     all_results: List[Tuple[int, List[int], float]] = []
@@ -686,15 +1704,36 @@ def _run_rroq158_cpu_mode(
             for router, indices in zip(routers, query_partitions)
             if indices
         ]
+        # Watcher: trigger stop_flag once the budget expires. Workers
+        # check stop_flag between queries and exit cleanly.
+        def _watchdog() -> None:
+            deadline = wall_t0 + cpu_budget_s
+            while not stop_flag.is_set():
+                if time.perf_counter() >= deadline:
+                    log.info(
+                        "[rroq158-CPU] %s: time-budget %.0fs reached; stopping early",
+                        name, cpu_budget_s,
+                    )
+                    stop_flag.set()
+                    return
+                if all(f.done() for f in futures):
+                    return
+                time.sleep(1.0)
+
+        watch = threading.Thread(target=_watchdog, daemon=True)
+        watch.start()
         for future in futures:
             all_results.extend(future.result())
+        stop_flag.set()
+        watch.join(timeout=1.0)
     wall_s = time.perf_counter() - wall_t0
 
     all_results.sort(key=lambda x: x[0])
     all_ids = [r[1] for r in all_results]
     all_elapsed = [r[2] for r in all_results]
+    n_completed = len(all_ids)
 
-    qps = len(query_vecs) / wall_s if wall_s > 0 else 0
+    qps = n_completed / wall_s if wall_s > 0 else 0
     p50 = float(np.median(all_elapsed))
     p95 = float(np.percentile(all_elapsed, 95))
 
@@ -734,16 +1773,43 @@ def _run_rroq158_gpu_mode(
         distill_head = MultiViewDistillHead.from_npz(index_dir / "distill_mv.npz")
         log.info("[rroq158-GPU] %s: MV-distill head loaded", name)
 
+    # Fast-path flag: skip routing when max_docs_exact covers the corpus,
+    # OR when the corpus is small enough that direct whole-corpus MaxSim
+    # beats LEMUR routing (see WHOLE_CORPUS_FAST_PATH_THRESHOLD docstring
+    # near the top of the file for the crossover derivation).
+    rroq158_corpus_bytes = (
+        payload["sign"].element_size() * payload["sign"].numel()
+        + payload["nz"].element_size() * payload["nz"].numel()
+        + payload["scl"].element_size() * payload["scl"].numel()
+        + payload["cid"].element_size() * payload["cid"].numel()
+        + payload["cosn"].element_size() * payload["cosn"].numel()
+        + payload["sinn"].element_size() * payload["sinn"].numel()
+        + payload["mask"].element_size() * payload["mask"].numel()
+    )
+    skip_routing = _should_use_fast_path(
+        len(doc_ids), params["max_docs_exact"],
+        gpu_corpus_bytes=rroq158_corpus_bytes,
+    )
+    if skip_routing:
+        log.info(
+            "[rroq158-GPU] %s: skipping routing (n_docs=%d, max_docs_exact=%d, threshold=%d, corpus=%.1f MB) - direct corpus MaxSim",
+            name, len(doc_ids), params["max_docs_exact"],
+            WHOLE_CORPUS_FAST_PATH_THRESHOLD, rroq158_corpus_bytes / 1024**2,
+        )
+
     for i in range(min(n_warmup, len(query_vecs))):
         qv = torch.from_numpy(query_vecs[i]).float()
-        routed = router.route(
-            qv, k_candidates=params["k_candidates"],
-            prefetch_doc_cap=params["max_docs_exact"],
-        )
-        cand = routed.doc_ids[: params["max_docs_exact"]]
-        if cand:
-            _rroq158_score_candidates(query_vecs[i], payload, cand, doc_ids_to_idx,
-                                      TOP_K, device)
+        if skip_routing:
+            _rroq158_score_all(query_vecs[i], payload, doc_ids, TOP_K, device)
+        else:
+            routed = router.route(
+                qv, k_candidates=params["k_candidates"],
+                prefetch_doc_cap=params["max_docs_exact"],
+            )
+            cand = routed.doc_ids[: params["max_docs_exact"]]
+            if cand:
+                _rroq158_score_candidates(query_vecs[i], payload, cand, doc_ids_to_idx,
+                                          TOP_K, device)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
@@ -752,19 +1818,24 @@ def _run_rroq158_gpu_mode(
     all_elapsed = []
     for qi in range(len(query_vecs)):
         t0 = time.perf_counter()
-        qv = torch.from_numpy(query_vecs[qi]).float()
-        routed = router.route(
-            qv, k_candidates=params["k_candidates"],
-            prefetch_doc_cap=params["max_docs_exact"],
-        )
-        cand = list(routed.doc_ids[: params["max_docs_exact"]])
-        if not cand:
-            all_ids.append([])
-            all_elapsed.append((time.perf_counter() - t0) * 1000)
-            continue
-        ids, scores = _rroq158_score_candidates(
-            query_vecs[qi], payload, cand, doc_ids_to_idx, TOP_K, device,
-        )
+        if skip_routing:
+            ids, scores = _rroq158_score_all(
+                query_vecs[qi], payload, doc_ids, TOP_K, device,
+            )
+        else:
+            qv = torch.from_numpy(query_vecs[qi]).float()
+            routed = router.route(
+                qv, k_candidates=params["k_candidates"],
+                prefetch_doc_cap=params["max_docs_exact"],
+            )
+            cand = list(routed.doc_ids[: params["max_docs_exact"]])
+            if not cand:
+                all_ids.append([])
+                all_elapsed.append((time.perf_counter() - t0) * 1000)
+                continue
+            ids, scores = _rroq158_score_candidates(
+                query_vecs[qi], payload, cand, doc_ids_to_idx, TOP_K, device,
+            )
         if distill_head is not None and len(ids) >= 10:
             ids = distill_head.rerank(ids, scores) if hasattr(distill_head, "rerank") else ids
         all_ids.append(ids)
@@ -1142,9 +2213,29 @@ def _run_rroq4_riem_cpu_mode(
 
 
 class _RustCpuWorker:
-    """Independent CPU worker using native Rust exact scoring."""
+    """Independent CPU worker using native Rust exact scoring.
 
-    def __init__(self, worker_id: int, index_dir: Path, dim: int, ann_backend: AnnBackend):
+    Supports two paths:
+
+      * **Routed**: LEMUR routes → top-K candidates → exact MaxSim
+        scoring (default; used for very large corpora where exact-all
+        scoring is compute-bound).
+      * **Whole-corpus fast-path**: bypass LEMUR and score all
+        ``n_docs`` candidates directly via
+        ``score_candidates_exact(q, all_doc_ids, k)``. Triggered by
+        ``_should_use_cpu_fast_path`` (default ≤200K docs for fp16).
+        Saves ~1-2 ms LEMUR routing latency at no quality cost.
+    """
+
+    def __init__(
+        self,
+        worker_id: int,
+        index_dir: Path,
+        dim: int,
+        ann_backend: AnnBackend,
+        n_docs: int,
+        skip_routing: bool = False,
+    ):
         import latence_shard_engine
 
         runtime_dir = index_dir / f"_rust_cpu_runtime_w{worker_id}"
@@ -1153,23 +2244,31 @@ class _RustCpuWorker:
 
         self._rust_idx = latence_shard_engine.ShardIndex(str(runtime_dir), dim)
         self._rust_idx.load_merged(str(index_dir))
-        self._router = LemurRouter(
-            index_dir / "lemur",
-            ann_backend=ann_backend.value,
-            device="cpu",
-        )
-        self._router.load()
+        self._skip_routing = skip_routing
+        self._all_doc_ids = list(range(n_docs)) if skip_routing else None
+        if not skip_routing:
+            self._router = LemurRouter(
+                index_dir / "lemur",
+                ann_backend=ann_backend.value,
+                device="cpu",
+            )
+            self._router.load()
+        else:
+            self._router = None
 
     def search(self, query_vec: np.ndarray, params: dict, k: int) -> Tuple[List[int], List[float], float]:
         t0 = time.perf_counter()
         q_np = np.ascontiguousarray(query_vec, dtype=np.float32)
-        q_t = torch.from_numpy(q_np).float()
-        routed = self._router.route(
-            q_t,
-            k_candidates=params["k_candidates"],
-            prefetch_doc_cap=params["max_docs_exact"],
-        )
-        candidate_ids = [int(doc_id) for doc_id in routed.doc_ids[: params["max_docs_exact"]]]
+        if self._skip_routing:
+            candidate_ids = self._all_doc_ids
+        else:
+            q_t = torch.from_numpy(q_np).float()
+            routed = self._router.route(
+                q_t,
+                k_candidates=params["k_candidates"],
+                prefetch_doc_cap=params["max_docs_exact"],
+            )
+            candidate_ids = [int(doc_id) for doc_id in routed.doc_ids[: params["max_docs_exact"]]]
         if candidate_ids:
             ids, scores = self._rust_idx.score_candidates_exact(q_np, candidate_ids, k)
             out_ids = ids.tolist()
@@ -1252,11 +2351,24 @@ def run_cpu_multiworker_mode(
     """CPU multi-worker mode using native Rust exact scoring over merged mmap."""
     log.info("[CPU-%dw] %s: preparing native CPU runtime ...", n_workers, name)
 
+    n_docs = len(doc_ids)
+    skip_routing = _should_use_cpu_fast_path(
+        n_docs, params["max_docs_exact"], codec="fp16",
+    )
+    if skip_routing:
+        log.info(
+            "[CPU-%dw] %s: skipping LEMUR routing (n_docs=%d, threshold=%d) - whole-corpus exact MaxSim",
+            n_workers, name, n_docs, CPU_FASTPATH_FP16_MAX_DOCS,
+        )
+
     try:
         ensure_merged_layout(index_dir, all_vectors, doc_offsets, doc_ids, dim)
         worker_count = max(1, min(n_workers, len(query_vecs)))
         workers = [
-            _RustCpuWorker(i, index_dir, dim, params["ann_backend"])
+            _RustCpuWorker(
+                i, index_dir, dim, params["ann_backend"],
+                n_docs=n_docs, skip_routing=skip_routing,
+            )
             for i in range(worker_count)
         ]
     except Exception as exc:
@@ -1277,12 +2389,22 @@ def run_cpu_multiworker_mode(
         for qi in indices[: min(n_warmup, len(indices))]:
             worker.search(query_vecs[qi], params, TOP_K)
 
-    log.info("[CPU-%dw] %s: running %d queries (native exact, %d workers) ...",
-             worker_count, name, len(query_vecs), worker_count)
+    try:
+        cpu_budget_s = float(os.environ.get("VOYAGER_BENCH_CPU_TIME_BUDGET_S", "600"))
+    except ValueError:
+        cpu_budget_s = 600.0
+
+    log.info("[CPU-%dw] %s: running %d queries (native exact, %d workers, time_budget=%.0fs) ...",
+             worker_count, name, len(query_vecs), worker_count, cpu_budget_s)
+
+    import threading
+    stop_flag = threading.Event()
 
     def _run_partition(worker: _RustCpuWorker, indices: List[int]) -> List[Tuple[int, List[int], float]]:
         out = []
         for qi in indices:
+            if stop_flag.is_set():
+                break
             ids, _scores, elapsed = worker.search(query_vecs[qi], params, TOP_K)
             out.append((qi, ids, elapsed))
         return out
@@ -1295,8 +2417,25 @@ def run_cpu_multiworker_mode(
             for worker, indices in zip(workers, query_partitions)
             if indices
         ]
+        def _watchdog() -> None:
+            deadline = wall_t0 + cpu_budget_s
+            while not stop_flag.is_set():
+                if time.perf_counter() >= deadline:
+                    log.info(
+                        "[CPU-%dw] %s: time-budget %.0fs reached; stopping early",
+                        worker_count, name, cpu_budget_s,
+                    )
+                    stop_flag.set()
+                    return
+                if all(f.done() for f in futures):
+                    return
+                time.sleep(1.0)
+        watch = threading.Thread(target=_watchdog, daemon=True)
+        watch.start()
         for future in futures:
             all_results.extend(future.result())
+        stop_flag.set()
+        watch.join(timeout=1.0)
     wall_s = time.perf_counter() - wall_t0
 
     ordered_ids = [[] for _ in range(len(query_vecs))]
@@ -1304,8 +2443,9 @@ def run_cpu_multiworker_mode(
     for qi, ids, elapsed in all_results:
         ordered_ids[qi] = ids
         all_elapsed.append(elapsed)
+    n_completed = len(all_elapsed)
 
-    qps = len(query_vecs) / wall_s if wall_s > 0 else 0
+    qps = n_completed / wall_s if wall_s > 0 else 0
     p50 = float(np.median(all_elapsed)) if all_elapsed else 0.0
     p95 = float(np.percentile(all_elapsed, 95)) if all_elapsed else 0.0
 

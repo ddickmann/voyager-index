@@ -1,0 +1,86 @@
+{
+  "datasets": [
+    "webis-touche2020"
+  ],
+  "libraries": [
+    "voyager_fp16",
+    "voyager_rroq158_gs128"
+  ],
+  "summary": {
+    "voyager_fp16_gpu": {
+      "datasets": [
+        "arguana",
+        "fiqa",
+        "nfcorpus",
+        "quora",
+        "scidocs",
+        "scifact",
+        "trec-covid",
+        "webis-touche2020"
+      ],
+      "n_datasets": 8,
+      "ndcg_at_10_mean": 0.5173154222334881,
+      "qps_mean": 650.4900522381516,
+      "qps_geomean": 446.73951897406226,
+      "indexing_time_s_total": 1179.9045882225037
+    },
+    "voyager_fp16_cpu": {
+      "datasets": [
+        "arguana",
+        "fiqa",
+        "nfcorpus",
+        "quora",
+        "scidocs",
+        "scifact",
+        "trec-covid",
+        "webis-touche2020"
+      ],
+      "n_datasets": 8,
+      "ndcg_at_10_mean": 0.5127369621871322,
+      "qps_mean": 18.63459191362484,
+      "qps_geomean": 11.28271220210492,
+      "indexing_time_s_total": 0.0
+    },
+    "voyager_rroq158_gs128_gpu": {
+      "datasets": [
+        "arguana",
+        "fiqa",
+        "nfcorpus",
+        "quora",
+        "scidocs",
+        "scifact",
+        "trec-covid",
+        "webis-touche2020"
+      ],
+      "n_datasets": 8,
+      "ndcg_at_10_mean": 0.49843156556376533,
+      "qps_mean": 445.79119224018143,
+      "qps_geomean": 294.4088076149292,
+      "indexing_time_s_total": 0.0
+    },
+    "voyager_rroq158_gs128_cpu": {
+      "datasets": [
+        "arguana",
+        "fiqa",
+        "nfcorpus",
+        "quora",
+        "scidocs",
+        "scifact",
+        "trec-covid",
+        "webis-touche2020"
+      ],
+      "n_datasets": 8,
+      "ndcg_at_10_mean": 0.49819478301799985,
+      "qps_mean": 27.478388827974143,
+      "qps_geomean": 13.643503605205224,
+      "indexing_time_s_total": 0.0
+    }
+  },
+  "env": {
+    "torch": "2.9.0+cu128",
+    "cuda_available": true,
+    "cuda_device": "NVIDIA H100 80GB HBM3",
+    "voyager_index_version": "0.1.6",
+    "fast_plaid_version": null
+  }
+}
