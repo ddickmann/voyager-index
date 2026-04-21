@@ -1,24 +1,23 @@
 # voyager-index vs FastPlaid — Competitive Benchmark (BEIR-8, H100)
 
-**TL;DR — `voyager-index` outperforms `fast-plaid` on QPS across every BEIR-8 dataset** at the same H100, same per-token embeddings, no LEMUR routing on the fast lane (whole-corpus exact MaxSim). With the 6.4× compressed `rroq158_gs128` codec we still beat FastPlaid on 7 of 8 datasets while shipping a 6.4× smaller VRAM footprint per token.
+> **Status (2026-04-21):** the v5 numbers in `reports/fast_plaid_head_to_head/results_v5.jsonl` were measured on the **test-qrels-relevant subset** of the BEIR corpora (only `quora` is the full 522 931-doc corpus), not on the same full corpora that FastPlaid benchmarked. They are therefore **NOT** apples-to-apples vs FastPlaid's published row. A full-corpus re-prep + re-bench is in flight; this page will be replaced with the apples-to-apples table once that completes. The only currently-honest QPS comparison cell is **`quora`**: voyager `fp16/gpu` 345.8 QPS vs FastPlaid published 281.5 QPS = **1.2×**.
 
-| Dataset | Corpus size | **voyager `fp16/gpu`** | **voyager `rroq158/gpu`** (gs=128) | FastPlaid `gpu` (published, H100) | Speed-up `fp16` vs FastPlaid | Speed-up `rroq158` vs FastPlaid |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| arguana | 8 674 | **1 770.6** | **1 244.8** | 155.25 | **11.4×** | **8.0×** |
-| fiqa | 57 638 | **1 860.7** | **952.8** | 146.62 | **12.7×** | **6.5×** |
-| nfcorpus | 3 633 | **2 072.3** | **998.3** | 243.42 | **8.5×** | **4.1×** |
-| quora | 522 931 | **345.8** | **298.3** | 281.51 | **1.2×** | **1.1×** |
-| scidocs | 25 657 | **1 705.0** | **853.1** | 157.47 | **10.8×** | **5.4×** |
-| scifact | 5 183 | **3 055.0** | 84.0 † | 190.08 | **16.1×** | 0.4× † |
-| trec-covid | 171 332 | **956.8** | **600.7** | 54.11 | **17.7×** | **11.1×** |
-| webis-touche2020 | 382 545 | **3 004.7** | **1 769.6** | 70.15 | **42.8×** | **25.2×** |
-| **Geomean (8 datasets)** | — | **1 558.8** | **614.6** | 137.7 | **11.3×** | **4.5×** |
+| Dataset | Indexed corpus (this v5 run) | **Full BEIR corpus (FastPlaid bench)** | apples-to-apples? |
+| --- | ---: | ---: | --- |
+| arguana | 1 400 | 8 674 | no — re-bench in flight |
+| fiqa | 1 705 | 57 638 | no — re-bench in flight |
+| nfcorpus | 3 127 | 3 633 | no — re-bench in flight |
+| **quora** | **522 930** | **522 931** | **yes — 345.8 vs 281.5 QPS = 1.2×** |
+| scidocs | 4 019 | 25 657 | no — re-bench in flight |
+| scifact | 282 | 5 183 | no — re-bench in flight |
+| trec-covid | 17 536 | 171 332 | no — re-bench in flight |
+| webis-touche2020 | 919 | 382 545 | no — re-bench in flight |
 
-† `scifact` `rroq158/gpu` is the only outlier — see [Caveats](#caveats). At this corpus size (5 183 docs) the rroq158 multi-tier dispatch tax dominates and we deliberately do **not** quantize-route in that regime; in practice the production router would dispatch to the `fp16/gpu` lane on corpora this small.
+The fp16 vs rroq158 quality + speedup comparison **within voyager** (below) is unaffected — same model, same engine, same corpus, only the codec differs.
 
 QPS = single-client, sequential queries (matches FastPlaid's published methodology). All voyager numbers measured on the same H100 below, **2026-04-21**, with `n_eval=500` queries per dataset (statistically equivalent to full BEIR query set within ±2 % QPS noise floor).
 
-> **Why no `fast-plaid` re-run on this box?** FastPlaid's published numbers in [their README](https://github.com/lightonai/fast-plaid#-benchmarks) are also on H100, so we cite them directly rather than re-time the same engine to keep the bench reproducible from their tag.
+> **Why no `fast-plaid` re-run on this box?** FastPlaid's published numbers in [their README](https://github.com/lightonai/fast-plaid#-benchmarks) are also on H100, so we cite them directly rather than re-time the same engine to keep the bench reproducible from their tag. **However, this also means the corpus cardinalities must match for the QPS column to be comparable** — the in-flight re-bench fixes this.
 
 ---
 
