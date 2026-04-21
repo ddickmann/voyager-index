@@ -6,6 +6,76 @@ reads in release order again.
 
 ## Unreleased
 
+## 0.1.7 — Optimized CUDA MaxSim + RROQ158 kernel + rename to `colsearch` + bugfixes
+
+This release ships three things at once:
+
+1. **Optimized CUDA kernels for MaxSim and RROQ158 on H100.** The fused
+   single-pass `mma.sync.b1.b1.s32.and.popc` kernel for RROQ158, the
+   multi-tier (32/64/128/256/512) padded MaxSim dispatcher, autotune-aware
+   warmup at production batch sizes, the int64-pointer fix in the Triton
+   MaxSim kernel, the GPU full-corpus fast-path that bypasses LEMUR routing
+   when the preloaded corpus already pays the VRAM cost, and persistent
+   query/corpus scratch buffers — together these unlock **3.12× geomean
+   QPS over FastPlaid on the BEIR-8 GPU lane** (446.7 vs 143.2 QPS at fp16,
+   294.4 QPS at `rroq158_gs128`). See
+   [`benchmarks/competitive_benchmark.md`](benchmarks/competitive_benchmark.md)
+   for the full table, methodology, and caveats.
+2. **Rename from `voyager-index` to `colsearch`.** PyPI package is now
+   `colsearch` (`pip install colsearch`), the GitHub repository is
+   `ddickmann/colsearch` (the old `ddickmann/voyager-index` URL
+   auto-redirects), and the on-disk Python package is `colsearch` with an
+   importable `colsearch-server` entry point. The project is repositioned
+   as the **production category for late-interaction retrieval** —
+   single-node ColBERT/ColPali at production quality, with a 1.58-bit
+   kernel at 40 B/token.
+3. **Bugfixes.** Disk-tight bench cleanup (`fast_plaid_head_to_head.py`
+   now wipes per-dataset shard caches between runs; `beir_benchmark.py`
+   uses `os.rename` and `os.link` instead of `shutil.copytree` for index
+   placement and LEMUR-artifact reuse — saves ~100 GB of peak disk on the
+   BEIR-8 sweep), CPU whole-corpus fast-path that bypasses the per-query
+   522 k-row numpy fancy-index gather (which previously had `quora
+   rroq158/cpu` allocating ~5 GB / query and hanging for 90+ minutes), and
+   the rroq158 hot-path alloc-churn fix that eliminated a 1.2 GB / call
+   churn forcing a CUDA allocator GC every ~200 queries.
+
+### Compatibility (rename)
+
+- `pip install voyager-index` users: install `colsearch` instead. The
+  legacy distribution will not be republished after `0.1.6`.
+- `import voyager_index` keeps working in `0.1.7` via a thin shim that
+  emits a `DeprecationWarning` on first import and then aliases every
+  `voyager_index.X.Y` submodule to the canonical `colsearch.X.Y` module
+  in `sys.modules` (so `isinstance` and enum identity continue to hold).
+  The shim will be removed in `0.2.0`.
+- The `voyager-index-server` console script is retained as an alias for
+  `colsearch-server` for the `0.1.x` cycle and is removed in `0.2.0`.
+- The `VOYAGER_INDEX_PATH` environment variable is still honoured by the
+  reference server but emits a one-line deprecation warning. Migrate to
+  `COLSEARCH_INDEX_PATH`.
+- `VOYAGER_BENCH_CPU_TIME_BUDGET_S` is honoured but `COLSEARCH_BENCH_CPU_TIME_BUDGET_S`
+  is the new canonical name (the bench reads the colsearch name first and
+  falls back to the legacy name).
+- Other `VOYAGER_*` env vars (e.g. `VOYAGER_RROQ158_N_THREADS`,
+  `VOYAGER_RROQ158_USE_B1_FUSED`) are unchanged in `0.1.7` to avoid breaking
+  ops scripts. They will be renamed to the `COLSEARCH_*` namespace in a
+  future release with a transitional fallback.
+- Docker image: `latence/colsearch` (was `latence/voyager-zero`); the
+  reference Dockerfile builds `colsearch:latest`.
+- Kubernetes manifests under `deploy/k8s/` ship the new `colsearch`
+  namespace and labels — adjust your overlays accordingly.
+
+### Provenance
+
+- Historical artefacts under `reports/`, `validation-reports/`, `research/`,
+  `notebooks/`, and `benchmarks/_smoke_*.py` / `benchmarks/_diag_*.py`
+  retain their original `voyager-index 0.1.x` labels and SHAs. Rewriting
+  them retroactively would falsify the audit trail.
+- Run identifiers in `reports/fast_plaid_head_to_head/results_v7.jsonl`
+  (e.g. `voyager_fp16`, `voyager_rroq158_gs128`) and the corresponding
+  CLI flags in `benchmarks/fast_plaid_head_to_head.py` are kept stable so
+  historical JSONL stays readable; they map 1:1 to the colsearch lanes.
+
 ## 0.1.6 — RROQ158 SOTA Default at `group_size=128`
 
 This release promotes the dim-aware `Rroq158Config(group_size=128)` lane to the

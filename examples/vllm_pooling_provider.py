@@ -2,7 +2,7 @@
 Build a vLLM pooling request for a supported multimodal plugin.
 """
 
-from voyager_index import DEFAULT_MULTIMODAL_MODEL_SPEC, VllmPoolingProvider
+from colsearch import DEFAULT_MULTIMODAL_MODEL_SPEC, VllmPoolingProvider
 
 
 def main() -> None:

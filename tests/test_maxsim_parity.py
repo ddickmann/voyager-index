@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from voyager_index import fast_colbert_scores
+from colsearch import fast_colbert_scores
 
 
 def _reference_scores(

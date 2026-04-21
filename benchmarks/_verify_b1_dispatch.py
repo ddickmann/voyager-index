@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("VOYAGER_RROQ158_USE_B1_FUSED", "1")
 
 import torch
-from voyager_index._internal.kernels import cuda_b1_rroq158
+from colsearch._internal.kernels import cuda_b1_rroq158
 
 print("env =", os.environ.get("VOYAGER_RROQ158_USE_B1_FUSED"))
 print("is_available =", cuda_b1_rroq158.is_available())

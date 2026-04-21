@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import time
 
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig, FastWalshHadamard
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig, FastWalshHadamard
 
 def benchmark_rotation_speed():
     """Benchmark FWHT rotation speed. Target: <10μs for 1536-dim."""

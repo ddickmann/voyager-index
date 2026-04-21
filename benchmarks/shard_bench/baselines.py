@@ -18,8 +18,8 @@ from typing import List, Tuple
 import numpy as np
 import torch
 
-from voyager_index._internal.inference.shard_engine.scorer import brute_force_maxsim, score_and_topk
-from voyager_index._internal.inference.shard_engine.profiler import Timer, QueryProfile
+from colsearch._internal.inference.shard_engine.scorer import brute_force_maxsim, score_and_topk
+from colsearch._internal.inference.shard_engine.profiler import Timer, QueryProfile
 
 logger = logging.getLogger(__name__)
 

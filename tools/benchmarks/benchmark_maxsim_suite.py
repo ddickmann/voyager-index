@@ -3,9 +3,9 @@ import numpy as np
 import torch
 import time
 import pandas as pd
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
-from voyager_index._internal.kernels.maxsim import fast_colbert_scores
-from voyager_index._internal.kernels.triton_roq import roq_maxsim_1bit, roq_maxsim_8bit, roq_maxsim_4bit, roq_maxsim_2bit
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
+from colsearch._internal.kernels.maxsim import fast_colbert_scores
+from colsearch._internal.kernels.triton_roq import roq_maxsim_1bit, roq_maxsim_8bit, roq_maxsim_4bit, roq_maxsim_2bit
 
 # Try importing Rust
 try:

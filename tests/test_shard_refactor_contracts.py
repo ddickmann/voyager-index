@@ -6,21 +6,21 @@ from pathlib import Path
 import numpy as np
 from fastapi.testclient import TestClient
 
-from voyager_index._internal.inference.shard_engine import (
+from colsearch._internal.inference.shard_engine import (
     BuildConfig,
     SearchConfig,
 )
-from voyager_index._internal.inference.shard_engine import (
+from colsearch._internal.inference.shard_engine import (
     ShardSegmentManager as PackageShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.builder import _index_dir
-from voyager_index._internal.inference.shard_engine.config import AnnBackend
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.builder import _index_dir
+from colsearch._internal.inference.shard_engine.config import AnnBackend
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.inference.shard_engine.wal import WalOp, WalReader, WalWriter
+from colsearch._internal.server.main import create_app
 
 
 def _make_corpus(
@@ -37,7 +37,7 @@ def _make_corpus(
 def _build_manager(path: Path, *, dim: int = 16) -> ShardSegmentManager:
     # 12-doc fixture is far too small for the new RROQ158 default (K=8192);
     # explicitly pin to FP16 so this contract test exercises the legacy lane.
-    from voyager_index._internal.inference.shard_engine.config import Compression
+    from colsearch._internal.inference.shard_engine.config import Compression
 
     config = ShardEngineConfig(
         n_shards=3,

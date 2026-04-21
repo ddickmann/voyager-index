@@ -1,7 +1,7 @@
 
 import numpy as np
 import torch
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
 
 def benchmark_colbert_roq():
     # Setup

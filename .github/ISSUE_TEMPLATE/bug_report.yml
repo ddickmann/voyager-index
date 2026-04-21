@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in voyager-index
+description: Report a bug in colsearch
 labels: ["bug"]
 body:
   - type: markdown
@@ -19,7 +19,7 @@ body:
       label: Steps to reproduce
       description: Minimal code or steps to reproduce the behavior.
       placeholder: |
-        1. pip install voyager-index
+        1. pip install colsearch
         2. Run `python -c "..."`
         3. Observe error
     validations:
@@ -46,13 +46,13 @@ body:
         Please provide the following:
         - OS and version
         - Python version
-        - voyager-index version (`python -c "import voyager_index; print(voyager_index.__version__)"`)
+        - colsearch version (`python -c "import colsearch; print(colsearch.__version__)"`)
         - PyTorch version (if relevant)
         - Whether optional packages are installed (`latence_shard_engine`, `latence_solver`, `latence`)
       placeholder: |
         OS: Ubuntu 22.04
         Python: 3.11.10
-        voyager-index: 0.1.6
+        colsearch: 0.1.7
         torch: 2.9.1 (CPU)
         Optional packages: latence_shard_engine, latence_solver
     validations:

@@ -3,15 +3,15 @@
 ## Recommended Extras
 
 ```bash
-pip install "voyager-index[full]"
-pip install "voyager-index[full,gpu]"
-pip install "voyager-index[shard]"
-pip install "voyager-index[shard,shard-native]"
-pip install "voyager-index[shard,gpu]"
-pip install "voyager-index[server,shard]"
-pip install "voyager-index[server,shard,solver]"
-pip install "voyager-index[server,shard,native]"
-pip install "voyager-index[server,shard,latence-graph]"
+pip install "colsearch[full]"
+pip install "colsearch[full,gpu]"
+pip install "colsearch[shard]"
+pip install "colsearch[shard,shard-native]"
+pip install "colsearch[shard,gpu]"
+pip install "colsearch[server,shard]"
+pip install "colsearch[server,shard,solver]"
+pip install "colsearch[server,shard,native]"
+pip install "colsearch[server,shard,latence-graph]"
 ```
 
 What they mean:
@@ -29,16 +29,16 @@ What they mean:
 
 | Goal | Install |
 |---|---|
-| Full public CPU surface | `pip install "voyager-index[full]"` |
-| Full public surface + Triton GPU | `pip install "voyager-index[full,gpu]"` |
-| Local shard retrieval on CPU | `pip install "voyager-index[shard]"` |
-| Local shard retrieval + Rust CPU fast-path | `pip install "voyager-index[shard,shard-native]"` |
-| Shard retrieval with Triton MaxSim | `pip install "voyager-index[shard,gpu]"` |
-| Reference API on CPU | `pip install "voyager-index[server,shard]"` |
-| Reference API + solver refinement | `pip install "voyager-index[server,shard,solver]"` |
-| Reference API + both public native wheels | `pip install "voyager-index[server,shard,native]"` |
-| Reference API + optional Latence graph lane | `pip install "voyager-index[server,shard,latence-graph]"` |
-| Reference API + solver + optional graph lane | `pip install "voyager-index[server,shard,native,latence-graph]"` |
+| Full public CPU surface | `pip install "colsearch[full]"` |
+| Full public surface + Triton GPU | `pip install "colsearch[full,gpu]"` |
+| Local shard retrieval on CPU | `pip install "colsearch[shard]"` |
+| Local shard retrieval + Rust CPU fast-path | `pip install "colsearch[shard,shard-native]"` |
+| Shard retrieval with Triton MaxSim | `pip install "colsearch[shard,gpu]"` |
+| Reference API on CPU | `pip install "colsearch[server,shard]"` |
+| Reference API + solver refinement | `pip install "colsearch[server,shard,solver]"` |
+| Reference API + both public native wheels | `pip install "colsearch[server,shard,native]"` |
+| Reference API + optional Latence graph lane | `pip install "colsearch[server,shard,latence-graph]"` |
+| Reference API + solver + optional graph lane | `pip install "colsearch[server,shard,native,latence-graph]"` |
 
 ## From Source
 
@@ -46,8 +46,8 @@ Requires Python 3.10+ and a Rust toolchain only if you want to build the public
 native wheels from source.
 
 ```bash
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
+git clone https://github.com/ddickmann/colsearch.git
+cd colsearch
 bash scripts/install_from_source.sh --cpu
 ```
 
@@ -69,11 +69,11 @@ Published prebuilt native wheels target:
 On other platforms, keep the same extras and build the native packages from
 source with a Rust toolchain.
 
-The optional premium graph lane is Python-only from the `voyager-index` side:
+The optional premium graph lane is Python-only from the `colsearch` side:
 
 | Package | Purpose |
 |---|---|
-| `latence` via `voyager-index[latence-graph]` | LatenceAI Dataset Intelligence and graph sidecar integration |
+| `latence` via `colsearch[latence-graph]` | LatenceAI Dataset Intelligence and graph sidecar integration |
 
 If the graph dependency is missing or unavailable, the runtime falls back to the
 OSS retrieval path and reports the graph lane as unavailable or skipped.
@@ -88,9 +88,9 @@ python -m pip install ./src/kernels/knapsack_solver
 ## Verify
 
 ```python
-import voyager_index
-from voyager_index import Index, encode_vector_payload
+import colsearch
+from colsearch import Index, encode_vector_payload
 
-print(voyager_index.__version__)
+print(colsearch.__version__)
 print(Index, encode_vector_payload)
 ```

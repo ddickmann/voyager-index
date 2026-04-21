@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from voyager_index._internal.inference.index_core.hybrid_manager import HybridSearchManager
-from voyager_index._internal.inference.search_pipeline import SearchPipeline
+from colsearch._internal.inference.index_core.hybrid_manager import HybridSearchManager
+from colsearch._internal.inference.search_pipeline import SearchPipeline
 
 
 def _build_pipeline(tmp_path: Path) -> SearchPipeline:

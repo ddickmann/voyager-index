@@ -1,3 +1,3 @@
 """
-Runnable OSS examples for voyager-index.
+Runnable OSS examples for colsearch.
 """

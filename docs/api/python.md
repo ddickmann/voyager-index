@@ -12,7 +12,7 @@ The optional Latence graph lane is not exposed through `Index.search()` on local
 shard collections. The programmatic graph-aware surface today is
 `SearchPipeline`, and the HTTP surface is the reference API.
 
-## `voyager_index.Index`
+## `colsearch.Index`
 
 Primary local interface for creating, mutating, and querying indexes.
 
@@ -99,7 +99,7 @@ These keyword arguments are passed through when `engine="shard"`:
 ### Example
 
 ```python
-from voyager_index import Index
+from colsearch import Index
 
 idx = Index(
     "my-index",
@@ -113,12 +113,12 @@ idx = Index(
 )
 ```
 
-## `voyager_index.IndexBuilder`
+## `colsearch.IndexBuilder`
 
 Fluent builder for the same surface.
 
 ```python
-from voyager_index import IndexBuilder
+from colsearch import IndexBuilder
 
 idx = (
     IndexBuilder("my-index", dim=128)
@@ -151,7 +151,7 @@ idx = (
 Use these helpers for the preferred HTTP wire format:
 
 ```python
-from voyager_index import VectorPayload, decode_payload, encode_roq_payload, encode_vector_payload
+from colsearch import VectorPayload, decode_payload, encode_roq_payload, encode_vector_payload
 ```
 
 | Helper | Meaning |
@@ -163,7 +163,7 @@ from voyager_index import VectorPayload, decode_payload, encode_roq_payload, enc
 
 ## Data Classes
 
-### `voyager_index.SearchResult`
+### `colsearch.SearchResult`
 
 ```python
 @dataclass
@@ -175,7 +175,7 @@ class SearchResult:
     matched_tokens: Optional[List[int]] = None
 ```
 
-### `voyager_index.ScrollPage`
+### `colsearch.ScrollPage`
 
 ```python
 @dataclass
@@ -184,7 +184,7 @@ class ScrollPage:
     next_offset: Optional[int] = None
 ```
 
-### `voyager_index.IndexStats`
+### `colsearch.IndexStats`
 
 ```python
 @dataclass
@@ -198,7 +198,7 @@ class IndexStats:
 
 ## Search And Config Exports
 
-### `voyager_index.BM25Config`
+### `colsearch.BM25Config`
 
 ```python
 @dataclass
@@ -208,7 +208,7 @@ class BM25Config:
     epsilon: float = 0.25
 ```
 
-### `voyager_index.FusionConfig`
+### `colsearch.FusionConfig`
 
 ```python
 @dataclass
@@ -220,11 +220,11 @@ class FusionConfig:
     min_score: float = 0.0
 ```
 
-### `voyager_index.IndexConfig`
+### `colsearch.IndexConfig`
 
 Higher-level configuration surface used by package helpers.
 
-### `voyager_index.Neo4jConfig`
+### `colsearch.Neo4jConfig`
 
 ```python
 @dataclass
@@ -240,7 +240,7 @@ class Neo4jConfig:
 `Neo4jConfig` is a legacy graph-adjacent config surface. It is not the shipped
 Latence graph sidecar product lane documented elsewhere in this repo.
 
-### `voyager_index.SearchPipeline`
+### `colsearch.SearchPipeline`
 
 Programmatic dense + BM25 retrieval surface.
 
@@ -257,7 +257,7 @@ Example:
 ```python
 import numpy as np
 
-from voyager_index import SearchPipeline
+from colsearch import SearchPipeline
 
 pipeline = SearchPipeline("graph-demo", dim=128, use_roq=False, on_disk=False)
 query = np.random.default_rng(7).normal(size=(128,)).astype("float32")
@@ -287,21 +287,21 @@ Behavioral notes:
 - shard HTTP search remains vector-only, so use `query_payload` rather than `query_text` to steer graph policy there
 - graph candidates are merged additively after first-stage retrieval
 
-### `voyager_index.ColbertIndex`
+### `colsearch.ColbertIndex`
 
 Higher-level late-interaction text helper exported by the package.
 
-### `voyager_index.ColPaliEngine`
+### `colsearch.ColPaliEngine`
 
 Multimodal retrieval engine for ColPali-family embeddings.
 
-### `voyager_index.MultiModalEngine`
+### `colsearch.MultiModalEngine`
 
 Combined multimodal retrieval surface.
 
 ## Multimodal And Preprocessing Exports
 
-### `voyager_index.MultimodalModelSpec`
+### `colsearch.MultimodalModelSpec`
 
 ```python
 @dataclass(frozen=True)
@@ -315,15 +315,15 @@ class MultimodalModelSpec:
     serve_command: str
 ```
 
-### `voyager_index.VllmPoolingProvider`
+### `colsearch.VllmPoolingProvider`
 
 Shared vLLM-compatible embedding provider for multimodal flows.
 
-### `voyager_index.enumerate_renderable_documents`
+### `colsearch.enumerate_renderable_documents`
 
 Discovers supported source documents under a directory tree.
 
-### `voyager_index.render_documents`
+### `colsearch.render_documents`
 
 Renders those documents into page-level assets for embedding and indexing.
 
@@ -331,18 +331,18 @@ Renders those documents into page-level assets for embedding and indexing.
 
 All GPU kernels require the `gpu` extra and are optional.
 
-### `voyager_index.fast_colbert_scores`
+### `colsearch.fast_colbert_scores`
 
 Exact MaxSim late-interaction scoring.
 
-### `voyager_index.roq_maxsim_1bit`
-### `voyager_index.roq_maxsim_2bit`
-### `voyager_index.roq_maxsim_4bit`
-### `voyager_index.roq_maxsim_8bit`
+### `colsearch.roq_maxsim_1bit`
+### `colsearch.roq_maxsim_2bit`
+### `colsearch.roq_maxsim_4bit`
+### `colsearch.roq_maxsim_8bit`
 
 ROQ scoring kernels exported through the public package.
 
-### `voyager_index.TRITON_AVAILABLE`
+### `colsearch.TRITON_AVAILABLE`
 
 Boolean flag indicating whether Triton is available.
 
@@ -351,7 +351,7 @@ Boolean flag indicating whether Triton is available.
 The public server module is:
 
 ```python
-from voyager_index.server import app, create_app, main
+from colsearch.server import app, create_app, main
 ```
 
-Use `voyager-index-server` for the packaged CLI entry point.
+Use `colsearch-server` for the packaged CLI entry point.

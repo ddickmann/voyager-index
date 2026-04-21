@@ -7,7 +7,7 @@ on:
 permissions: {}
 
 env:
-  VOYAGER_INDEX_PATH: ${{ github.workspace }}/.ci-data/voyager-index
+  COLSEARCH_INDEX_PATH: ${{ github.workspace }}/.ci-data/colsearch
 
 jobs:
   lint:
@@ -142,17 +142,20 @@ jobs:
           python -c "
           import pathlib, tarfile, zipfile
           dist = pathlib.Path('dist')
-          wheel = next(dist.glob('voyager_index-*.whl'))
-          sdist = next(dist.glob('voyager_index-*.tar.gz'))
+          wheel = next(dist.glob('colsearch-*.whl'))
+          sdist = next(dist.glob('colsearch-*.tar.gz'))
           wheel_names = set(zipfile.ZipFile(wheel).namelist())
           raw_sdist = set(tarfile.open(sdist).getnames())
           sdist_names = {n.split('/', 1)[1] for n in raw_sdist if '/' in n}
-          assert 'voyager_index/py.typed' in wheel_names, 'py.typed missing from wheel'
-          assert 'voyager_index/py.typed' in sdist_names, 'py.typed missing from sdist'
+          assert 'colsearch/py.typed' in wheel_names, 'py.typed missing from wheel'
+          assert 'colsearch/py.typed' in sdist_names, 'py.typed missing from sdist'
+          assert 'voyager_index/__init__.py' in wheel_names, 'compat shim missing from wheel'
+          assert 'voyager_index/py.typed' in wheel_names, 'compat shim py.typed missing from wheel'
+          assert 'voyager_index/__init__.py' in sdist_names, 'compat shim missing from sdist'
           assert 'tests/fixtures/dataset_di_fixture.json' in sdist_names, 'fixture missing from sdist'
           assert 'tests/fixtures/latence_graph_quality_eval.json' in sdist_names, 'graph quality fixture missing from sdist'
-          assert 'voyager_index/_internal/inference/shard_engine/__init__.py' in wheel_names
-          assert 'voyager_index/_internal/inference/shard_engine/_lemur_vendor/__init__.py' in wheel_names
+          assert 'colsearch/_internal/inference/shard_engine/__init__.py' in wheel_names
+          assert 'colsearch/_internal/inference/shard_engine/_lemur_vendor/__init__.py' in wheel_names
           assert 'src/__init__.py' not in wheel_names
           assert 'src/server/__init__.py' not in wheel_names
           assert 'src/inference/__init__.py' not in wheel_names
@@ -161,7 +164,7 @@ jobs:
           assert 'src/server/api/service.py' not in wheel_names
           assert 'src/inference/index_core/index.py' not in wheel_names
           assert 'src/kernels/maxsim.py' not in wheel_names
-          assert 'voyager_index/_internal/inference/solver/__init__.py' not in wheel_names
+          assert 'colsearch/_internal/inference/solver/__init__.py' not in wheel_names
           print(f'Wheel: {len(wheel_names)} files, sdist: {len(sdist_names)} files — all checks passed')
           "
       - name: Install built wheel
@@ -169,15 +172,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install fastapi uvicorn pydantic Pillow PyMuPDF python-docx openpyxl faiss-cpu safetensors
-          python -m pip install dist/voyager_index-*.whl
-          python -c "from voyager_index import ColbertIndex, SearchPipeline; from voyager_index.server import create_app; from voyager_index._internal.inference.shard_engine import ShardSegmentManager; assert ColbertIndex is not None; assert SearchPipeline is not None; assert create_app is not None; assert ShardSegmentManager is not None"
+          python -m pip install dist/colsearch-*.whl
+          python -c "from colsearch import ColbertIndex, SearchPipeline; from colsearch.server import create_app; from colsearch._internal.inference.shard_engine import ShardSegmentManager; assert ColbertIndex is not None; assert SearchPipeline is not None; assert create_app is not None; assert ShardSegmentManager is not None"
       - name: Write package validation bundle
         run: |
           python scripts/release_validation_report.py \
             --job-name package-build \
             --output-dir validation-reports/package-build-${{ github.run_id }} \
-            --artifact dist/voyager_index-*.whl \
-            --artifact dist/voyager_index-*.tar.gz
+            --artifact dist/colsearch-*.whl \
+            --artifact dist/colsearch-*.tar.gz
       - name: Upload package validation bundle
         uses: actions/upload-artifact@v4
         with:
@@ -204,31 +207,31 @@ jobs:
         run: |
           ROOT_WHEEL=$(python - <<'PY'
           from pathlib import Path
-          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          print(next(Path("dist").glob("colsearch-*.whl")).resolve())
           PY
           )
           python -m venv .venv-full
           .venv-full/bin/pip install --upgrade pip
           .venv-full/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
-          .venv-full/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full] @ file://${ROOT_WHEEL}"
+          .venv-full/bin/pip install --find-links "$(pwd)/dist/native" "colsearch[full] @ file://${ROOT_WHEEL}"
           mkdir -p validation-reports/packaged-install-${{ github.run_id }}
           .venv-full/bin/python scripts/packaged_install_smoke.py > validation-reports/packaged-install-${{ github.run_id }}/full-smoke.json
       - name: Validate full GPU install contract
         run: |
           ROOT_WHEEL=$(python - <<'PY'
           from pathlib import Path
-          print(next(Path("dist").glob("voyager_index-*.whl")).resolve())
+          print(next(Path("dist").glob("colsearch-*.whl")).resolve())
           PY
           )
           python -m venv .venv-full-gpu
           .venv-full-gpu/bin/pip install --upgrade pip
           .venv-full-gpu/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
-          .venv-full-gpu/bin/pip install --find-links "$(pwd)/dist/native" "voyager-index[full,gpu] @ file://${ROOT_WHEEL}"
+          .venv-full-gpu/bin/pip install --find-links "$(pwd)/dist/native" "colsearch[full,gpu] @ file://${ROOT_WHEEL}"
           .venv-full-gpu/bin/python - <<'PY'
           import importlib.util
           import json
           from pathlib import Path
-          import voyager_index
+          import colsearch
 
           assert importlib.util.find_spec("triton") is not None
           assert importlib.util.find_spec("latence") is not None
@@ -238,7 +241,7 @@ jobs:
           Path("validation-reports/packaged-install-${{ github.run_id }}/full-gpu-smoke.json").write_text(
               json.dumps(
                   {
-                      "voyager_index_version": voyager_index.__version__,
+                      "colsearch_version": colsearch.__version__,
                       "triton_importable": True,
                       "latence_importable": True,
                       "latence_shard_engine_importable": True,
@@ -445,10 +448,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build container
-        run: docker build -f deploy/reference-api/Dockerfile -t voyager-index:test .
+        run: docker build -f deploy/reference-api/Dockerfile -t colsearch:test .
       - name: Run container and probe health
         run: |
-          docker run -d --name voyager-index-smoke -p 18080:8080 voyager-index:test
+          docker run -d --name colsearch-smoke -p 18080:8080 colsearch:test
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             if curl -fsS http://127.0.0.1:18080/health; then
               break
@@ -458,7 +461,7 @@ jobs:
           curl -fsS http://127.0.0.1:18080/ready
       - name: Print container logs on failure
         if: failure()
-        run: docker logs voyager-index-smoke
+        run: docker logs colsearch-smoke
 
   publish-native:
     needs:

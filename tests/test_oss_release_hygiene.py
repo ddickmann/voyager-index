@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from voyager_index._internal.inference.index_core.feature_bridge import FeatureBridge
+from colsearch._internal.inference.index_core.feature_bridge import FeatureBridge
 
 try:
     import tomllib
@@ -47,7 +47,7 @@ def test_no_tracked_native_target_or_packaging_artifacts_remain() -> None:
             "research/gem_index/target",
             "src/kernels/shard_engine/target",
             "dist",
-            "voyager_index.egg-info",
+            "colsearch.egg-info",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -62,7 +62,7 @@ def test_feature_bridge_error_is_portable() -> None:
         FeatureBridge()
 
     assert "/workspace/" not in str(exc.value)
-    assert "private Voyager extension repo" in str(exc.value)
+    assert "private extension repo" in str(exc.value)
 
 
 def test_root_pyproject_no_longer_packages_from_compat_src() -> None:
@@ -72,10 +72,10 @@ def test_root_pyproject_no_longer_packages_from_compat_src() -> None:
     assert '"src.server"' not in payload
     assert '"src.inference"' not in payload
     assert '"src.kernels"' not in payload
-    assert "voyager_index._internal.inference.index_gpu" not in payload
-    assert "voyager_index._internal.inference.gym" not in payload
-    assert "voyager_index._internal.inference.control" not in payload
-    assert "voyager_index._internal.inference.distributed" not in payload
+    assert "colsearch._internal.inference.index_gpu" not in payload
+    assert "colsearch._internal.inference.gym" not in payload
+    assert "colsearch._internal.inference.control" not in payload
+    assert "colsearch._internal.inference.distributed" not in payload
 
 
 def test_release_workflow_only_builds_supported_native_wheels() -> None:
@@ -104,8 +104,8 @@ def test_reference_api_dockerfile_uses_root_src_tree() -> None:
 
 def test_install_docs_agree_on_pypi_distribution() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert 'pip install "voyager-index' in readme or "pip install voyager-index" in readme
-    assert "voyager-index[full]" in readme
+    assert 'pip install "colsearch' in readme or "pip install colsearch" in readme
+    assert "colsearch[full]" in readme
 
     for doc_name in ["reference_api_tutorial.md", "full_feature_cookbook.md"]:
         doc = REPO_ROOT / "docs" / doc_name
@@ -132,7 +132,7 @@ def test_no_stale_github_org_urls_in_docs() -> None:
     for path in doc_files:
         if path.exists():
             payload = path.read_text(encoding="utf-8")
-            assert "latenceai/voyager-index" not in payload, f"stale org URL in {path.name}"
+            assert "latenceai/colsearch" not in payload, f"stale org URL in {path.name}"
 
 
 def test_repo_governance_files_exist() -> None:
@@ -142,7 +142,7 @@ def test_repo_governance_files_exist() -> None:
 
 
 def test_no_test_or_benchmark_files_in_published_package() -> None:
-    package_root = REPO_ROOT / "voyager_index"
+    package_root = REPO_ROOT / "colsearch"
     for path in package_root.rglob("test_*.py"):
         pytest.fail(f"test file in published package: {path.relative_to(REPO_ROOT)}")
     for path in package_root.rglob("benchmark_*.py"):
@@ -166,7 +166,7 @@ def test_pyproject_install_contract_matches_public_release_story() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
 
-    assert pyproject["project"]["version"] == "0.1.6"
+    assert pyproject["project"]["version"] == "0.1.7"
     assert "full" in extras
     assert "shard-native" in extras
     assert "solver" in extras

@@ -16,7 +16,7 @@ through.
 
 ## Public First-Run Path
 
-If you are trying `voyager-index` for the first time, start with:
+If you are trying `colsearch` for the first time, start with:
 
 - `README.md`
 - `docs/reference_api_tutorial.md`

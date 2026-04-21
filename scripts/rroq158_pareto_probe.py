@@ -284,7 +284,7 @@ def write_report(
             "**Recommended next step**: validate this config on the remaining 5 BEIR datasets "
             "(`fiqa, hotpotqa, nfcorpus, scifact, scidocs`); if quality holds within tolerance "
             "across the suite, open a follow-up PR to flip the production default in "
-            "`voyager_index/_internal/inference/quantization/rroq158.py:Rroq158Config`.",
+            "`colsearch/_internal/inference/quantization/rroq158.py:Rroq158Config`.",
         ])
     else:
         verdict.extend([

@@ -1,6 +1,6 @@
 # Enterprise Control Plane Boundary
 
-`voyager-index` now has a clear data-plane story. The remaining enterprise layer
+`colsearch` now has a clear data-plane story. The remaining enterprise layer
 is the control plane: the services that decide how models, indexes, ingestion
 jobs, and evaluation gates are operated over time.
 
@@ -82,7 +82,7 @@ For an enterprise deployment, a pragmatic control-plane split is:
 - `operations-api`: snapshots, restores, rollbacks, and fleet status
 - `tenant-policy-service`: auth, quotas, workflow policy, and premium entitlements
 
-The control plane can remain thin if it treats `voyager-index` as the retrieval
+The control plane can remain thin if it treats `colsearch` as the retrieval
 data plane rather than as a library that each service reimplements differently.
 
 ## Graph-Specific Control Plane Needs

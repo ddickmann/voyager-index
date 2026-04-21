@@ -17,10 +17,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.shard_bench.baselines import BaselineDenseSingleVector, BaselineGpuMaxSim
-from voyager_index._internal.inference.shard_engine.builder import DEFAULT_NPZ, _index_dir, build, load_corpus
-from voyager_index._internal.inference.shard_engine.centroid_router import CentroidRouter
-from voyager_index._internal.inference.shard_engine.colbandit_reranker import ColBanditConfig as _CBConfig, ColBanditReranker
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine.builder import DEFAULT_NPZ, _index_dir, build, load_corpus
+from colsearch._internal.inference.shard_engine.centroid_router import CentroidRouter
+from colsearch._internal.inference.shard_engine.colbandit_reranker import ColBanditConfig as _CBConfig, ColBanditReranker
+from colsearch._internal.inference.shard_engine.config import (
     BenchmarkConfig,
     BuildConfig,
     Compression,
@@ -33,12 +33,12 @@ from voyager_index._internal.inference.shard_engine.config import (
     SWEEP_TOP_SHARDS,
     SWEEP_TRANSFER,
 )
-from voyager_index._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
-from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
-from voyager_index._internal.inference.shard_engine.scorer import brute_force_maxsim, score_all_docs_topk, warmup_maxsim, PreloadedGpuCorpus
+from colsearch._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
+from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
+from colsearch._internal.inference.shard_engine.scorer import brute_force_maxsim, score_all_docs_topk, warmup_maxsim, PreloadedGpuCorpus
 from benchmarks.shard_bench.metrics import compute_all_metrics
-from voyager_index._internal.inference.shard_engine.profiler import QueryProfile, Timer, aggregate_profiles, memory_snapshot
-from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+from colsearch._internal.inference.shard_engine.profiler import QueryProfile, Timer, aggregate_profiles, memory_snapshot
+from colsearch._internal.inference.shard_engine.shard_store import ShardStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)

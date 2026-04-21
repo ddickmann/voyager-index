@@ -2,10 +2,10 @@
 
 ## Supported Surface
 
-Security fixes are prioritized for the `voyager-index` OSS foundation surface:
+Security fixes are prioritized for the `colsearch` OSS foundation surface:
 
-- public package entrypoints under `voyager_index`
-- the reference API under `voyager_index.server` and `deploy/reference-api/`
+- public package entrypoints under `colsearch`
+- the reference API under `colsearch.server` and `deploy/reference-api/`
 - local storage, persistence, and collection metadata handling
 - exposed kernel wrappers and documented CPU/GPU fallback behavior
 

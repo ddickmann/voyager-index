@@ -6,10 +6,10 @@ import tempfile
 from fastapi.testclient import TestClient
 import numpy as np
 
-from voyager_index._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
-from voyager_index._internal.inference.index_core.centroid_screening import CentroidScreeningIndex
-from voyager_index._internal.inference.index_core.prototype_screening import PrototypeScreeningIndex
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.inference.engines.colpali import ColPaliConfig, ColPaliEngine
+from colsearch._internal.inference.index_core.centroid_screening import CentroidScreeningIndex
+from colsearch._internal.inference.index_core.prototype_screening import PrototypeScreeningIndex
+from colsearch._internal.server.main import create_app
 
 
 def _three_doc_embeddings() -> np.ndarray:

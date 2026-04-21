@@ -1,17 +1,17 @@
-# ColPali Multimodal Search with voyager-index
+# ColPali Multimodal Search with colsearch
 
 ## Overview
 
 [ColPali](https://arxiv.org/abs/2407.01449) extends the late-interaction
 paradigm to multimodal retrieval: document pages are encoded as grids of patch
-embeddings. `voyager-index` indexes these multivector representations through
+embeddings. `colsearch` indexes these multivector representations through
 the shard engine, which is the mainline production path in this repo.
 
 ## Example
 
 ```python
 import numpy as np
-from voyager_index import Index
+from colsearch import Index
 
 DIM = 128  # ColPali embedding dimension
 

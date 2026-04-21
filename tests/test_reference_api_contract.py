@@ -9,12 +9,12 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from voyager_index import __version__ as package_version
-from voyager_index import encode_vector_payload
-from voyager_index._internal.inference.engines.base import SearchResult
-from voyager_index._internal.server.api.models import SearchRequest
-from voyager_index._internal.server.api.service import SearchService
-from voyager_index._internal.server.main import create_app
+from colsearch import __version__ as package_version
+from colsearch import encode_vector_payload
+from colsearch._internal.inference.engines.base import SearchResult
+from colsearch._internal.server.api.models import SearchRequest
+from colsearch._internal.server.api.service import SearchService
+from colsearch._internal.server.main import create_app
 
 
 def _create_client(index_path: Path, version: str = "0.1.0") -> TestClient:
@@ -212,7 +212,7 @@ def test_reference_optimize_accepts_named_post_rerank_policy(tmp_path: Path) -> 
         }
 
     with patch(
-        "voyager_index._internal.inference.stateless_optimizer.GpuFulfilmentPipeline.optimize",
+        "colsearch._internal.inference.stateless_optimizer.GpuFulfilmentPipeline.optimize",
         new=fake_optimize,
     ):
         with _create_client(tmp_path) as client:

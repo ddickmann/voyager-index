@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from voyager_index._internal.server.main import create_app
+from colsearch._internal.server.main import create_app
 
 
 FALLBACK_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "dataset_di_fixture.json"

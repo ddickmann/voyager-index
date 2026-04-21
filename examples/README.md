@@ -32,8 +32,8 @@ For the full step-by-step feature walkthrough, pair these examples with
 These require the reference server to be running:
 
 ```bash
-pip install voyager-index[server]
-voyager-index-server
+pip install colsearch[server]
+colsearch-server
 python examples/reference_api_happy_path.py
 python examples/reference_api_feature_tour.py --output-json feature-tour-report.json
 ```

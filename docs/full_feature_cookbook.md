@@ -1,13 +1,13 @@
 # Full-Feature Cookbook
 
-This guide is the complete shard-first OSS exploration path for `voyager-index`.
+This guide is the complete shard-first OSS exploration path for `colsearch`.
 
 It is designed so a user can walk the whole stack step by step, or skip directly
 to the sections they care about.
 
 The cookbook is intentionally honest about three different kinds of features:
 
-- reference HTTP API features you can run directly against `voyager-index-server`
+- reference HTTP API features you can run directly against `colsearch-server`
 - optional local/native upgrades that change behavior after you install extra packages
 - external or library-side integration seams that are documented and supported as boundaries, but are not standalone HTTP endpoints in the OSS reference API
 
@@ -54,7 +54,7 @@ with the results, skips, and boundary checks.
 Install from PyPI (recommended):
 
 ```bash
-pip install "voyager-index[server,shard]"
+pip install "colsearch[server,shard]"
 ```
 
 That install includes the supported PDF, DOCX, XLSX, and image rendering stack
@@ -65,12 +65,12 @@ For the full install matrix and product overview, start with `README.md`.
 Optional extras:
 
 ```bash
-pip install "voyager-index[full]"                     # + full public CPU surface
-pip install "voyager-index[full,gpu]"                 # + Triton GPU kernels on CUDA hosts
-pip install "voyager-index[server,shard,multimodal]"  # + multimodal helpers
-pip install "voyager-index[server,shard,solver]"      # + Tabu Search solver only
-pip install "voyager-index[server,shard,native]"      # + both public native wheels
-pip install "voyager-index[server,shard,latence-graph]"  # + optional Latence graph lane
+pip install "colsearch[full]"                     # + full public CPU surface
+pip install "colsearch[full,gpu]"                 # + Triton GPU kernels on CUDA hosts
+pip install "colsearch[server,shard,multimodal]"  # + multimodal helpers
+pip install "colsearch[server,shard,solver]"      # + Tabu Search solver only
+pip install "colsearch[server,shard,native]"      # + both public native wheels
+pip install "colsearch[server,shard,latence-graph]"  # + optional Latence graph lane
 ```
 
 What the native extras add:
@@ -82,8 +82,8 @@ What the native extras add:
 ### Install from source (contributors)
 
 ```bash
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
+git clone https://github.com/ddickmann/colsearch.git
+cd colsearch
 bash scripts/install_from_source.sh --cpu
 ```
 - multimodal extras: optional provider-side helpers and example flows
@@ -94,7 +94,7 @@ story is the published PyPI package.
 ## Step 1. Start The Reference Service
 
 ```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
+HOST=0.0.0.0 WORKERS=4 colsearch-server
 ```
 
 Then open the interactive API docs:
@@ -120,7 +120,7 @@ What these endpoints are for:
 - `/reference/preprocess/documents`: source-doc to page-image preprocessing before embedding
 
 Single-host worker scaling is supported as long as all workers share the same
-`VOYAGER_INDEX_PATH`.
+`COLSEARCH_INDEX_PATH`.
 
 Skip ahead if:
 
@@ -324,7 +324,7 @@ vectors is the shared base64 payload contract used by the optimizer surface.
 ```python
 import numpy as np
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 body = {
     "vector": encode_vector_payload(np.array([1, 0, 0, 0], dtype="float32"), dtype="float16"),
@@ -675,9 +675,9 @@ Where to explore them:
 
 Post-generation groundedness scoring is provided by the optional
 Latence Trace sidecar from [latence.ai](https://latence.ai). The
-sidecar runs next to `voyager-index` and exposes `POST /groundedness`,
+sidecar runs next to `colsearch` and exposes `POST /groundedness`,
 accepting the same `chunk_ids` / `raw_context` contract you would
-otherwise have called on `voyager-index`. Retrieval and groundedness
+otherwise have called on `colsearch`. Retrieval and groundedness
 scoring run in separate processes so each can be scaled, restarted,
 and operated independently. See the
 [Groundedness sidecar guide](guides/groundedness-sidecar.md) for the
@@ -717,8 +717,8 @@ What `/ready` can tell you:
 
 The public provider seam is:
 
-- `voyager_index.SUPPORTED_MULTIMODAL_MODELS`
-- `voyager_index.VllmPoolingProvider`
+- `colsearch.SUPPORTED_MULTIMODAL_MODELS`
+- `colsearch.VllmPoolingProvider`
 
 Example:
 
@@ -741,7 +741,7 @@ helper plus reference endpoint for turning source docs into page-image assets.
 
 Those surfaces are:
 
-- `voyager_index.render_documents(...)`
+- `colsearch.render_documents(...)`
 - `POST /reference/preprocess/documents`
 - the `PageBundle` contract in `internal/contracts/ADAPTER_CONTRACTS.md`
 
@@ -749,7 +749,7 @@ Typical flow:
 
 1. either a user-side document pipeline or the built-in preprocessing helper renders page-native assets, text, and metadata
 2. a provider produces embeddings for those pages or chunks
-3. `voyager-index` ingests the resulting text and vectors into `dense`, `late_interaction`, or `multimodal` collections
+3. `colsearch` ingests the resulting text and vectors into `dense`, `late_interaction`, or `multimodal` collections
 
 Minimal `PageBundle` shape:
 

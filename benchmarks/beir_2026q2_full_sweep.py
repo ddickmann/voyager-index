@@ -69,7 +69,7 @@ from benchmarks.beir_benchmark import (
 from benchmarks.beir_benchmark import (  # noqa: E402
     DATASETS as DEFAULT_DATASETS,
 )
-from voyager_index._internal.inference.shard_engine.config import Compression  # noqa: E402
+from colsearch._internal.inference.shard_engine.config import Compression  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -148,7 +148,7 @@ def _cpu_info() -> Dict[str, Any]:
 def _wheel_versions() -> Dict[str, Optional[str]]:
     versions: Dict[str, Optional[str]] = {}
     for pkg in (
-        "voyager_index", "torch", "triton", "numpy",
+        "colsearch", "torch", "triton", "numpy",
         "latence_shard_engine",
     ):
         try:

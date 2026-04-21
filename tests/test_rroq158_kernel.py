@@ -5,7 +5,7 @@ Three layers:
 
   1. ``test_rroq158_python_reference_matches_brute``  — verifies the python
      reference implementation in
-     ``voyager_index/_internal/kernels/triton_roq_rroq158.py`` agrees with
+     ``colsearch/_internal/kernels/triton_roq_rroq158.py`` agrees with
      a fully-decoded brute-force MaxSim on synthetic data. CPU-only, no
      Triton needed. This is the math-correctness test.
 
@@ -28,13 +28,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from voyager_index._internal.inference.quantization.rroq158 import (
+from colsearch._internal.inference.quantization.rroq158 import (
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,
     pack_doc_codes_to_int32_words,
 )
-from voyager_index._internal.kernels.triton_roq_rroq158 import (
+from colsearch._internal.kernels.triton_roq_rroq158 import (
     reference_score_rroq158,
 )
 
@@ -81,7 +81,7 @@ def _brute_force_maxsim(queries, enc, n_docs, n_d_tok):
     scales = np.repeat(enc.scales.astype(np.float32), enc.group_size, axis=1)
     r_rot = (signed * scales).astype(np.float32)
 
-    from voyager_index._internal.inference.quantization.rotational import FastWalshHadamard
+    from colsearch._internal.inference.quantization.rotational import FastWalshHadamard
     block_size = 1
     while block_size < enc.dim:
         block_size *= 2
@@ -233,7 +233,7 @@ def test_rroq158_dense_matrix_fwht_path(dim):
     rows/cols multiply zero-padded inputs; verify that for non-power-of-2
     dims the cached matrix still matches a fresh per-call rotation.
     """
-    from voyager_index._internal.inference.quantization.rroq158 import (
+    from colsearch._internal.inference.quantization.rroq158 import (
         get_cached_fwht_rotator,
         clear_fwht_rotator_cache,
     )
@@ -381,7 +381,7 @@ def test_rroq158_python_reference_matches_brute():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_rroq158_triton_matches_python_reference():
     pytest.importorskip("triton")
-    from voyager_index._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
+    from colsearch._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
 
     enc, q_in, _queries, _, n_docs, n_d_tok = _make_fixture(
         n_docs=8, n_q_tok=4, n_d_tok=8, dim=128, K=64, seed=1,
@@ -420,7 +420,7 @@ def test_rroq158_microbench():
     so the merge-decision memo can check the plan's gates
     (p50 ≤ 0.40 ms, QPS ≥ 40k)."""
     pytest.importorskip("triton")
-    from voyager_index._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
+    from colsearch._internal.kernels.triton_roq_rroq158 import roq_maxsim_rroq158
 
     rng = np.random.default_rng(7)
     n_q_tok = 32

@@ -25,9 +25,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from voyager_index._internal.inference.shard_engine import ShardSegmentManager
-from voyager_index._internal.inference.shard_engine.config import Compression
-from voyager_index._internal.inference.shard_engine.manager import ShardEngineConfig
+from colsearch._internal.inference.shard_engine import ShardSegmentManager
+from colsearch._internal.inference.shard_engine.config import Compression
+from colsearch._internal.inference.shard_engine.manager import ShardEngineConfig
 
 
 def _make_corpus(n_docs: int, dim: int, min_tok: int = 8, max_tok: int = 16, seed: int = 7):

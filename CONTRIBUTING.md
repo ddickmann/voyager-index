@@ -2,9 +2,9 @@
 
 ## Scope
 
-The supported OSS surface for contributions is the `voyager-index` foundation:
+The supported OSS surface for contributions is the `colsearch` foundation:
 
-- `voyager_index/`
+- `colsearch/`
 - `src/kernels/` for native package sources and vendored dependencies
 - `deploy/reference-api/`
 - `docs/`, `examples/`, and `notebooks/`
@@ -27,8 +27,8 @@ Before changing public behavior, treat these docs as the canonical OSS guidance:
 
 Namespace rules:
 
-- add or document public behavior under `voyager_index.*`
-- treat `voyager_index._internal.*` as implementation detail rather than user-facing contract
+- add or document public behavior under `colsearch.*`
+- treat `colsearch._internal.*` as implementation detail rather than user-facing contract
 - do not add or depend on a `src.*` Python import surface
 
 Behavior rules:
@@ -37,7 +37,7 @@ Behavior rules:
 - direct late-interaction multivector queries belong to `ColbertIndex` or the reference API
 - multimodal ingestion and query flows expect precomputed embeddings, with `VllmPoolingProvider` as the public provider seam
 - optional `latence_solver` refinement and `/reference/optimize` share the same canonical OSS solver contract
-- the package is distributed via PyPI (`pip install voyager-index`) with published wheels and source builds for the supported native crates
+- the package is distributed via PyPI (`pip install colsearch`) with published wheels and source builds for the supported native crates
 
 ## Local Setup
 
@@ -71,8 +71,8 @@ Native truth:
 
 ## Before Opening A Change
 
-- keep the public import surface under `voyager_index`
-- keep public docs and examples aligned with the `voyager_index` surface in the same pass as behavior changes
+- keep the public import surface under `colsearch`
+- keep public docs and examples aligned with the `colsearch` surface in the same pass as behavior changes
 - prefer CPU-safe tests when adding new coverage
 - preserve the licensing boundary documented in `LICENSING.md` and `internal/contracts/QDRANT_VENDORING.md`
 - keep the public solver API aligned around `/reference/optimize` and the shared request contract instead of adding parallel one-off optimize paths

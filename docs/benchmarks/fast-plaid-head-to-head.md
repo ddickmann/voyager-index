@@ -1,6 +1,6 @@
-# voyager-index vs FastPlaid — head-to-head BEIR benchmark
+# colsearch vs FastPlaid — head-to-head BEIR benchmark
 
-A reproducible, single-command benchmark that runs voyager-index's
+A reproducible, single-command benchmark that runs colsearch's
 **rroq158 (group_size=128, the v0.1.6 SOTA default)** against
 **[FastPlaid](https://github.com/lightonai/fast-plaid)** on the same
 8-dataset BEIR matrix that FastPlaid publishes, using **identical
@@ -12,7 +12,7 @@ the indexing/scoring engine.
 - Output: `reports/fast_plaid_head_to_head/{results.jsonl, summary.json}`
 
 > [!IMPORTANT]
-> FastPlaid's published benchmark was run on an **H100**. voyager-index's
+> FastPlaid's published benchmark was run on an **H100**. colsearch's
 > internal BEIR-6 sweep was run on an **A5000** (~4× less FP16 compute,
 > ~4× less memory bandwidth). For an apples-to-apples QPS comparison you
 > should run *both* libraries on the *same* GPU. The instructions below
@@ -26,7 +26,7 @@ the indexing/scoring engine.
    [`lightonai/GTE-ModernColBERT-v1`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1)
    at dim=128 by `benchmarks/data/prepare_beir_datasets.py`. The same
    `[doc_tok, dim]` embeddings are then fed into **both** libraries —
-   FastPlaid via `documents_embeddings=`, voyager-index via the existing
+   FastPlaid via `documents_embeddings=`, colsearch via the existing
    `benchmarks/beir_benchmark.py::run_dataset` pipeline. This pins the
    embedding model so any quality / throughput delta is attributable to
    the indexing engine, not to the encoder.
@@ -34,7 +34,7 @@ the indexing/scoring engine.
    - **NDCG@10** against the BEIR test qrels
    - **Indexing time (s)** — wall-clock from the moment we hand
      embeddings to the library to the moment the index is searchable.
-     voyager-index reports `cached` if the LEMUR routing artifacts are
+     colsearch reports `cached` if the LEMUR routing artifacts are
      reused from a prior FP16 build (this is the documented codec-shared
      LEMUR behaviour from `benchmarks/beir_benchmark.py`); pass
      `--allow-missing` and remove `~/.cache/shard-bench/beir/<dataset>/`
@@ -55,8 +55,8 @@ published numbers, a single H100 (80 GB or 40 GB SXM) is the target.
 ### Option A — local box with a CUDA GPU
 
 ```bash
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
+git clone https://github.com/ddickmann/colsearch.git
+cd colsearch
 
 python -m venv .venv
 source .venv/bin/activate
@@ -82,8 +82,8 @@ recipe that works:
 #      - Vast.ai: any "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime" image
 
 # 2. SSH in, then:
-git clone https://github.com/ddickmann/voyager-index.git
-cd voyager-index
+git clone https://github.com/ddickmann/colsearch.git
+cd colsearch
 pip install --upgrade pip
 pip install -e ".[shard,gpu,native,dev]"
 pip install fast-plaid pylate
@@ -181,7 +181,7 @@ Per-library means across run:
   fast_plaid means parity (we measured this in the v0.1.6 sweep on
   BEIR-6). The fp16 row, if present, is the unquantized ceiling — both
   quantized rows give up roughly the same amount of NDCG@10 to compress.
-- **Indexing time (s)** — voyager-index's "cached" label means the
+- **Indexing time (s)** — colsearch's "cached" label means the
   LEMUR routing artifacts were reused from a prior FP16 build (codec-
   shared LEMUR is the documented production behaviour). For a clean
   measurement of fresh-index time, delete
@@ -210,7 +210,7 @@ Per-library means across run:
    serving actually exercises. Concurrent / batched throughput is a
    separate measurement.
 3. **`top_k=100` for both lanes.** FastPlaid's table doesn't pin
-   `top_k`; we use 100 because that's voyager-index's documented
+   `top_k`; we use 100 because that's colsearch's documented
    benchmark default. Pass `--n-eval` to cap query count for a quick
    sanity run; do not pass it for the final table.
 4. **FastPlaid keeps its index on disk.** The script writes to a

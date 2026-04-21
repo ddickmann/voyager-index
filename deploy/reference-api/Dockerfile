@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md LICENSE LICENSING.md THIRD_PARTY_NOTICES.md /app/
+COPY colsearch /app/colsearch
 COPY voyager_index /app/voyager_index
 COPY src /app/src
 
@@ -25,7 +26,7 @@ FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV VOYAGER_INDEX_PATH=/data/voyager-index
+ENV COLSEARCH_INDEX_PATH=/data/colsearch
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV WORKERS=4
@@ -35,24 +36,24 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system voyager \
-    && useradd --system --gid voyager --create-home --home-dir /home/voyager voyager \
-    && mkdir -p /data/voyager-index \
-    && chown -R voyager:voyager /data /home/voyager
+    && groupadd --system colsearch \
+    && useradd --system --gid colsearch --create-home --home-dir /home/colsearch colsearch \
+    && mkdir -p /data/colsearch \
+    && chown -R colsearch:colsearch /data /home/colsearch
 
 COPY --from=builder /wheels /wheels
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
     && python -m pip install --no-cache-dir /wheels/latence_shard_engine-*.whl /wheels/latence_solver-*.whl \
-    && VOYAGER_WHEEL=$(ls /wheels/voyager_index-*.whl) \
-    && python -m pip install --no-cache-dir "voyager-index[full] @ file://${VOYAGER_WHEEL}"
+    && COLSEARCH_WHEEL=$(ls /wheels/colsearch-*.whl) \
+    && python -m pip install --no-cache-dir "colsearch[full] @ file://${COLSEARCH_WHEEL}"
 
-USER voyager
+USER colsearch
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/health" || exit 1
 
-CMD ["voyager-index-server"]
+CMD ["colsearch-server"]

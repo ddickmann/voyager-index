@@ -17,7 +17,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from voyager_index._internal.inference.search_pipeline import SearchPipeline
+from colsearch._internal.inference.search_pipeline import SearchPipeline
 
 _REPRESENTATIVE_FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "latence_graph_quality_eval.json"
 

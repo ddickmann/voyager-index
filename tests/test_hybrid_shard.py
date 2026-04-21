@@ -16,14 +16,14 @@ except ImportError:
     BM25_AVAILABLE = False
 
 try:
-    from voyager_index._internal.inference.index_core.hybrid_manager import (
+    from colsearch._internal.inference.index_core.hybrid_manager import (
         HybridSearchManager,
     )
     HYBRID_AVAILABLE = True
 except ImportError:
     HYBRID_AVAILABLE = False
 
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )

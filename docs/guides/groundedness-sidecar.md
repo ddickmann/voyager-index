@@ -1,11 +1,11 @@
 # Groundedness Sidecar
 
-`voyager-index` is the OSS retrieval engine. Once retrieval has returned the
+`colsearch` is the OSS retrieval engine. Once retrieval has returned the
 right chunks and an LLM has produced an answer, you usually still need an
 auditable answer to the question *is this answer grounded in the context we
 gave it?* That post-generation lane is provided by the **Latence Trace**
 groundedness sidecar — a separate, commercially licensed service from
-[latence.ai](https://latence.ai) that you run next to `voyager-index`.
+[latence.ai](https://latence.ai) that you run next to `colsearch`.
 
 The OSS retrieval core stays usable on its own. The groundedness sidecar is
 additive: it sits on the answer path, never on the retrieval path.
@@ -70,13 +70,13 @@ POST /groundedness
 ```
 
 It accepts the same dual-mode contract you would otherwise have called
-on `voyager-index`:
+on `colsearch`:
 
 - **`chunk_ids[]` fast path** — your generation layer passes the exact
   chunk IDs that were stitched into the LLM context. The sidecar
   retrieves the corresponding multi-vector embeddings (via a
   caller-supplied resolver, so it can read directly from
-  `voyager-index`, an in-memory cache, or any other vector store) and
+  `colsearch`, an in-memory cache, or any other vector store) and
   scores the response against them.
 - **`raw_context` fallback** — when chunk IDs are unavailable, the
   sidecar segments the raw context into 256-token packed sentence
@@ -103,12 +103,12 @@ when input exceeds the encoder limit.
 
 ## Integration Shape
 
-A typical voyager-index plus groundedness sidecar deployment runs them as two
+A typical colsearch plus groundedness sidecar deployment runs them as two
 processes:
 
 ```text
                   +-----------------------+
-client query  --> | voyager-index server  | -> chunk_ids[], context
+client query  --> | colsearch server  | -> chunk_ids[], context
                   +-----------------------+
                                 |
                                 v
@@ -117,12 +117,12 @@ LLM response  --> | Latence Trace sidecar | -> groundedness scores,
                   +-----------------------+    risk band, evidence
                                 ^
                                 |
-                  voyager-index acts as the chunk-vector resolver
+                  colsearch acts as the chunk-vector resolver
 ```
 
 The sidecar is configured with a `ChunkResolver` callback that turns
 `chunk_ids` into multi-vector embeddings. In production this typically
-calls voyager-index's reference HTTP API (`GET /collections/{name}/points/{id}`)
+calls colsearch's reference HTTP API (`GET /collections/{name}/points/{id}`)
 or an in-process accessor; both keep the sidecar storage-agnostic.
 
 A minimal request, with the sidecar mounted at `:8090`:
@@ -145,14 +145,14 @@ The same shape is available for the `raw_context` fallback by replacing
 
 The two processes are deliberately decoupled:
 
-- **Latency budget.** Retrieval is sub-10 ms p95 in voyager-index. The
+- **Latency budget.** Retrieval is sub-10 ms p95 in colsearch. The
   groundedness lane runs an NLI verifier and an optional semantic-entropy
   peer that legitimately consume ~100–150 ms p95 even on a single
   workstation GPU; running them out of process keeps the retrieval hot
   path tight.
 - **Release cadence.** The sidecar evolves with NLI model updates,
   calibration sweeps, and dataset-specific risk bands without forcing
-  voyager-index releases.
+  colsearch releases.
 - **Failure isolation.** A degraded NLI lane never breaks first-stage
   retrieval, and a retrieval restart never invalidates calibrated
   thresholds.
@@ -165,6 +165,6 @@ The two processes are deliberately decoupled:
 
 - **Product page and access:** [latence.ai](https://latence.ai) hosts the
   Latence Trace product surface, including pricing and onboarding.
-- **Retrieval boundary:** `voyager-index` itself remains the right place
+- **Retrieval boundary:** `colsearch` itself remains the right place
   to look for indexing, hybrid search, quantization, and the optional
   Latence graph lane.

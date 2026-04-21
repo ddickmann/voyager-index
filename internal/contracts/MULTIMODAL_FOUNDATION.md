@@ -13,21 +13,21 @@ path, not an afterthought.
 
 All three models can be surfaced through a vLLM pooling endpoint and are
 represented in the public Python package via
-`voyager_index.SUPPORTED_MULTIMODAL_MODELS`.
+`colsearch.SUPPORTED_MULTIMODAL_MODELS`.
 
 For the standard OSS vLLM-powered ColPali path, the default public choice is
-`collfm2`, exposed as `voyager_index.DEFAULT_MULTIMODAL_MODEL` and
-`voyager_index.DEFAULT_MULTIMODAL_MODEL_SPEC`.
+`collfm2`, exposed as `colsearch.DEFAULT_MULTIMODAL_MODEL` and
+`colsearch.DEFAULT_MULTIMODAL_MODEL_SPEC`.
 
 ## Public Multimodal Seam
 
 The supported OSS provider seam is:
 
-- `voyager_index.SUPPORTED_MULTIMODAL_MODELS` for the published model matrix
-- `voyager_index.VllmPoolingProvider` for request construction and pooling calls
+- `colsearch.SUPPORTED_MULTIMODAL_MODELS` for the published model matrix
+- `colsearch.VllmPoolingProvider` for request construction and pooling calls
 
 `vllm-factory` is the preferred accelerated provider implementation for these
-models, but plugin internals are not part of the `voyager-index` package
+models, but plugin internals are not part of the `colsearch` package
 contract.
 
 ## Collection Kinds
@@ -180,7 +180,7 @@ that can later feed the separate Voyager reasoning engine.
 
 The collection write API intentionally expects precomputed embeddings. The
 supported product flow can now start from source docs by rendering them into
-page-image assets through `voyager_index.render_documents(...)` or
+page-image assets through `colsearch.render_documents(...)` or
 `POST /reference/preprocess/documents`, then handing those pages to an external
 embedding provider. The index package still does not promise built-in embedding
 inference or remote compute-side serving as part of the multimodal OSS
@@ -217,9 +217,9 @@ For multimodal retrieval, use these profiles intentionally:
 
 ## vLLM Provider Flow
 
-Use `voyager_index.VllmPoolingProvider` for the provider side of the contract:
+Use `colsearch.VllmPoolingProvider` for the provider side of the contract:
 
-1. Optionally render source docs into page images with `voyager_index.render_documents(...)` or `POST /reference/preprocess/documents`
+1. Optionally render source docs into page images with `colsearch.render_documents(...)` or `POST /reference/preprocess/documents`
 2. Serve one of the supported models with `pooling_task="token_embed"`
 3. Request query or document embeddings from the pooling endpoint
 4. Store those token or patch embeddings via the reference API
@@ -230,7 +230,7 @@ See `examples/README.md` for the runnable example order and
 ## Example
 
 ```python
-from voyager_index import DEFAULT_MULTIMODAL_MODEL_SPEC, VllmPoolingProvider
+from colsearch import DEFAULT_MULTIMODAL_MODEL_SPEC, VllmPoolingProvider
 
 spec = DEFAULT_MULTIMODAL_MODEL_SPEC
 provider = VllmPoolingProvider("http://127.0.0.1:8200", spec.model_id)

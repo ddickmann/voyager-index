@@ -5,15 +5,15 @@ from unittest.mock import patch
 
 import torch
 
-from voyager_index import (
+from colsearch import (
     DEFAULT_MULTIMODAL_MODEL,
     DEFAULT_MULTIMODAL_MODEL_SPEC,
     SUPPORTED_MULTIMODAL_MODELS,
     fast_colbert_scores,
 )
-from voyager_index._internal.inference.engines import BM25Engine
-from voyager_index._internal.inference.engines.bm25s_engine import BM25sEngine
-from voyager_index._internal.inference.index_core.feature_bridge import MaxSimBridge
+from colsearch._internal.inference.engines import BM25Engine
+from colsearch._internal.inference.engines.bm25s_engine import BM25sEngine
+from colsearch._internal.inference.index_core.feature_bridge import MaxSimBridge
 
 
 def test_public_multimodal_model_matrix_is_explicit() -> None:
@@ -71,7 +71,7 @@ def test_deprecated_src_namespace_is_not_shipped() -> None:
 
 
 def test_public_voyager_modules_do_not_import_src_directly() -> None:
-    package_root = Path(__file__).resolve().parents[1] / "voyager_index"
+    package_root = Path(__file__).resolve().parents[1] / "colsearch"
     for module_name in ("config.py", "search.py", "kernels.py", "server.py"):
         source = (package_root / module_name).read_text(encoding="utf-8")
         assert "from src." not in source
@@ -88,11 +88,11 @@ def test_repo_no_longer_contains_mixed_runtime_python_trees() -> None:
     assert not (repo_root / "src" / "server" / "main.py").exists()
     assert not (repo_root / "src" / "kernels" / "triton_maxsim.py").exists()
     assert not (repo_root / "src" / "kernels" / "triton_roq.py").exists()
-    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "solver").exists()
-    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "index_gpu").exists()
-    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "gym").exists()
-    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "control").exists()
-    assert not (repo_root / "voyager_index" / "_internal" / "inference" / "distributed").exists()
+    assert not (repo_root / "colsearch" / "_internal" / "inference" / "solver").exists()
+    assert not (repo_root / "colsearch" / "_internal" / "inference" / "index_gpu").exists()
+    assert not (repo_root / "colsearch" / "_internal" / "inference" / "gym").exists()
+    assert not (repo_root / "colsearch" / "_internal" / "inference" / "control").exists()
+    assert not (repo_root / "colsearch" / "_internal" / "inference" / "distributed").exists()
     assert (repo_root / "deploy" / "reference-api" / "Dockerfile").exists()
 
 

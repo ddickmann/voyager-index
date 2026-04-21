@@ -160,7 +160,7 @@ def build_manager(tmp_path):
     """Factory that builds a GemNativeSegmentManager with WAL."""
 
     def _build(dataset: MSMARCODataset, **kwargs):
-        from voyager_index._internal.inference.index_core.gem_manager import (
+        from colsearch._internal.inference.index_core.gem_manager import (
             GemNativeSegmentManager,
         )
 

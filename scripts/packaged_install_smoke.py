@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 from fastapi.testclient import TestClient
 
-from voyager_index import SearchPipeline
-from voyager_index import __version__ as package_version
-from voyager_index.server import create_app
+from colsearch import SearchPipeline
+from colsearch import __version__ as package_version
+from colsearch.server import create_app
 
 
 def _require_module(name: str) -> None:
@@ -109,7 +109,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "voyager_index_version": package_version,
+                "colsearch_version": package_version,
                 "result_ids": result_ids,
                 "graph_merge_mode": graph_summary["merge_mode"],
                 "added_candidate_count": graph_summary["added_candidate_count"],

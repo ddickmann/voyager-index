@@ -1,21 +1,21 @@
 version: "3.8"
 
 services:
-  voyager-index:
+  colsearch:
     build:
       context: ../..
       dockerfile: deploy/reference-api/Dockerfile
-    image: voyager-index:latest
-    container_name: voyager-index
+    image: colsearch:latest
+    container_name: colsearch
     ports:
       - "8080:8080"
     environment:
-      VOYAGER_INDEX_PATH: /data/voyager-index
+      COLSEARCH_INDEX_PATH: /data/colsearch
       HOST: 0.0.0.0
       PORT: 8080
       WORKERS: 4
     volumes:
-      - voyager-index-data:/data
+      - colsearch-data:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${PORT:-8080}/health"]
       interval: 30s
@@ -25,4 +25,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  voyager-index-data:
+  colsearch-data:

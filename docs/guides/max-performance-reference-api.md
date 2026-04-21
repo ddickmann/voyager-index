@@ -1,6 +1,6 @@
 # Max-Performance Reference API Guide
 
-This guide is the shortest path to the highest-throughput public `voyager-index`
+This guide is the shortest path to the highest-throughput public `colsearch`
 deployment shape without giving up the production shard features that matter for
 quality: LEMUR routing, ColBANDIT, dense BM25 hybrid fusion, and quantized scoring.
 
@@ -9,7 +9,7 @@ Use it together with `docs/reference_api_tutorial.md` for the basics and
 
 ## Who this guide is for
 
-Use this guide if you are deploying `voyager-index-server` on a single machine
+Use this guide if you are deploying `colsearch-server` on a single machine
 and want to choose between:
 
 - CPU exact serving
@@ -45,8 +45,8 @@ container defaults are set to `WORKERS=4`.
 export HOST=0.0.0.0
 export PORT=8080
 export WORKERS=4
-export VOYAGER_INDEX_PATH=/data/voyager-index
-voyager-index-server
+export COLSEARCH_INDEX_PATH=/data/colsearch
+colsearch-server
 ```
 
 For a larger single machine, `WORKERS=8` is also supported. Keep all workers on
@@ -63,7 +63,7 @@ faster to serialize.
 ```python
 import numpy as np
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 vector = np.random.rand(128).astype("float32")
 payload = encode_vector_payload(vector, dtype="float16")
@@ -258,7 +258,7 @@ and shard search.
 
 ## 6. Operational notes
 
-- Keep all workers on the same `VOYAGER_INDEX_PATH`.
+- Keep all workers on the same `COLSEARCH_INDEX_PATH`.
 - Use `/ready` to catch degraded BM25 or collection-load states.
 - Use `/health` for liveness only.
 - Put a reverse proxy in front of the service for TLS, auth, and request policy.
@@ -270,7 +270,7 @@ and shard search.
 import numpy as np
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 query = np.random.rand(32, 128).astype("float32")
 response = requests.post(

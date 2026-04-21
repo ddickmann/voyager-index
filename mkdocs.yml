@@ -1,9 +1,9 @@
-site_name: voyager-index
+site_name: colsearch
 site_description: Shard-first late-interaction retrieval for ColBERT and ColPali workloads
-site_url: https://ddickmann.github.io/voyager-index/
+site_url: https://ddickmann.github.io/colsearch/
 
-repo_name: ddickmann/voyager-index
-repo_url: https://github.com/ddickmann/voyager-index
+repo_name: ddickmann/colsearch
+repo_url: https://github.com/ddickmann/colsearch
 
 theme:
   name: material

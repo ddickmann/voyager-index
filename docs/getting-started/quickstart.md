@@ -5,12 +5,12 @@
 Pick the profile you need:
 
 ```bash
-pip install "voyager-index[full]"
-pip install "voyager-index[full,gpu]"
-pip install "voyager-index[shard]"
-pip install "voyager-index[shard,shard-native]"
-pip install "voyager-index[server,shard,solver]"        # adds Tabu Search solver
-pip install "voyager-index[server,shard,latence-graph]"  # adds the optional Latence graph lane
+pip install "colsearch[full]"
+pip install "colsearch[full,gpu]"
+pip install "colsearch[shard]"
+pip install "colsearch[shard,shard-native]"
+pip install "colsearch[server,shard,solver]"        # adds Tabu Search solver
+pip install "colsearch[server,shard,latence-graph]"  # adds the optional Latence graph lane
 ```
 
 `engine="shard"` is the mainline production path. `gem` and `hnsw` remain
@@ -26,7 +26,7 @@ Each document is a matrix of token or patch embeddings shaped
 ```python
 import numpy as np
 
-from voyager_index import Index
+from colsearch import Index
 
 rng = np.random.default_rng(7)
 docs = [rng.normal(size=(16, 128)).astype("float32") for _ in range(64)]
@@ -60,7 +60,7 @@ idx.close()
 ## Builder Form
 
 ```python
-from voyager_index import IndexBuilder
+from colsearch import IndexBuilder
 
 idx = (
     IndexBuilder("builder-index", dim=128)
@@ -94,7 +94,7 @@ reopened.close()
 ## Multimodal Start
 
 ```python
-from voyager_index.preprocessing import enumerate_renderable_documents, render_documents
+from colsearch.preprocessing import enumerate_renderable_documents, render_documents
 
 documents = enumerate_renderable_documents("./docs-to-index")
 rendered = render_documents(documents["documents"], "./rendered-pages")
@@ -108,7 +108,7 @@ Supported render inputs: PDF, DOCX, XLSX, PNG, JPG, WebP, and GIF.
 Start the reference server:
 
 ```bash
-HOST=0.0.0.0 WORKERS=4 voyager-index-server
+HOST=0.0.0.0 WORKERS=4 colsearch-server
 ```
 
 Use base64 transport for new clients:
@@ -117,7 +117,7 @@ Use base64 transport for new clients:
 import numpy as np
 import requests
 
-from voyager_index import encode_vector_payload
+from colsearch import encode_vector_payload
 
 query = np.random.default_rng(7).normal(size=(16, 128)).astype("float32")
 

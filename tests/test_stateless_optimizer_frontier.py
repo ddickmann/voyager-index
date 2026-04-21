@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from voyager_index._internal.inference.stateless_optimizer import (
+from colsearch._internal.inference.stateless_optimizer import (
     GpuFulfilmentPipeline,
     OptimizerCandidate,
     encode_float_vectors,

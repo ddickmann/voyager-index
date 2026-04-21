@@ -1,6 +1,6 @@
 # Latence Graph Sidecar
 
-`voyager-index` keeps the serving hot path in the OSS retrieval engine and adds
+`colsearch` keeps the serving hot path in the OSS retrieval engine and adds
 graph awareness through an optional LatenceAI sidecar. This preserves the
 single-node retrieval story while making the graph lane a premium, failure-
 isolated feature instead of a tax on every query.
@@ -108,7 +108,7 @@ The sidecar boundary is intentionally narrow:
 - `linked_evidence(node_ids, budget) -> additive evidence targets`
 - `graph_features(query, candidate_ids) -> solver-facing feature payloads`
 
-`voyager-index` consumes the sidecar as a retrieval helper. The graph contributes
+`colsearch` consumes the sidecar as a retrieval helper. The graph contributes
 candidate rescue, context assembly features, and provenance. It does not replace
 BM25, LEMUR, or exact MaxSim.
 

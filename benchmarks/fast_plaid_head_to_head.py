@@ -1,8 +1,8 @@
 """
-voyager-index vs FastPlaid head-to-head BEIR benchmark.
+colsearch vs FastPlaid head-to-head BEIR benchmark.
 
 Runs the same BEIR matrix that FastPlaid publishes
-(https://github.com/lightonai/fast-plaid) against voyager-index's
+(https://github.com/lightonai/fast-plaid) against colsearch's
 rroq158 (gs=128, the v0.1.6 SOTA default) and fp16 baselines using
 *identical* per-token embeddings, so the only thing the comparison
 varies is the indexing/scoring engine.
@@ -12,7 +12,7 @@ The script reuses the prepared NPZs from
 `lightonai/GTE-ModernColBERT-v1` at dim=128) and feeds the same doc /
 query embedding tensors into both libraries:
 
-  * voyager-index: builds a sharded index via the existing benchmark
+  * colsearch: builds a sharded index via the existing benchmark
     pipeline (`benchmarks/beir_benchmark.py::run_dataset`) and reports
     the GPU-corpus QPS / NDCG@10 / indexing-time row.
   * FastPlaid: wraps `fast_plaid.search.FastPlaid(...).create(...) /
@@ -75,7 +75,7 @@ from benchmarks.beir_benchmark import (
     load_beir_npz,
     run_dataset as voyager_run_dataset,
 )
-from voyager_index._internal.inference.shard_engine.config import Compression
+from colsearch._internal.inference.shard_engine.config import Compression
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -95,10 +95,10 @@ FAST_PLAID_BEIR_8 = [
 
 DEFAULT_LIBRARIES = ["voyager_rroq158_gs128", "fast_plaid"]
 SUPPORTED_LIBRARIES = {
-    "voyager_fp16": "voyager-index, fp16 (unquantized MaxSim ceiling)",
-    "voyager_rroq158_gs32": "voyager-index, rroq158 group_size=32 (pre-v0.1.6 baseline)",
-    "voyager_rroq158_gs128": "voyager-index, rroq158 group_size=128 (v0.1.6 SOTA default)",
-    "voyager_rroq4_riem": "voyager-index, rroq4_riem (no-quality-loss codec)",
+    "voyager_fp16": "colsearch, fp16 (unquantized MaxSim ceiling)",
+    "voyager_rroq158_gs32": "colsearch, rroq158 group_size=32 (pre-v0.1.6 baseline)",
+    "voyager_rroq158_gs128": "colsearch, rroq158 group_size=128 (v0.1.6 SOTA default)",
+    "voyager_rroq4_riem": "colsearch, rroq4_riem (no-quality-loss codec)",
     "fast_plaid": "lightonai/fast-plaid (PLAID with Rust GPU kernels)",
 }
 
@@ -116,7 +116,7 @@ def _import_fast_plaid():
         raise RuntimeError(
             "FastPlaid is not installed. Install it with `pip install fast-plaid` "
             "(see https://github.com/lightonai/fast-plaid). To run only the "
-            "voyager-index lanes, pass `--libraries voyager_rroq158_gs128`."
+            "colsearch lanes, pass `--libraries voyager_rroq158_gs128`."
         ) from exc
     return fp_search
 
@@ -156,7 +156,7 @@ def _load_npz_as_tensors(name: str) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# voyager-index lane
+# colsearch lane
 # ─────────────────────────────────────────────────────────────────────────────
 
 _VOYAGER_CONFIGS: Dict[str, Dict[str, Any]] = {
@@ -232,7 +232,7 @@ def run_voyager_lane(
     n_eval: int = 0,
     mode: str = "gpu",
 ) -> Dict[str, Any]:
-    """Run a voyager-index lane via the existing benchmark pipeline.
+    """Run a colsearch lane via the existing benchmark pipeline.
 
     `mode` is "gpu" or "cpu" — the underlying `voyager_run_dataset` already
     knows how to dispatch each (rroq158/fp16 each have CPU/GPU lanes).
@@ -621,7 +621,7 @@ def _check_npz_present(datasets: Sequence[str]) -> List[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="voyager-index vs FastPlaid head-to-head BEIR benchmark",
+        description="colsearch vs FastPlaid head-to-head BEIR benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -696,7 +696,7 @@ def main() -> int:
     args = parser.parse_args()
 
     log.info("=" * 78)
-    log.info("HEAD-TO-HEAD: voyager-index vs FastPlaid")
+    log.info("HEAD-TO-HEAD: colsearch vs FastPlaid")
     log.info("Datasets : %s", args.datasets)
     log.info("Libraries: %s", args.libraries)
     log.info("Device   : %s (FastPlaid lane); voyager auto-selects cuda if available", args.device)
@@ -841,7 +841,7 @@ def main() -> int:
             "torch": torch.__version__,
             "cuda_available": torch.cuda.is_available(),
             "cuda_device": (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
-            "voyager_index_version": _voyager_version(),
+            "colsearch_version": _colsearch_version(),
             "fast_plaid_version": _fast_plaid_version(),
         },
     }, indent=2, default=str), encoding="utf-8")
@@ -854,10 +854,10 @@ def main() -> int:
     return 0
 
 
-def _voyager_version() -> Optional[str]:
+def _colsearch_version() -> Optional[str]:
     try:
-        import voyager_index
-        return getattr(voyager_index, "__version__", None)
+        import colsearch
+        return getattr(colsearch, "__version__", None)
     except Exception:
         return None
 

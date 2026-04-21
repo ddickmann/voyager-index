@@ -48,7 +48,7 @@ test-python: ## Run Python test suite
 
 lint: ## Run linters
 	python -m pip install ruff 2>/dev/null || true
-	ruff check voyager_index/ tests/
+	ruff check colsearch/ tests/
 
 clean: ## Remove build artifacts
 	rm -rf build/ dist/ *.egg-info
@@ -58,7 +58,7 @@ clean: ## Remove build artifacts
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 verify: ## Verify all native modules are importable
-	python -c "import voyager_index; print('voyager_index OK')"
+	python -c "import colsearch; print('colsearch OK')"
 	python -c "import importlib.util; print('latence_solver OK' if importlib.util.find_spec('latence_solver') else 'latence_solver not installed (optional)')"
 
 benchmark: ## Run the supported benchmark smoke

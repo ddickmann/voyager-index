@@ -1,6 +1,6 @@
 ## latence-solver
 
-`latence-solver` is the Tabu Search Quadratic Knapsack solver used by `voyager-index`
+`latence-solver` is the Tabu Search Quadratic Knapsack solver used by `colsearch`
 for both local refinement and the canonical OSS `/reference/optimize` contract.
 
 The default build is **CPU fallback** (deterministic Rust). Optional Cargo features enable

@@ -45,20 +45,20 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine.config import (
     AnnBackend,
     Compression,
     RouterType,
     StorageLayout,
     TransferMode,
 )
-from voyager_index._internal.inference.shard_engine.fetch_pipeline import FetchPipeline
-from voyager_index._internal.inference.shard_engine.manager import (
+from colsearch._internal.inference.shard_engine.fetch_pipeline import FetchPipeline
+from colsearch._internal.inference.shard_engine.manager import (
     ShardEngineConfig,
     ShardSegmentManager,
 )
-from voyager_index._internal.inference.shard_engine.profiler import Timer
-from voyager_index._internal.inference.shard_engine.scorer import (
+from colsearch._internal.inference.shard_engine.profiler import Timer
+from colsearch._internal.inference.shard_engine.scorer import (
     score_all_docs_topk,
     warmup_maxsim,
 )

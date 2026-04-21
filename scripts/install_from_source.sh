@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# install_from_source.sh — one-command source install of voyager-index
+# install_from_source.sh — one-command source install of colsearch
 #
 # Installs system dependencies, Rust toolchain, the Python package in
 # editable mode, the optional graph dependency, and the supported native packages:
@@ -29,7 +29,7 @@ for arg in "$@"; do
 done
 
 echo "══════════════════════════════════════════════════"
-echo "  voyager-index: install from source"
+echo "  colsearch: install from source"
 echo "══════════════════════════════════════════════════"
 
 # ── 1. System dependencies ───────────────────────────────────────────
@@ -76,7 +76,7 @@ fi
 
 # ── 5. Main Python package (editable) ────────────────────────────────
 echo ""
-echo "▶ Installing voyager-index in editable mode with the public full CPU surface..."
+echo "▶ Installing colsearch in editable mode with the public full CPU surface..."
 cd "$REPO_ROOT"
 python -m pip install -e ".[server,shard,multimodal,preprocessing,latence-graph,dev,native-build]"
 
@@ -103,8 +103,8 @@ done
 echo ""
 echo "▶ Verifying installation..."
 python -c "
-import voyager_index
-print(f'  ✓ voyager_index loaded ({voyager_index.__file__})')
+import colsearch
+print(f'  ✓ colsearch loaded ({colsearch.__file__})')
 
 try:
     import latence_shard_engine
@@ -121,5 +121,5 @@ except ImportError as e:
 
 echo ""
 echo "══════════════════════════════════════════════════"
-echo "  ✓ voyager-index installed successfully"
+echo "  ✓ colsearch installed successfully"
 echo "══════════════════════════════════════════════════"

@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from voyager_index._internal.inference.quantization.rroq158 import (
+from colsearch._internal.inference.quantization.rroq158 import (
     Rroq158Config,
     encode_query_for_rroq158,
     encode_rroq158,

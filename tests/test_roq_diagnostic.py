@@ -10,8 +10,8 @@ import pytest
 import torch
 import time
 
-from voyager_index._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
-from voyager_index._internal.kernels.maxsim import fast_colbert_scores
+from colsearch._internal.inference.quantization.rotational import RotationalQuantizer, RoQConfig
+from colsearch._internal.kernels.maxsim import fast_colbert_scores
 
 def test_triton_vs_python_accuracy():
     """Verify Triton FP16 produces identical rankings to Python FP32."""

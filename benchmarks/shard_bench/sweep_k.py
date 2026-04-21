@@ -12,9 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import torch
 
-from voyager_index._internal.inference.shard_engine.builder import DEFAULT_NPZ, _index_dir, build, load_corpus
-from voyager_index._internal.inference.shard_engine.colbandit_reranker import ColBanditConfig as _CBConfig, ColBanditReranker
-from voyager_index._internal.inference.shard_engine.config import (
+from colsearch._internal.inference.shard_engine.builder import DEFAULT_NPZ, _index_dir, build, load_corpus
+from colsearch._internal.inference.shard_engine.colbandit_reranker import ColBanditConfig as _CBConfig, ColBanditReranker
+from colsearch._internal.inference.shard_engine.config import (
     BenchmarkConfig,
     BuildConfig,
     Compression,
@@ -23,13 +23,13 @@ from voyager_index._internal.inference.shard_engine.config import (
     StorageLayout,
     TransferMode,
 )
-from voyager_index._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
-from voyager_index._internal.inference.shard_engine.lemur_router import LemurRouter
-from voyager_index._internal.inference.shard_engine.scorer import brute_force_maxsim, score_all_docs_topk, warmup_maxsim
+from colsearch._internal.inference.shard_engine.fetch_pipeline import FetchPipeline, PinnedBufferPool
+from colsearch._internal.inference.shard_engine.lemur_router import LemurRouter
+from colsearch._internal.inference.shard_engine.scorer import brute_force_maxsim, score_all_docs_topk, warmup_maxsim
 from benchmarks.shard_bench.metrics import compute_all_metrics
-from voyager_index._internal.inference.shard_engine.profiler import QueryProfile, aggregate_profiles
+from colsearch._internal.inference.shard_engine.profiler import QueryProfile, aggregate_profiles
 from benchmarks.shard_bench.run_benchmark import compute_ground_truth, search_shard_routed
-from voyager_index._internal.inference.shard_engine.shard_store import ShardStore
+from colsearch._internal.inference.shard_engine.shard_store import ShardStore
 
 CORPUS_SIZE = 7500
 N_EVAL = 100

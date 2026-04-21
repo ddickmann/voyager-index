@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: voyager-index
-  namespace: voyager
+  name: colsearch
+  namespace: colsearch
 spec:
-  serviceName: "voyager-headless"
+  serviceName: "colsearch-headless"
   replicas: 3
   selector:
     matchLabels:
-      app: voyager-index
+      app: colsearch
   template:
     metadata:
       labels:
-        app: voyager-index
+        app: colsearch
     spec:
       containers:
-      - name: voyager-node
-        image: latence/voyager-zero:latest
+      - name: colsearch-node
+        image: latence/colsearch:latest
         ports:
         - containerPort: 8000
           name: api
@@ -51,11 +51,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: voyager-api
-  namespace: voyager
+  name: colsearch-api
+  namespace: colsearch
 spec:
   selector:
-    app: voyager-index
+    app: colsearch
   ports:
   - port: 80
     targetPort: 8000

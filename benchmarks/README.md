@@ -12,7 +12,7 @@ Public entrypoints:
 - `beir_2026q2_full_sweep.py`: the production-validation 2026-Q2 BEIR
   sweep used to gate the rroq158 SOTA flip (see
   [`docs/benchmarks.md`](../docs/benchmarks.md))
-- `fast_plaid_head_to_head.py`: voyager-index vs
+- `fast_plaid_head_to_head.py`: colsearch vs
   [FastPlaid](https://github.com/lightonai/fast-plaid) on FastPlaid's
   published BEIR-8 matrix, using identical per-token embeddings so
   the comparison varies only the indexing/scoring engine — see the
