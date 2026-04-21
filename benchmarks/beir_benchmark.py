@@ -521,12 +521,6 @@ def run_gpu_corpus_mode(
         )
 
     store = ShardStore(index_dir)
-    router = LemurRouter(
-        index_dir / "lemur",
-        ann_backend=params["ann_backend"].value,
-        device=device,
-    )
-    router.load()
 
     doc_vecs = [all_vectors[s:e] for s, e in doc_offsets]
     gpu_corpus = PreloadedGpuCorpus(doc_vecs, doc_ids, dim, device=device)
@@ -538,6 +532,30 @@ def run_gpu_corpus_mode(
         device=device,
         query_token_counts=q_tok_counts,
     )
+
+    # Defer the LEMUR router init until we know we need it: when the
+    # corpus fits the fast-path criteria (`_should_use_fast_path` =
+    # True), no per-query call ever touches the router, so loading the
+    # MLP + FAISS index just to throw it away is ~3 s of wasted init
+    # on every BEIR-class corpus. Skip it.
+    skip_routing_global = _should_use_fast_path(
+        len(doc_ids), params["max_docs_exact"],
+    )
+    router = None
+    if not skip_routing_global:
+        log.info("[GPU-corpus] %s: loading LEMUR router (slow-path active)", name)
+        router = LemurRouter(
+            index_dir / "lemur",
+            ann_backend=params["ann_backend"].value,
+            device=device,
+        )
+        router.load()
+    else:
+        log.info(
+            "[GPU-corpus] %s: skipping LEMUR router init (fast-path: "
+            "n_docs=%d ≤ threshold=%d, full-corpus MaxSim wins)",
+            name, len(doc_ids), WHOLE_CORPUS_FAST_PATH_THRESHOLD,
+        )
 
     pool = PinnedBufferPool(max_tokens=50_000, dim=dim, n_buffers=3)
     pipeline = FetchPipeline(store=store, mode=TransferMode.PINNED, pinned_pool=pool, device=device)
@@ -1756,14 +1774,30 @@ def _run_rroq158_gpu_mode(
     doc_ids: list, query_vecs: list, dim: int, params: dict, n_warmup: int = 5,
 ) -> Dict[str, Any]:
     device = "cuda"
-    log.info("[rroq158-GPU] %s: loading LEMUR + encoding rroq158 ...", name)
 
-    router = LemurRouter(
-        index_dir / "lemur",
-        ann_backend=params["ann_backend"].value,
-        device=device,
+    # Decide fast vs slow path BEFORE any LEMUR work: when the corpus
+    # fits the fast-path criteria (`_should_use_fast_path` = True), no
+    # per-query call ever touches the router, so loading the MLP +
+    # FAISS index is pure waste. Skip it. This mirrors the symmetric
+    # change in `run_gpu_corpus_mode` for the fp16 lane.
+    skip_routing = _should_use_fast_path(
+        len(doc_ids), params["max_docs_exact"],
     )
-    router.load()
+    router = None
+    if skip_routing:
+        log.info(
+            "[rroq158-GPU] %s: fast path (n_docs=%d ≤ threshold=%d) — "
+            "skipping LEMUR router init, encoding rroq158 ...",
+            name, len(doc_ids), WHOLE_CORPUS_FAST_PATH_THRESHOLD,
+        )
+    else:
+        log.info("[rroq158-GPU] %s: slow path — loading LEMUR + encoding rroq158 ...", name)
+        router = LemurRouter(
+            index_dir / "lemur",
+            ann_backend=params["ann_backend"].value,
+            device=device,
+        )
+        router.load()
 
     payload = _build_rroq158_gpu_payload(all_vectors, doc_offsets, dim, params, device)
     doc_ids_to_idx = {int(did): i for i, did in enumerate(doc_ids)}
@@ -1773,28 +1807,20 @@ def _run_rroq158_gpu_mode(
         distill_head = MultiViewDistillHead.from_npz(index_dir / "distill_mv.npz")
         log.info("[rroq158-GPU] %s: MV-distill head loaded", name)
 
-    # Fast-path flag: skip routing when max_docs_exact covers the corpus,
-    # OR when the corpus is small enough that direct whole-corpus MaxSim
-    # beats LEMUR routing (see WHOLE_CORPUS_FAST_PATH_THRESHOLD docstring
-    # near the top of the file for the crossover derivation).
-    rroq158_corpus_bytes = (
-        payload["sign"].element_size() * payload["sign"].numel()
-        + payload["nz"].element_size() * payload["nz"].numel()
-        + payload["scl"].element_size() * payload["scl"].numel()
-        + payload["cid"].element_size() * payload["cid"].numel()
-        + payload["cosn"].element_size() * payload["cosn"].numel()
-        + payload["sinn"].element_size() * payload["sinn"].numel()
-        + payload["mask"].element_size() * payload["mask"].numel()
-    )
-    skip_routing = _should_use_fast_path(
-        len(doc_ids), params["max_docs_exact"],
-        gpu_corpus_bytes=rroq158_corpus_bytes,
-    )
     if skip_routing:
+        rroq158_corpus_bytes = (
+            payload["sign"].element_size() * payload["sign"].numel()
+            + payload["nz"].element_size() * payload["nz"].numel()
+            + payload["scl"].element_size() * payload["scl"].numel()
+            + payload["cid"].element_size() * payload["cid"].numel()
+            + payload["cosn"].element_size() * payload["cosn"].numel()
+            + payload["sinn"].element_size() * payload["sinn"].numel()
+            + payload["mask"].element_size() * payload["mask"].numel()
+        )
         log.info(
-            "[rroq158-GPU] %s: skipping routing (n_docs=%d, max_docs_exact=%d, threshold=%d, corpus=%.1f MB) - direct corpus MaxSim",
-            name, len(doc_ids), params["max_docs_exact"],
-            WHOLE_CORPUS_FAST_PATH_THRESHOLD, rroq158_corpus_bytes / 1024**2,
+            "[rroq158-GPU] %s: rroq158 corpus on device %.1f MB — "
+            "direct whole-corpus MaxSim",
+            name, rroq158_corpus_bytes / 1024**2,
         )
 
     for i in range(min(n_warmup, len(query_vecs))):
