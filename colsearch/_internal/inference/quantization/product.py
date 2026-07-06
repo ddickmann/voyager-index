@@ -9,7 +9,7 @@ Use case: Memory-efficient storage for large indexes.
 Reference: arXiv:2405.12497 (Product Quantization for Similarity Search)
 
 Author: Latence Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import logging

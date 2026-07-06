@@ -1,8 +1,8 @@
 # colsearch
 
-[![CI](https://github.com/ddickmann/colsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/ddickmann/colsearch/actions/workflows/ci.yml)
+[![CI](https://github.com/latenceainew/colsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/latenceainew/colsearch/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/colsearch)](https://pypi.org/project/colsearch/)
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **ColSearch — the production search category for late-interaction retrieval.** One node. CPU or GPU. MaxSim is the truth scorer. 1.58-bit ColBERT at 40 B/token. **3.12× FastPlaid on H100.**
 
@@ -166,26 +166,10 @@ Three execution modes share the same collection format and API contract: **CPU e
 - Release process: [RELEASING.md](RELEASING.md)
 - Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-## License & Commercial Use
+## License
 
-**This project is licensed under [Creative Commons Attribution-NonCommercial 4.0 International](LICENSE) (`CC-BY-NC-4.0`). It is free for non-commercial use only.**
+**This project is licensed under the [Apache License 2.0](LICENSE) (`Apache-2.0`).** You may use, copy, modify, redistribute, and build on `colsearch` for any purpose — commercial or otherwise — under the terms of that license.
 
-You may use, copy, modify, and redistribute `colsearch` for:
+**Vendored Qdrant subtree.** The directory `src/kernels/vendor/qdrant/` is a vendored copy of upstream [qdrant/qdrant](https://github.com/qdrant/qdrant), which is also **Apache-2.0**; that license travels with those files into any derivative binaries. See [LICENSING.md](LICENSING.md) and [internal/contracts/QDRANT_VENDORING.md](internal/contracts/QDRANT_VENDORING.md) for details.
 
-- research, evaluation, and benchmarking
-- academic work and teaching
-- personal projects and experimentation
-- internal, non-revenue R&D inside an organization
-
-You may **not** use `colsearch`, in whole or in part, for any commercial or revenue-generating purpose without a separate commercial license. This explicitly includes:
-
-- selling, sublicensing, or relicensing the code
-- offering it as a hosted, managed, or SaaS product
-- embedding it in any product, service, or integration that you sell, license, or otherwise monetize
-- using it to provide paid consulting deliverables built on top of it
-
-For commercial licensing inquiries, contact **commercial@latence.ai**.
-
-**Carveout — vendored Qdrant subtree.** The directory `src/kernels/vendor/qdrant/` is a vendored copy of upstream [qdrant/qdrant](https://github.com/qdrant/qdrant) and remains under its original **Apache-2.0** license; that license travels with those files into any derivative binaries. See [LICENSING.md](LICENSING.md) and [internal/contracts/QDRANT_VENDORING.md](internal/contracts/QDRANT_VENDORING.md) for the full carveout.
-
-**Prior releases.** Releases previously distributed under the `voyager-index` name (versions `0.1.0` through `0.1.6`, Apache-2.0) remain available to recipients who already obtained them under their original license. The CC-BY-NC-4.0 license above and the `colsearch` package name apply to this source tree and to all `0.1.7+` releases made from it going forward.
+**License history.** Versions `0.1.0` through `0.1.6` (published under the `voyager-index` name) were Apache-2.0. Version `0.1.7` through the current published release were distributed under `CC-BY-NC-4.0`. This source tree, and all releases made from it starting with the next version, are Apache-2.0. Recipients of earlier releases retain them under the license they were originally distributed with.

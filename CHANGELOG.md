@@ -23,7 +23,7 @@ This release ships three things at once:
    for the full table, methodology, and caveats.
 2. **Rename from `voyager-index` to `colsearch`.** PyPI package is now
    `colsearch` (`pip install colsearch`), the GitHub repository is
-   `ddickmann/colsearch` (the old `ddickmann/voyager-index` URL
+   `latenceainew/colsearch` (the old `ddickmann/voyager-index` URL
    auto-redirects), and the on-disk Python package is `colsearch` with an
    importable `colsearch-server` entry point. The project is repositioned
    as the **production category for late-interaction retrieval** —

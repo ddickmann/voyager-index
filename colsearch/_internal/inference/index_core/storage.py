@@ -13,7 +13,7 @@ Features:
 - Lazy deletion with compaction
 
 Author: ColBERT Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import json

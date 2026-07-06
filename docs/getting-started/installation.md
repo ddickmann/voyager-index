@@ -46,7 +46,7 @@ Requires Python 3.10+ and a Rust toolchain only if you want to build the public
 native wheels from source.
 
 ```bash
-git clone https://github.com/ddickmann/colsearch.git
+git clone https://github.com/latenceainew/colsearch.git
 cd colsearch
 bash scripts/install_from_source.sh --cpu
 ```
