@@ -5,7 +5,7 @@ Defines all configuration classes for the ColBERT search system.
 Production-ready with validation and sensible defaults.
 
 Author: ColBERT Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import json

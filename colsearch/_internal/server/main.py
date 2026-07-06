@@ -11,7 +11,7 @@ Usage:
     uvicorn colsearch.server:app --host 127.0.0.1 --port 8080
 
 Author: Latence Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import logging

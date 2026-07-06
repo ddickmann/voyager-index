@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 The umbrella `colsearch` repository is licensed under
-**CC-BY-NC-4.0** (see `LICENSE` and `LICENSING.md`). It additionally bundles
+**Apache-2.0** (see `LICENSE` and `LICENSING.md`). It additionally bundles
 third-party code that carries its own, separate license. Each such component
 and its license is documented below; those obligations apply independently
 of the repository-level license whenever the third-party files (or

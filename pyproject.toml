@@ -8,7 +8,7 @@ version = "0.1.7"
 description = "ColSearch — production late-interaction retrieval for ColBERT and ColPali style workloads. Single-node CPU/GPU, Triton MaxSim, 1.58-bit ROQ quantization at 40 B/token, BM25 hybrid search, durable CRUD/WAL, multimodal preprocessing, and a base64-ready reference API."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "CC-BY-NC-4.0"
+license = "Apache-2.0"
 license-files = [
   "LICENSE",
   "LICENSING.md",
@@ -131,10 +131,10 @@ colsearch-server = "colsearch.server:main"
 voyager-index-server = "colsearch.server:main"
 
 [project.urls]
-Homepage = "https://github.com/ddickmann/colsearch"
-Repository = "https://github.com/ddickmann/colsearch"
-Issues = "https://github.com/ddickmann/colsearch/issues"
-Changelog = "https://github.com/ddickmann/colsearch/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/latenceainew/colsearch"
+Repository = "https://github.com/latenceainew/colsearch"
+Issues = "https://github.com/latenceainew/colsearch/issues"
+Changelog = "https://github.com/latenceainew/colsearch/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 include-package-data = true

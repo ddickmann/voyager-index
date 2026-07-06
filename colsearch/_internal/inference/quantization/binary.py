@@ -10,7 +10,7 @@ Follow with full-precision reranking for accuracy.
 Reference: arXiv:2409.09913 (Binary Embedding for Retrieval)
 
 Author: Latence Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import logging

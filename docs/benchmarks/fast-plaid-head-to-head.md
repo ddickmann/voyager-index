@@ -55,7 +55,7 @@ published numbers, a single H100 (80 GB or 40 GB SXM) is the target.
 ### Option A — local box with a CUDA GPU
 
 ```bash
-git clone https://github.com/ddickmann/colsearch.git
+git clone https://github.com/latenceainew/colsearch.git
 cd colsearch
 
 python -m venv .venv
@@ -82,7 +82,7 @@ recipe that works:
 #      - Vast.ai: any "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime" image
 
 # 2. SSH in, then:
-git clone https://github.com/ddickmann/colsearch.git
+git clone https://github.com/latenceainew/colsearch.git
 cd colsearch
 pip install --upgrade pip
 pip install -e ".[shard,gpu,native,dev]"

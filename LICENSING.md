@@ -2,72 +2,67 @@
 
 ## Repository-Level License
 
-This repository is licensed under the **Creative Commons Attribution-NonCommercial
-4.0 International** license (SPDX: `CC-BY-NC-4.0`). See the root `LICENSE` file
-for the full legal code.
+This repository is licensed under the **Apache License 2.0** (SPDX:
+`Apache-2.0`). See the root `LICENSE` file for the full legal text and the
+root `NOTICE` file for the attribution notice.
 
 In plain English:
 
-- You may **use, copy, modify, and redistribute** this code for **research,
-  evaluation, academic, personal, and other non-commercial** purposes, as long
-  as you provide attribution.
-- You **may not** use this code, in whole or in part, for any **commercial or
-  revenue-generating purpose** (including, without limitation, selling it,
-  offering it as a hosted or managed service, or embedding it in a product or
-  service that you sell, license, or monetize) without first obtaining a
-  separate commercial license from the copyright holder.
+- You may **use, copy, modify, redistribute, and sublicense** this code for
+  **any purpose, commercial or non-commercial**.
+- You must **retain the license and notices** when you redistribute
+  (Apache-2.0 Section 4), and **mark any files you modify** as changed
+  (Section 4(b)).
+- The license includes an **express patent grant** from contributors
+  (Section 3).
 
-This summary is a convenience and does not replace the legal text in `LICENSE`.
+This summary is a convenience and does not replace the legal text in
+`LICENSE`.
 
-## Explicit Exceptions And Boundaries
+## License History
 
-### Vendored Qdrant Subtree
+- Versions `0.1.0` through `0.1.6`, published under the `voyager-index`
+  name, were licensed under Apache-2.0.
+- Version `0.1.7` through the current published release were distributed
+  under `CC-BY-NC-4.0`.
+- This source tree, and all releases made from it starting with the next
+  version, are licensed under Apache-2.0.
+- Recipients of earlier releases retain them under the license they were
+  originally distributed with.
+
+## Vendored Qdrant Subtree
 
 - Path: `src/kernels/vendor/qdrant/`
-- License: Apache-2.0
+- License: Apache-2.0 (upstream's own license)
 - Reason: this subtree is a vendored copy of upstream
-  [qdrant/qdrant](https://github.com/qdrant/qdrant) and cannot be relicensed.
-  Each file inside this directory remains under its original Apache-2.0 terms,
-  including any local modifications, which are clearly marked per Apache-2.0
+  [qdrant/qdrant](https://github.com/qdrant/qdrant). Each file inside this
+  directory remains under its original upstream Apache-2.0 terms and
+  copyright, and any local modifications are clearly marked per Apache-2.0
   Section 4(b).
 - Details: see `internal/contracts/QDRANT_VENDORING.md` and
   `src/kernels/vendor/qdrant/LICENSE`.
 
-This is the **only** carveout. All other code in the repository — including
-the native Rust crates under `src/kernels/` that depend on the vendored
-subtree via Cargo path dependencies — is licensed under CC-BY-NC-4.0.
-When those crates are built into binaries that embed Qdrant code, the
-embedded Qdrant code continues to carry its original Apache-2.0 terms at the
-file level.
+The vendored subtree's license is consistent with the repository-level
+license, but its upstream copyright and NOTICE obligations are separate and
+travel with those files — including into the native Rust crates under
+`src/kernels/` that depend on the vendored subtree via Cargo path
+dependencies, and into any binaries built from them.
 
 ## Practical Rule
 
-All code in this repository is `CC-BY-NC-4.0` unless it lives inside
-`src/kernels/vendor/qdrant/`, in which case it is `Apache-2.0`.
+All code in this repository is `Apache-2.0`. Files inside
+`src/kernels/vendor/qdrant/` carry upstream Qdrant's Apache-2.0 license and
+copyright rather than this repository's; honor their notices when
+redistributing.
 
 ## Distribution
 
 Source distributions, wheels, and container images for this repository
 should include:
 
-- `LICENSE` (CC BY-NC 4.0 legal code)
+- `LICENSE` (Apache License 2.0 text)
+- `NOTICE`
 - `LICENSING.md` (this file)
 - `THIRD_PARTY_NOTICES.md`
 - `src/kernels/vendor/qdrant/LICENSE` whenever the vendored Qdrant subtree
   or any derivative of it is included.
-
-## Commercial Use
-
-CC-BY-NC-4.0 forbids commercial use without a separate license. If you want
-to use this code or any derivative of it commercially — for example, in a
-revenue-generating product, in a hosted or managed service, in a paid
-consulting engagement, or in any business activity that is primarily
-intended for commercial advantage or monetary compensation — please contact
-the copyright holder to discuss commercial licensing terms:
-
-- Email: `commercial@latence.ai`
-
-Pre-existing releases that were previously distributed under Apache-2.0
-remain available under Apache-2.0 to those who already obtained them; the
-license change above applies to this source tree and to releases made from
-it going forward.

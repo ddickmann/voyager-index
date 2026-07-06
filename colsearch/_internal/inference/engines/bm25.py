@@ -13,7 +13,7 @@ Improvements over naive O(N) implementation:
 Reference: search-index-innovations/search_enhancements.md
 
 Author: Latence Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 import bisect

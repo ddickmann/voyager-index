@@ -5,7 +5,7 @@ Defines the abstract interface that all search engines must implement.
 This allows for unified handling of ColBERT, BM25, Neo4j, and future engines.
 
 Author: ColBERT Team
-License: CC-BY-NC-4.0
+License: Apache-2.0
 """
 
 from abc import ABC, abstractmethod

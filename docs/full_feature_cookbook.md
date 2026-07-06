@@ -82,7 +82,7 @@ What the native extras add:
 ### Install from source (contributors)
 
 ```bash
-git clone https://github.com/ddickmann/colsearch.git
+git clone https://github.com/latenceainew/colsearch.git
 cd colsearch
 bash scripts/install_from_source.sh --cpu
 ```
